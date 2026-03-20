@@ -155,7 +155,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install cmake pkg-config ffmpeg simde uthash
+        run: brew install cmake pkg-config ffmpeg simde uthash jansson
 
       - name: Cache OBS build
         id: cache-obs
