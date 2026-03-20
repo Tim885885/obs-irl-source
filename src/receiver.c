@@ -457,19 +457,13 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 
 		/* Initialise running output PTS on first output.
-		 * corrected_pts is from the frame just written, but
-		 * the buffer holds older data ahead of it. */
+		 * Anchor to the system clock (like video does) so
+		 * timestamps stay in OBS's clock domain.  Raw stream
+		 * PTS can be hours into an epoch that OBS interprets
+		 * as massive lag. */
 		if (!ctx->audio_output_pts_init) {
-			int64_t cur_ns =
-				corrected_pts * 1000000000LL *
-				ctx->pts_state.tb_num /
-				ctx->pts_state.tb_den;
-			int fill_ms =
-				audio_buffer_fill_ms(&ctx->audio_buf);
-			/* Account for the chunk we just read */
 			ctx->audio_output_pts_ns =
-				cur_ns -
-				(int64_t)(fill_ms + chunk_ms) * 1000000LL;
+				(int64_t)os_gettime_ns();
 			ctx->audio_output_pts_init = true;
 		}
 
