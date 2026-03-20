@@ -1,0 +1,102 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libobs-dev \
+            libavformat-dev libavcodec-dev libswresample-dev \
+            libswscale-dev libavutil-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-irl-source-linux-x64
+          path: build/obs-irl-source.so
+
+  windows-x64:
+    runs-on: windows-2022
+    env:
+      OBS_VERSION: "32.1.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-tools
+            git
+            unzip
+            curl
+
+      - name: Clone OBS source (headers)
+        shell: msys2 {0}
+        run: |
+          git clone --depth 1 --branch "$OBS_VERSION" \
+            https://github.com/obsproject/obs-studio.git obs-src
+
+      - name: Create OBS import library
+        shell: msys2 {0}
+        run: |
+          # Download OBS portable release to get obs.dll
+          curl -fSL -o obs.zip \
+            "https://github.com/obsproject/obs-studio/releases/download/${OBS_VERSION}/OBS-Studio-${OBS_VERSION}-Windows-x64.zip"
+          unzip -q obs.zip -d obs-bin
+
+          # Find obs.dll and generate MinGW import library
+          OBS_DLL=$(find obs-bin -name "obs.dll" -print -quit)
+          if [ -z "$OBS_DLL" ]; then
+            echo "::error::obs.dll not found in release zip"
+            find obs-bin -type f -name "*.dll" | head -20
+            exit 1
+          fi
+
+          pushd "$(dirname "$OBS_DLL")"
+          gendef obs.dll
+          dlltool -d obs.def -l libobs.a -D obs.dll
+          popd
+
+          # Place where CMakeLists.txt expects it
+          mkdir -p obs-src/build/libobs
+          cp "$(dirname "$OBS_DLL")/libobs.a" obs-src/build/libobs/
+
+      - name: Configure
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DOBS_SOURCE_DIR="$(cygpath -m "$(pwd)/obs-src")"
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-irl-source-windows-x64
+          path: build/obs-irl-source.dll
