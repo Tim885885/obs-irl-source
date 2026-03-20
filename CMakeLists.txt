@@ -35,6 +35,10 @@ else()
         if(EXISTS "${OBS_SOURCE_DIR}/build/libobs")
             list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/build/libobs")
         endif()
+        # OBS threading.h includes <pthread.h> from w32-pthreads on Windows
+        if(WIN32 AND EXISTS "${OBS_SOURCE_DIR}/deps/w32-pthreads")
+            list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/deps/w32-pthreads")
+        endif()
         if(WIN32)
             list(APPEND _OBS_LIB_DIRS
                 "${OBS_SOURCE_DIR}/build/libobs/Release"
