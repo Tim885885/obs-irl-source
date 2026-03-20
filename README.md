@@ -46,6 +46,12 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 2. Copy to `C:\Program Files\obs-studio\obs-plugins\64bit\`
 3. Restart OBS
 
+### macOS (Apple Silicon)
+
+1. Download `obs-irl-source.so` from [Releases](../../releases) (macOS ARM64 build)
+2. Copy to `~/Library/Application Support/obs-studio/plugins/obs-irl-source/bin/`
+3. Restart OBS
+
 ### Linux
 
 1. Download `obs-irl-source.so` from [Releases](../../releases)
@@ -181,6 +187,7 @@ The plugin automatically tries GPU-accelerated decoding in this order:
 | Platform | APIs tried |
 |---|---|
 | Windows | D3D11VA (Intel/AMD/NVIDIA), CUDA (NVIDIA NVDEC) |
+| macOS | VideoToolbox (Apple Silicon & Intel) |
 | Linux | VAAPI (Intel/AMD), CUDA (NVIDIA) |
 
 Falls back to software decoding if no hardware decoder is available. Disable with the **Hardware Decode: Off** setting.

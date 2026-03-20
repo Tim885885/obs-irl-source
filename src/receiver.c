@@ -76,13 +76,15 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
  * Covers NVIDIA (CUDA), Intel (QSV/VAAPI), AMD (D3D11VA/VAAPI). */
 static const enum AVHWDeviceType hw_device_types[] = {
 #ifdef _WIN32
-	AV_HWDEVICE_TYPE_D3D11VA, /* AMD + Intel + NVIDIA on Windows */
-	AV_HWDEVICE_TYPE_CUDA,    /* NVIDIA NVDEC */
+	AV_HWDEVICE_TYPE_D3D11VA,     /* AMD + Intel + NVIDIA on Windows */
+	AV_HWDEVICE_TYPE_CUDA,        /* NVIDIA NVDEC */
+#elif defined(__APPLE__)
+	AV_HWDEVICE_TYPE_VIDEOTOOLBOX, /* Apple VideoToolbox */
 #else
-	AV_HWDEVICE_TYPE_VAAPI,   /* Intel + AMD on Linux */
-	AV_HWDEVICE_TYPE_CUDA,    /* NVIDIA on Linux */
+	AV_HWDEVICE_TYPE_VAAPI,       /* Intel + AMD on Linux */
+	AV_HWDEVICE_TYPE_CUDA,        /* NVIDIA on Linux */
 #endif
-	AV_HWDEVICE_TYPE_NONE,    /* sentinel */
+	AV_HWDEVICE_TYPE_NONE,        /* sentinel */
 };
 
 static bool is_hw_pix_fmt(enum AVPixelFormat fmt)
@@ -93,6 +95,7 @@ static bool is_hw_pix_fmt(enum AVPixelFormat fmt)
 	case AV_PIX_FMT_VAAPI:
 	case AV_PIX_FMT_QSV:
 	case AV_PIX_FMT_DXVA2_VLD:
+	case AV_PIX_FMT_VIDEOTOOLBOX:
 		return true;
 	default:
 		return false;
