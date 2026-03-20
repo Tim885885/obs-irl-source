@@ -133,6 +133,8 @@ void irl_source_destroy(void *data)
 		swr_free(&ctx->swr_ctx);
 	if (ctx->sws_ctx)
 		sws_freeContext(ctx->sws_ctx);
+	if (ctx->hw_device_ctx)
+		av_buffer_unref(&ctx->hw_device_ctx);
 
 	if (ctx->pre_kf_audio_data)
 		bfree(ctx->pre_kf_audio_data);

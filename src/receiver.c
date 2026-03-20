@@ -72,7 +72,35 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	}
 }
 
-static AVCodecContext *open_decoder(AVStream *stream)
+/* Hardware decode preference order — tries each until one works.
+ * Covers NVIDIA (CUDA), Intel (QSV/VAAPI), AMD (D3D11VA/VAAPI). */
+static const enum AVHWDeviceType hw_device_types[] = {
+#ifdef _WIN32
+	AV_HWDEVICE_TYPE_D3D11VA, /* AMD + Intel + NVIDIA on Windows */
+	AV_HWDEVICE_TYPE_CUDA,    /* NVIDIA NVDEC */
+#else
+	AV_HWDEVICE_TYPE_VAAPI,   /* Intel + AMD on Linux */
+	AV_HWDEVICE_TYPE_CUDA,    /* NVIDIA on Linux */
+#endif
+	AV_HWDEVICE_TYPE_NONE,    /* sentinel */
+};
+
+static bool is_hw_pix_fmt(enum AVPixelFormat fmt)
+{
+	switch (fmt) {
+	case AV_PIX_FMT_CUDA:
+	case AV_PIX_FMT_D3D11:
+	case AV_PIX_FMT_VAAPI:
+	case AV_PIX_FMT_QSV:
+	case AV_PIX_FMT_DXVA2_VLD:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
+				    bool try_hw)
 {
 	const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
 	if (!codec)
@@ -89,10 +117,44 @@ static AVCodecContext *open_decoder(AVStream *stream)
 
 	ctx->thread_count = 0; /* auto */
 
+	/* Try hardware decoding for video streams */
+	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+		for (int i = 0; hw_device_types[i] != AV_HWDEVICE_TYPE_NONE;
+		     i++) {
+			if (src->hw_device_ctx)
+				break;
+			int err = av_hwdevice_ctx_create(
+				&src->hw_device_ctx, hw_device_types[i], NULL,
+				NULL, 0);
+			if (err == 0) {
+				blog(LOG_INFO,
+				     "[irl-source] Using hardware device: %s",
+				     av_hwdevice_get_type_name(
+					     hw_device_types[i]));
+			} else {
+				src->hw_device_ctx = NULL;
+			}
+		}
+		if (src->hw_device_ctx)
+			ctx->hw_device_ctx =
+				av_buffer_ref(src->hw_device_ctx);
+	}
+
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
+		/* If hw decode failed, retry with software */
+		if (ctx->hw_device_ctx) {
+			avcodec_free_context(&ctx);
+			av_buffer_unref(&src->hw_device_ctx);
+			blog(LOG_INFO,
+			     "[irl-source] Hardware decode failed, falling back to software");
+			return open_decoder(src, stream, false);
+		}
 		avcodec_free_context(&ctx);
 		return NULL;
 	}
+
+	if (ctx->hw_device_ctx)
+		src->using_hw_decode = true;
 
 	return ctx;
 }
@@ -124,6 +186,7 @@ static void close_ffmpeg(struct irl_source *ctx)
 	}
 	ctx->audio_stream_idx = -1;
 	ctx->video_stream_idx = -1;
+	ctx->using_hw_decode = false;
 }
 
 /* Interrupt callback: returns 1 to abort blocking I/O when shutting down.
@@ -181,13 +244,16 @@ static bool open_stream(struct irl_source *ctx)
 		AVStream *s = ctx->fmt_ctx->streams[i];
 		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
 		    ctx->video_stream_idx < 0) {
-			ctx->video_dec_ctx = open_decoder(s);
+			bool try_hw = (ctx->config.hw_decode == 0);
+			ctx->video_dec_ctx =
+				open_decoder(ctx, s, try_hw);
 			if (ctx->video_dec_ctx) {
 				ctx->video_stream_idx = (int)i;
 				blog(LOG_INFO,
-				     "[irl-source] Video stream %u: %s %dx%d",
+				     "[irl-source] Video stream %u: %s %dx%d%s",
 				     i, avcodec_get_name(s->codecpar->codec_id),
-				     s->codecpar->width, s->codecpar->height);
+				     s->codecpar->width, s->codecpar->height,
+				     ctx->using_hw_decode ? " (NVDEC)" : " (SW)");
 			} else {
 				blog(LOG_WARNING,
 				     "[irl-source] Failed to open video decoder for stream %u (%s)",
@@ -195,7 +261,8 @@ static bool open_stream(struct irl_source *ctx)
 			}
 		} else if (s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
 			   ctx->audio_stream_idx < 0) {
-			ctx->audio_dec_ctx = open_decoder(s);
+			ctx->audio_dec_ctx =
+				open_decoder(ctx, s, false);
 			if (ctx->audio_dec_ctx) {
 				ctx->audio_stream_idx = (int)i;
 				blog(LOG_INFO,
@@ -446,6 +513,19 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 	}
 
+	/* Detect mid-stream resolution changes (adaptive bitrate, phone rotation) */
+	if (ctx->last_video_width && ctx->last_video_height &&
+	    (frame->width != ctx->last_video_width ||
+	     frame->height != ctx->last_video_height)) {
+		blog(LOG_INFO,
+		     "[irl-source] Resolution changed: %dx%d -> %dx%d",
+		     ctx->last_video_width, ctx->last_video_height,
+		     frame->width, frame->height);
+		ctx->video_ts_init = false; /* re-anchor timestamps */
+	}
+	ctx->last_video_width = frame->width;
+	ctx->last_video_height = frame->height;
+
 	irl_video_output_frame(ctx, frame);
 	ctx->total_video_frames++;
 	if (ctx->total_video_frames == 1)
@@ -591,6 +671,24 @@ void *irl_receiver_thread(void *data)
 		}
 
 		av_packet_unref(pkt);
+
+		/* Periodic stats logging (every 30 seconds) */
+		uint64_t now = os_gettime_ns();
+		if (now - ctx->last_stats_time > 30000000000ULL) {
+			ctx->last_stats_time = now;
+			blog(LOG_INFO,
+			     "[irl-source] Stats: video=%llu audio=%llu "
+			     "buf=%dms speed=%.3f pts_repairs=%llu "
+			     "silence=%llu res=%dx%d",
+			     (unsigned long long)ctx->total_video_frames,
+			     (unsigned long long)ctx->total_audio_frames,
+			     audio_buffer_fill_ms(&ctx->audio_buf),
+			     (double)ctx->current_speed,
+			     (unsigned long long)ctx->pts_repairs,
+			     (unsigned long long)ctx->silence_insertions,
+			     ctx->last_video_width,
+			     ctx->last_video_height);
+		}
 	}
 
 	close_ffmpeg(ctx);

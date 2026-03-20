@@ -125,6 +125,25 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 
 void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 {
+	/* Hardware-decoded frames (NVDEC/D3D11VA/VAAPI) need to be transferred to CPU */
+	AVFrame *sw_frame = NULL;
+	if (frame->hw_frames_ctx) {
+		sw_frame = av_frame_alloc();
+		if (!sw_frame)
+			return;
+		if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
+			av_frame_free(&sw_frame);
+			return;
+		}
+		sw_frame->pts = frame->pts;
+		sw_frame->colorspace = frame->colorspace;
+		sw_frame->color_range = frame->color_range;
+		sw_frame->color_trc = frame->color_trc;
+		sw_frame->color_primaries = frame->color_primaries;
+		sw_frame->flags = frame->flags;
+		frame = sw_frame;
+	}
+
 	enum video_format obs_fmt = avpixfmt_to_obs(frame->format);
 
 	/* If format not directly supported, convert to NV12 via swscale */
@@ -177,6 +196,8 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 		obs_source_output_video(ctx->source, &obs_frame);
 		free(nv12_data);
+		if (sw_frame)
+			av_frame_free(&sw_frame);
 		return;
 	}
 
@@ -194,4 +215,6 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 
 	obs_source_output_video(ctx->source, &obs_frame);
+	if (sw_frame)
+		av_frame_free(&sw_frame);
 }

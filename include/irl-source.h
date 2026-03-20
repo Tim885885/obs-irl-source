@@ -23,6 +23,7 @@
 #include <libswscale/swscale.h>
 #include <libavutil/opt.h>
 #include <libavutil/time.h>
+#include <libavutil/hwcontext.h>
 
 #include "audio-buffer.h"
 #include "pts-repair.h"
@@ -90,8 +91,10 @@ struct irl_source {
 	AVFormatContext *fmt_ctx;
 	AVCodecContext *audio_dec_ctx;
 	AVCodecContext *video_dec_ctx;
+	AVBufferRef *hw_device_ctx;
 	int audio_stream_idx;
 	int video_stream_idx;
+	bool using_hw_decode;
 
 	/* Resampler for adaptive speed */
 	SwrContext *swr_ctx;
@@ -132,11 +135,16 @@ struct irl_source {
 	bool fade_in_pending;
 	int fade_in_frames_remaining;
 
+	/* Resolution tracking (for mid-stream changes) */
+	int last_video_width;
+	int last_video_height;
+
 	/* Statistics */
 	uint64_t total_audio_frames;
 	uint64_t total_video_frames;
 	uint64_t pts_repairs;
 	uint64_t silence_insertions;
+	uint64_t last_stats_time;
 };
 
 /* ── Lifecycle (irl-source.c) ─────────────────────────────── */
