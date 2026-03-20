@@ -90,6 +90,95 @@ cmake -B build -G "Visual Studio 17 2022" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMP
 cmake --build build --config RelWithDebInfo
 ```
 
+## Stats overlay
+
+The plugin exposes live statistics via OBS's `proc_handler` API, which you can query from a Lua/Python script to build a real-time stats overlay.
+
+### Available stats
+
+| Field | Type | Description |
+|---|---|---|
+| `buffer_fill_ms` | int | Current audio jitter buffer fill level (ms) |
+| `current_speed` | float | Current adaptive playback speed (1.0 = normal) |
+| `reconnecting` | bool | Whether the source is currently reconnecting |
+| `total_audio_frames` | int | Total audio frames decoded since connection |
+| `total_video_frames` | int | Total video frames decoded since connection |
+| `pts_repairs` | int | Number of PTS discontinuities repaired |
+| `silence_insertions` | int | Number of silence insertions for gap filling |
+
+### Example Lua script (stats text overlay)
+
+Create a Text (GDI+) source called `IRL Stats`, then add this as a Lua script in OBS:
+
+```lua
+obs = obslua
+
+function script_description()
+    return "Updates a text source with IRL Source stats"
+end
+
+function script_update(settings)
+end
+
+function script_tick(seconds)
+    local source = obs.obs_get_source_by_name("IRL Source (irlserver.com)")
+    if not source then return end
+
+    local ph = obs.obs_source_get_proc_handler(source)
+    local cd = obs.calldata_create()
+    obs.proc_handler_call(ph, "get_stats", cd)
+
+    local buf_ms = obs.calldata_int(cd, "buffer_fill_ms")
+    local speed = obs.calldata_float(cd, "current_speed")
+    local reconnecting = obs.calldata_bool(cd, "reconnecting")
+    local video = obs.calldata_int(cd, "total_video_frames")
+    local audio = obs.calldata_int(cd, "total_audio_frames")
+    local repairs = obs.calldata_int(cd, "pts_repairs")
+
+    obs.calldata_destroy(cd)
+    obs.obs_source_release(source)
+
+    local status = reconnecting and "RECONNECTING" or "LIVE"
+    local text = string.format(
+        "Status: %s\nBuffer: %dms\nSpeed: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
+        status, buf_ms, speed, video, audio, repairs
+    )
+
+    local text_source = obs.obs_get_source_by_name("IRL Stats")
+    if text_source then
+        local settings = obs.obs_data_create()
+        obs.obs_data_set_string(settings, "text", text)
+        obs.obs_source_update(text_source, settings)
+        obs.obs_data_release(settings)
+        obs.obs_source_release(text_source)
+    end
+end
+```
+
+### OBS log stats
+
+The plugin also logs stats to the OBS log every 30 seconds:
+
+```
+[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 pts_repairs=0 silence=0 res=1920x1080
+```
+
+## Hardware decoding
+
+The plugin automatically tries GPU-accelerated decoding in this order:
+
+| Platform | APIs tried |
+|---|---|
+| Windows | D3D11VA (Intel/AMD/NVIDIA), CUDA (NVIDIA NVDEC) |
+| Linux | VAAPI (Intel/AMD), CUDA (NVIDIA) |
+
+Falls back to software decoding if no hardware decoder is available. Disable with the **Hardware Decode: Off** setting.
+
+The OBS log shows which decoder is active:
+```
+[irl-source] Video stream 0: hevc 1920x1080 (NVDEC)
+```
+
 ## License
 
 AGPL-3.0-or-later. Copyright (C) 2026 Thomas Lekanger.
