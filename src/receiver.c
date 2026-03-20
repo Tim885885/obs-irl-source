@@ -25,9 +25,11 @@
 static void apply_demuxer_options(AVDictionary **opts, const char *url,
 				  const char *extra)
 {
-	/* Live-stream tuned defaults */
-	av_dict_set(opts, "probesize", "500000", 0);   /* 500 KB */
-	av_dict_set(opts, "analyzeduration", "500000", 0); /* 0.5 s */
+	/* Live-stream tuned defaults.
+	 * HEVC/H.265 over SRT needs enough probe data to capture a keyframe
+	 * with SPS/PPS — 500KB/0.5s is too small for typical 2-4s GOPs. */
+	av_dict_set(opts, "probesize", "5000000", 0);   /* 5 MB */
+	av_dict_set(opts, "analyzeduration", "5000000", 0); /* 5 s */
 	av_dict_set(opts, "fflags", "+discardcorrupt+genpts", 0);
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
