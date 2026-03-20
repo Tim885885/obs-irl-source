@@ -425,8 +425,18 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 	/* Output audio to OBS when buffer has enough data */
 	if (audio_buffer_ready(&ctx->audio_buf)) {
+		/* Scale chunk size by speed: when speed > 1.0, read more
+		 * from the buffer per call to actually drain it.  The
+		 * samples_per_sec adjustment alone only changes OBS's
+		 * resampling, not our buffer drain rate. */
+		float speed = ctx->current_speed;
+		int chunk_ms = (int)(20.0f * speed);
+		if (chunk_ms < 10)
+			chunk_ms = 10;
+		if (chunk_ms > 40)
+			chunk_ms = 40;
 		size_t frame_bytes = audio_buffer_ms_to_bytes(
-			&ctx->audio_buf, 20); /* ~20ms chunks */
+			&ctx->audio_buf, chunk_ms);
 		uint8_t *out_buf = malloc(frame_bytes);
 		if (!out_buf)
 			return;
