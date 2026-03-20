@@ -148,7 +148,7 @@ jobs:
             build/RelWithDebInfo/w32-pthreads.dll
 
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       OBS_VERSION: "32.1.0"
     steps:
