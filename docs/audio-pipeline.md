@@ -64,6 +64,8 @@ OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Liv
 
 The plugin anchors audio timestamps to the system clock on first output, then advances a running counter by the exact sample count output. This keeps timestamps in OBS's domain while preserving smooth inter-chunk timing. Video uses the same approach (rebasing stream PTS via `video_sys_base` / `video_pts_base`).
 
+If the running PTS drifts more than 500ms from the system clock — which can happen after a decode stall where no audio is output but wall-clock time keeps advancing — the plugin re-anchors the PTS to prevent OBS from detecting lag and restarting the audio source.
+
 ## What this means in practice
 
 | Scenario | Media Source | IRL Source |
