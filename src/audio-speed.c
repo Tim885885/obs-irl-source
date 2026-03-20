@@ -18,8 +18,13 @@
 
 #include "../include/irl-source.h"
 
-/* Speed ramp smoothing time in microseconds (100ms) */
-#define SPEED_RAMP_US 100000
+/* Speed ramp smoothing time in microseconds (500ms).
+ * Longer ramp = smoother speed changes = fewer resampling artifacts. */
+#define SPEED_RAMP_US 500000
+
+/* Dead zone around target (±ms) where speed stays at 1.0.
+ * Prevents constant oscillation that causes OBS resampler pops. */
+#define SPEED_DEAD_ZONE_MS 15
 
 float irl_speed_calculate(struct irl_source *ctx)
 {
@@ -30,20 +35,25 @@ float irl_speed_calculate(struct irl_source *ctx)
 	int target_ms = ctx->config.buffer_target_ms;
 	float target_speed = 1.0f;
 
-	if (fill_ms > target_ms) {
-		/* Buffer above target — play faster to drain.
+	if (fill_ms > target_ms + SPEED_DEAD_ZONE_MS) {
+		/* Buffer above dead zone — play faster to drain.
 		 * Scale proportionally: at max_ms, use full speed_max. */
-		float excess = (float)(fill_ms - target_ms) /
-			       (float)(ctx->config.buffer_max_ms - target_ms);
+		float excess = (float)(fill_ms - target_ms -
+				       SPEED_DEAD_ZONE_MS) /
+			       (float)(ctx->config.buffer_max_ms - target_ms -
+				       SPEED_DEAD_ZONE_MS);
 		if (excess > 1.0f)
 			excess = 1.0f;
 		target_speed =
 			1.0f + excess * (ctx->config.speed_max - 1.0f);
-	} else if (fill_ms < target_ms) {
-		/* Buffer below target — play slower to let it fill.
+	} else if (fill_ms < target_ms - SPEED_DEAD_ZONE_MS) {
+		/* Buffer below dead zone — play slower to let it fill.
 		 * Scale proportionally: at 0ms, use full speed_min. */
-		float deficit = (float)(target_ms - fill_ms) /
-				(float)target_ms;
+		float deficit = (float)(target_ms - SPEED_DEAD_ZONE_MS -
+					fill_ms) /
+				(float)(target_ms - SPEED_DEAD_ZONE_MS);
+		if (deficit > 1.0f)
+			deficit = 1.0f;
 		target_speed =
 			1.0f - deficit * (1.0f - ctx->config.speed_min);
 	}
