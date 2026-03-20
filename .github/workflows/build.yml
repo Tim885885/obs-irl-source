@@ -118,22 +118,13 @@ jobs:
         shell: cmd
         run: cmake --build obs-src/build --config Release --target libobs --target w32-pthreads
 
-      - name: Download FFmpeg (shared, with import libs)
-        shell: pwsh
-        run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip" `
-            -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
-          Move-Item ffmpeg-extract/ffmpeg-master-latest-win64-gpl-shared ffmpeg
-
       - name: Configure
         shell: cmd
         run: >
           cmake -B build
           -G "Visual Studio 17 2022" -A x64
           -DOBS_SOURCE_DIR=%CD%\obs-src
-          -DFFMPEG_DIR=%CD%\ffmpeg
+          -DFFMPEG_DIR=%CD%\obs-deps
 
       - name: Build
         shell: cmd
