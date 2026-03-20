@@ -181,13 +181,13 @@ jobs:
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: >
           cmake -S obs-src -B obs-src/build
-          -DCMAKE_BUILD_TYPE=Release
+          -G Xcode
           -DENABLE_UI=OFF
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
       - name: Build OBS (libobs only)
         if: steps.cache-obs.outputs.cache-hit != 'true'
-        run: cmake --build obs-src/build --target libobs --parallel
+        run: cmake --build obs-src/build --config Release --target libobs --parallel
 
       - name: Configure
         run: >
