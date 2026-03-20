@@ -12,7 +12,7 @@
 
 #pragma once
 
-#define OBS_IRL_SOURCE_VERSION "0.1.0"
+#define OBS_IRL_SOURCE_VERSION "0.2.0"
 
 #include <obs-module.h>
 #include <util/platform.h>
