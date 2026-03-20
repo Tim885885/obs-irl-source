@@ -28,6 +28,8 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **Network buffer** | Configurable but not optimized for live | 2MB default transport buffer tuned for SRT live streaming |
 | **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, and silence insertions via `proc_handler` for monitoring overlays |
 
+For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and timestamp handling work together, see [Audio pipeline](docs/audio-pipeline.md).
+
 ## Features
 
 - **Protocol agnostic** — SRT, RTMP, RIST, UDP, TCP, HTTP, or anything FFmpeg can open
