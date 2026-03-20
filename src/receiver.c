@@ -328,6 +328,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
+		ctx->audio_output_pts_init = false;
 		ctx->first_keyframe_received = false;
 		ctx->video_ts_init = false;
 		ctx->audio_buffering_pre_keyframe = false;
@@ -461,25 +462,48 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				}
 			}
 
+			/* Initialise running output PTS on first output.
+			 * corrected_pts is from the frame just written,
+			 * but the buffer holds older data ahead of it.
+			 * Estimate the PTS of the oldest buffered sample. */
+			if (!ctx->audio_output_pts_init) {
+				int64_t cur_ns =
+					corrected_pts * 1000000000LL *
+					ctx->pts_state.tb_num /
+					ctx->pts_state.tb_den;
+				int fill_ms =
+					audio_buffer_fill_ms(&ctx->audio_buf);
+				ctx->audio_output_pts_ns =
+					cur_ns -
+					(int64_t)fill_ms * 1000000LL;
+				ctx->audio_output_pts_init = true;
+			}
+
+			uint32_t frames_out =
+				(uint32_t)(got /
+					   (out_channels * bytes_per_sample));
+
 			struct obs_source_audio obs_audio = {0};
 			obs_audio.data[0] = out_buf;
-			obs_audio.frames =
-				(uint32_t)(got / (out_channels * bytes_per_sample));
+			obs_audio.frames = frames_out;
 			obs_audio.format = AUDIO_FORMAT_FLOAT;
 			obs_audio.speakers =
 				(enum speaker_layout)out_channels;
 			obs_audio.timestamp =
-				(uint64_t)(corrected_pts *
-					   1000000000LL *
-					   ctx->pts_state.tb_num /
-					   ctx->pts_state.tb_den);
+				(uint64_t)ctx->audio_output_pts_ns;
+			obs_audio.samples_per_sec = (uint32_t)out_rate;
 
-			/* Adaptive speed adjustment */
+			/* Adaptive speed: must run after samples_per_sec
+			 * is set so it can scale the value. */
 			if (ctx->config.adaptive_speed)
 				irl_speed_apply(ctx, &obs_audio);
 
-			obs_audio.samples_per_sec = (uint32_t)out_rate;
 			obs_source_output_audio(ctx->source, &obs_audio);
+
+			/* Advance running PTS by actual samples output */
+			ctx->audio_output_pts_ns +=
+				(int64_t)frames_out * 1000000000LL /
+				out_rate;
 			ctx->total_audio_frames++;
 		}
 
@@ -630,6 +654,7 @@ void *irl_receiver_thread(void *data)
 			close_ffmpeg(ctx);
 			pts_repair_reset(&ctx->pts_state);
 			audio_buffer_flush(&ctx->audio_buf);
+			ctx->audio_output_pts_init = false;
 			ctx->fade_in_pending = true;
 			continue;
 		}

@@ -162,6 +162,7 @@ void irl_source_update(void *data, obs_data_t *settings)
 		audio_buffer_flush(&ctx->audio_buf);
 		pts_repair_reset(&ctx->pts_state);
 		ctx->current_speed = 1.0f;
+		ctx->audio_output_pts_init = false;
 
 		ctx->thread_active = true;
 		pthread_create(&ctx->receiver_thread, NULL,

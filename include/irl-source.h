@@ -123,6 +123,13 @@ struct irl_source {
 	float current_speed;
 	uint64_t last_speed_adjust_time;
 
+	/* Running output PTS: tracks the actual playback position in the
+	 * jitter buffer rather than using the latest decoded frame's PTS.
+	 * Without this, the buffer decouples data from timestamps, causing
+	 * OBS to see gaps and produce garbled/robotic audio. */
+	int64_t audio_output_pts_ns;
+	bool audio_output_pts_init;
+
 	/* Keyframe gate */
 	bool first_keyframe_received;
 	bool audio_buffering_pre_keyframe;
