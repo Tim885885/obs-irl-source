@@ -8,36 +8,52 @@ cmake_minimum_required(VERSION 3.16)
 project(obs-irl-source VERSION 0.1.0 LANGUAGES C)
 
 # ── Find OBS ─────────────────────────────────────────────────
-# Point OBS_SOURCE_DIR to a local obs-studio checkout, or install
-# the OBS headers system-wide.
-if(NOT DEFINED OBS_SOURCE_DIR AND DEFINED ENV{OBS_SOURCE_DIR})
-    set(OBS_SOURCE_DIR "$ENV{OBS_SOURCE_DIR}")
-endif()
+# Try find_package first (works with OBS build tree, cmake install, or
+# system libobs-dev which ships CMake config files).
+find_package(libobs QUIET)
 
-set(_OBS_INCLUDE_DIRS "")
-set(_OBS_LIB_DIRS "")
-
-if(OBS_SOURCE_DIR)
-    list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/libobs")
-    if(WIN32)
-        # MSVC builds place output under build/<Config>/
-        list(APPEND _OBS_LIB_DIRS
-            "${OBS_SOURCE_DIR}/build/libobs/Release"
-            "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
-            "${OBS_SOURCE_DIR}/build/libobs/Debug"
-            "${OBS_SOURCE_DIR}/build/libobs"
-        )
-    else()
-        list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
-    endif()
+if(libobs_FOUND)
+    message(STATUS "Found libobs via find_package")
+    set(_OBS_USE_FIND_PACKAGE ON)
 else()
-    # Try system-installed OBS (e.g. libobs-dev on Ubuntu)
-    find_path(_SYSTEM_OBS_INCLUDE obs-module.h
-        PATHS /usr/include/obs /usr/local/include/obs
-        NO_DEFAULT_PATH
-    )
-    if(_SYSTEM_OBS_INCLUDE)
-        list(APPEND _OBS_INCLUDE_DIRS "${_SYSTEM_OBS_INCLUDE}")
+    set(_OBS_USE_FIND_PACKAGE OFF)
+
+    # Fall back to manual OBS_SOURCE_DIR approach.
+    if(NOT DEFINED OBS_SOURCE_DIR AND DEFINED ENV{OBS_SOURCE_DIR})
+        set(OBS_SOURCE_DIR "$ENV{OBS_SOURCE_DIR}")
+    endif()
+
+    set(_OBS_INCLUDE_DIRS "")
+    set(_OBS_LIB_DIRS "")
+
+    if(OBS_SOURCE_DIR)
+        list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/libobs")
+        # Generated headers from OBS build (obsconfig.h, libobs_EXPORT.h)
+        if(EXISTS "${OBS_SOURCE_DIR}/build/config")
+            list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/build/config")
+        endif()
+        if(EXISTS "${OBS_SOURCE_DIR}/build/libobs")
+            list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/build/libobs")
+        endif()
+        if(WIN32)
+            list(APPEND _OBS_LIB_DIRS
+                "${OBS_SOURCE_DIR}/build/libobs/Release"
+                "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
+                "${OBS_SOURCE_DIR}/build/libobs/Debug"
+                "${OBS_SOURCE_DIR}/build/libobs"
+            )
+        else()
+            list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
+        endif()
+    else()
+        # Try system-installed OBS (e.g. libobs-dev on Ubuntu)
+        find_path(_SYSTEM_OBS_INCLUDE obs-module.h
+            PATHS /usr/include/obs /usr/local/include/obs
+            NO_DEFAULT_PATH
+        )
+        if(_SYSTEM_OBS_INCLUDE)
+            list(APPEND _OBS_INCLUDE_DIRS "${_SYSTEM_OBS_INCLUDE}")
+        endif()
     endif()
 endif()
 
@@ -148,8 +164,15 @@ add_library(obs-irl-source MODULE ${PLUGIN_SOURCES})
 # ── Include directories ──────────────────────────────────────
 target_include_directories(obs-irl-source PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${_OBS_INCLUDE_DIRS}
 )
+
+if(NOT _OBS_USE_FIND_PACKAGE AND _OBS_INCLUDE_DIRS)
+    target_include_directories(obs-irl-source PRIVATE ${_OBS_INCLUDE_DIRS})
+    # OBS headers check HAVE_OBSCONFIG_H to include the generated config
+    if(OBS_SOURCE_DIR AND EXISTS "${OBS_SOURCE_DIR}/build/config/obsconfig.h")
+        target_compile_definitions(obs-irl-source PRIVATE HAVE_OBSCONFIG_H)
+    endif()
+endif()
 
 if(LIBAV_FOUND)
     target_include_directories(obs-irl-source PRIVATE ${LIBAV_INCLUDE_DIRS})
@@ -158,15 +181,21 @@ elseif(_FFMPEG_MANUAL_INCLUDE_DIRS)
 endif()
 
 # ── Link directories (OBS) ───────────────────────────────────
-if(_OBS_LIB_DIRS)
+if(NOT _OBS_USE_FIND_PACKAGE AND _OBS_LIB_DIRS)
     target_link_directories(obs-irl-source PRIVATE ${_OBS_LIB_DIRS})
 endif()
 
 # ── Link libraries ───────────────────────────────────────────
-if(LIBAV_FOUND)
-    target_link_libraries(obs-irl-source PRIVATE obs PkgConfig::LIBAV)
+if(_OBS_USE_FIND_PACKAGE)
+    set(_OBS_LINK_TARGET OBS::libobs)
 else()
-    target_link_libraries(obs-irl-source PRIVATE obs ${_FFMPEG_MANUAL_LIBS})
+    set(_OBS_LINK_TARGET obs)
+endif()
+
+if(LIBAV_FOUND)
+    target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} PkgConfig::LIBAV)
+else()
+    target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} ${_FFMPEG_MANUAL_LIBS})
 endif()
 
 if(NOT WIN32)
@@ -188,12 +217,12 @@ else()
     )
 endif()
 
+# ── Output name ──────────────────────────────────────────────
+# Remove "lib" prefix so output is obs-irl-source.so/.dll everywhere.
+set_target_properties(obs-irl-source PROPERTIES PREFIX "")
+
 # ── Windows-specific ─────────────────────────────────────────
 if(WIN32)
-    # OBS on Windows expects plugins as .dll (MODULE already does this)
-    # Ensure we don't get a "lib" prefix on MinGW
-    set_target_properties(obs-irl-source PROPERTIES PREFIX "")
-
     # Copy FFmpeg DLLs next to the plugin for convenience
     if(FFMPEG_DIR AND EXISTS "${FFMPEG_DIR}/bin")
         add_custom_command(TARGET obs-irl-source POST_BUILD
@@ -223,7 +252,11 @@ message(STATUS "")
 message(STATUS "obs-irl-source v${PROJECT_VERSION}")
 message(STATUS "  OS:        ${CMAKE_SYSTEM_NAME}")
 message(STATUS "  Compiler:  ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
-message(STATUS "  OBS dir:   ${OBS_SOURCE_DIR}")
+if(_OBS_USE_FIND_PACKAGE)
+    message(STATUS "  OBS:       find_package (libobs)")
+else()
+    message(STATUS "  OBS dir:   ${OBS_SOURCE_DIR}")
+endif()
 if(LIBAV_FOUND)
     message(STATUS "  FFmpeg:    pkg-config (${LIBAV_VERSION})")
 else()
