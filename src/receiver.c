@@ -456,15 +456,22 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			}
 		}
 
-		/* Initialise running output PTS on first output.
-		 * Anchor to the system clock (like video does) so
-		 * timestamps stay in OBS's clock domain.  Raw stream
-		 * PTS can be hours into an epoch that OBS interprets
-		 * as massive lag. */
+		/* Anchor timestamps to the system clock so they stay
+		 * in OBS's clock domain.  Re-anchor if the running
+		 * PTS drifts too far behind (e.g. after a decode
+		 * stall where no audio was output but time passed). */
 		if (!ctx->audio_output_pts_init) {
 			ctx->audio_output_pts_ns =
 				(int64_t)os_gettime_ns();
 			ctx->audio_output_pts_init = true;
+		} else {
+			int64_t now = (int64_t)os_gettime_ns();
+			int64_t drift = now - ctx->audio_output_pts_ns;
+			if (drift > 500000000LL || drift < -500000000LL) {
+				/* PTS drifted >500ms from system clock,
+				 * re-anchor to prevent OBS lag detection */
+				ctx->audio_output_pts_ns = now;
+			}
 		}
 
 		uint32_t frames_out =
