@@ -30,15 +30,18 @@ float irl_speed_calculate(struct irl_source *ctx)
 	int fill_ms = audio_buffer_fill_ms(&ctx->audio_buf);
 	float target_speed = 1.0f;
 
-	if (fill_ms < ctx->config.buffer_min_ms) {
-		/* Buffer low — speed up to catch up */
+	if (fill_ms > ctx->config.buffer_max_ms) {
+		/* Buffer overfull — play faster to drain.
+		 * Higher samples_per_sec → OBS resamples down → faster playback. */
+		float excess = (float)(fill_ms - ctx->config.buffer_target_ms) /
+			       (float)ctx->config.buffer_target_ms;
+		target_speed = 1.0f + excess * (ctx->config.speed_max - 1.0f);
+	} else if (fill_ms < ctx->config.buffer_min_ms) {
+		/* Buffer too low — play slower to let it fill.
+		 * Lower samples_per_sec → OBS resamples up → slower playback. */
 		float deficit =
 			1.0f - (float)fill_ms / (float)ctx->config.buffer_target_ms;
-		target_speed = 1.0f + deficit * (ctx->config.speed_max - 1.0f);
-	} else if (fill_ms > ctx->config.buffer_max_ms) {
-		/* Buffer high — slow down to drain */
-		float excess = ratio - 1.0f;
-		target_speed = 1.0f - excess * (1.0f - ctx->config.speed_min);
+		target_speed = 1.0f - deficit * (1.0f - ctx->config.speed_min);
 	}
 
 	/* Clamp to configured range */
