@@ -100,6 +100,27 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 					       obs_frame->color_range_max);
 }
 
+/* ── Timestamp sync ───────────────────────────────────────── */
+
+/* Convert stream PTS to OBS nanosecond timestamp, anchored to the
+ * system clock at the time of the first frame.  This preserves the
+ * inter-frame timing from the stream (smooth playback) while keeping
+ * timestamps in OBS's clock domain. */
+static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
+{
+	AVStream *vs = ctx->fmt_ctx->streams[ctx->video_stream_idx];
+	int64_t pts_ns = (int64_t)(frame->pts * 1000000000LL *
+				   vs->time_base.num / vs->time_base.den);
+
+	if (!ctx->video_ts_init) {
+		ctx->video_sys_base = os_gettime_ns();
+		ctx->video_pts_base = pts_ns;
+		ctx->video_ts_init = true;
+	}
+
+	return ctx->video_sys_base + (uint64_t)(pts_ns - ctx->video_pts_base);
+}
+
 /* ── Video output ─────────────────────────────────────────── */
 
 void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
@@ -151,7 +172,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_frame.data[1] = dst_planes[1];
 		obs_frame.linesize[0] = dst_strides[0];
 		obs_frame.linesize[1] = dst_strides[1];
-		obs_frame.timestamp = os_gettime_ns();
+		obs_frame.timestamp = frame_timestamp(ctx, frame);
 		setup_color_params(&obs_frame, frame, VIDEO_FORMAT_NV12);
 
 		obs_source_output_video(ctx->source, &obs_frame);
@@ -164,7 +185,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	obs_frame.width = frame->width;
 	obs_frame.height = frame->height;
 	obs_frame.format = obs_fmt;
-	obs_frame.timestamp = os_gettime_ns();
+	obs_frame.timestamp = frame_timestamp(ctx, frame);
 	setup_color_params(&obs_frame, frame, obs_fmt);
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {

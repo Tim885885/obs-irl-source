@@ -102,6 +102,11 @@ struct irl_source {
 	int sws_src_h;
 	enum AVPixelFormat sws_src_fmt;
 
+	/* Video timestamp sync (anchors stream PTS to system clock) */
+	bool video_ts_init;
+	uint64_t video_sys_base;  /* os_gettime_ns() at first frame */
+	int64_t video_pts_base;   /* stream PTS at first frame (in ns) */
+
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
 

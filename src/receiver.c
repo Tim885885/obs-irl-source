@@ -257,6 +257,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
 		ctx->first_keyframe_received = false;
+		ctx->video_ts_init = false;
 		ctx->audio_buffering_pre_keyframe = false;
 		ctx->pre_kf_audio_size = 0;
 	}
@@ -465,6 +466,7 @@ void *irl_receiver_thread(void *data)
 			}
 			/* Reset state for new connection */
 			ctx->first_keyframe_received = false;
+			ctx->video_ts_init = false;
 			ctx->pre_kf_audio_size = 0;
 		}
 
