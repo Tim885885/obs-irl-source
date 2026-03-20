@@ -87,20 +87,6 @@ static const enum AVHWDeviceType hw_device_types[] = {
 	AV_HWDEVICE_TYPE_NONE,        /* sentinel */
 };
 
-static bool is_hw_pix_fmt(enum AVPixelFormat fmt)
-{
-	switch (fmt) {
-	case AV_PIX_FMT_CUDA:
-	case AV_PIX_FMT_D3D11:
-	case AV_PIX_FMT_VAAPI:
-	case AV_PIX_FMT_QSV:
-	case AV_PIX_FMT_DXVA2_VLD:
-	case AV_PIX_FMT_VIDEOTOOLBOX:
-		return true;
-	default:
-		return false;
-	}
-}
 
 static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 				    bool try_hw)

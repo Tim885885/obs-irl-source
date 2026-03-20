@@ -50,7 +50,12 @@ else()
                 "${OBS_SOURCE_DIR}/build/deps/w32-pthreads/Debug"
             )
         else()
-            list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
+            list(APPEND _OBS_LIB_DIRS
+                "${OBS_SOURCE_DIR}/build/libobs"
+                "${OBS_SOURCE_DIR}/build/libobs/Release"
+                "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
+                "${OBS_SOURCE_DIR}/build/libobs/Debug"
+            )
         endif()
     else()
         # Try system-installed OBS (e.g. libobs-dev on Ubuntu)
