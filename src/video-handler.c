@@ -22,13 +22,43 @@ bool irl_video_is_keyframe(const AVFrame *frame)
 	return (frame->flags & AV_FRAME_FLAG_KEY) != 0;
 }
 
+/* ── Color space helpers ──────────────────────────────────── */
+
+static enum video_colorspace
+convert_color_space(enum AVColorSpace cs, enum AVColorTransferCharacteristic trc,
+		    enum AVColorPrimaries prm)
+{
+	switch (cs) {
+	case AVCOL_SPC_BT709:
+		return VIDEO_CS_709;
+	case AVCOL_SPC_SMPTE170M:
+	case AVCOL_SPC_BT470BG:
+		return VIDEO_CS_601;
+	case AVCOL_SPC_BT2020_NCL:
+	case AVCOL_SPC_BT2020_CL:
+		if (trc == AVCOL_TRC_ARIB_STD_B67)
+			return VIDEO_CS_2100_HLG;
+		return VIDEO_CS_2100_PQ;
+	default:
+		break;
+	}
+	(void)prm;
+	return VIDEO_CS_709;
+}
+
+static enum video_range_type convert_color_range(enum AVColorRange range)
+{
+	return range == AVCOL_RANGE_JPEG ? VIDEO_RANGE_FULL
+					 : VIDEO_RANGE_PARTIAL;
+}
+
 /* ── Video output ─────────────────────────────────────────── */
 
 void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 {
 	/* Always convert to NV12 via swscale.  OBS's render pipeline uses
-	 * NV12 textures natively, and passing other planar formats directly
-	 * (e.g. I420) can result in frames not being displayed. */
+	 * NV12 textures natively, and this avoids issues with direct plane
+	 * passthrough for other planar formats. */
 	if (!ctx->sws_ctx || ctx->sws_src_w != frame->width ||
 	    ctx->sws_src_h != frame->height ||
 	    ctx->sws_src_fmt != frame->format) {
@@ -65,6 +95,9 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		  frame->linesize, 0, frame->height, dst_planes,
 		  dst_strides);
 
+	/* Build OBS frame with proper color space parameters.
+	 * Without color_matrix/color_range_min/color_range_max, OBS
+	 * cannot convert YUV→RGB and the frame will not display. */
 	struct obs_source_frame obs_frame = {0};
 	obs_frame.width = frame->width;
 	obs_frame.height = frame->height;
@@ -74,6 +107,17 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	obs_frame.linesize[0] = dst_strides[0];
 	obs_frame.linesize[1] = dst_strides[1];
 	obs_frame.timestamp = os_gettime_ns();
+
+	enum video_colorspace cs = convert_color_space(
+		frame->colorspace, frame->color_trc, frame->color_primaries);
+	enum video_range_type range = convert_color_range(frame->color_range);
+	obs_frame.full_range = (range == VIDEO_RANGE_FULL);
+
+	video_format_get_parameters_for_format(cs, range,
+					       VIDEO_FORMAT_NV12,
+					       obs_frame.color_matrix,
+					       obs_frame.color_range_min,
+					       obs_frame.color_range_max);
 
 	obs_source_output_video(ctx->source, &obs_frame);
 	free(nv12_data);
