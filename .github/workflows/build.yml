@@ -139,8 +139,19 @@ jobs:
         shell: cmd
         run: cmake --build build --config RelWithDebInfo --parallel
 
+      - name: Collect runtime dependencies
+        shell: pwsh
+        run: |
+          # Copy w32-pthreads.dll next to the plugin
+          $w32dll = Get-ChildItem -Path obs-src/build/deps/w32-pthreads -Filter "w32-pthreads.dll" -Recurse | Select-Object -First 1
+          if ($w32dll) {
+            Copy-Item $w32dll.FullName build/RelWithDebInfo/
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: obs-irl-source-windows-x64
-          path: build/RelWithDebInfo/obs-irl-source.dll
+          path: |
+            build/RelWithDebInfo/obs-irl-source.dll
+            build/RelWithDebInfo/w32-pthreads.dll
