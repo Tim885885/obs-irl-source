@@ -36,7 +36,9 @@ Even with the drain loop, the buffer level drifts over time due to clock differe
 
 When the buffer is above target, the plugin reports a slightly higher `samples_per_sec` to OBS (e.g., 50400 instead of 48000). OBS's audio subsystem resamples accordingly, effectively playing audio ~5% faster. When the buffer drops below target, it reports a lower rate to slow down.
 
-The adjustment range is 0.95x to 1.05x. Changes below 5% are inaudible — no pitch-shifting library is needed. An exponential moving average (100ms ramp) smooths the transitions so the rate doesn't jump between chunks.
+A ±15ms dead zone around the target prevents oscillation. If the buffer is between 65ms and 95ms (with the default 80ms target), speed stays at 1.0 — no resampling, no artifacts. Speed correction only kicks in outside this range, scaling proportionally toward the configured min/max (0.95x/1.05x).
+
+The adjustment range is 0.95x to 1.05x. Changes below 5% are inaudible — no pitch-shifting library is needed. An exponential moving average (500ms ramp) smooths the transitions so the rate doesn't jump between chunks.
 
 The result: the buffer stays at 80ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
 
@@ -62,9 +64,15 @@ When the stream drops, the last audio chunk in the buffer gets a 50ms linear fad
 
 OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Live streams use MPEG-TS PTS values that can be hours or days into an arbitrary epoch — passing these raw causes OBS to report "audio is lagging by millions of ms" and restart the source repeatedly.
 
-The plugin anchors audio timestamps to the system clock on first output, then advances a running counter by the exact sample count output. This keeps timestamps in OBS's domain while preserving smooth inter-chunk timing. Video uses the same approach (rebasing stream PTS via `video_sys_base` / `video_pts_base`).
+The plugin uses a hybrid approach — a soft PLL (phase-locked loop):
 
-If the running PTS drifts more than 500ms from the system clock — which can happen after a decode stall where no audio is output but wall-clock time keeps advancing — the plugin re-anchors the PTS to prevent OBS from detecting lag and restarting the audio source.
+1. **Running PTS** — a counter anchored to the system clock on first output, then advanced by the exact sample count of each output chunk. This gives perfectly smooth inter-chunk timing with no jitter from network delivery variation.
+
+2. **Soft correction** — each output nudges the running PTS 1% toward where the system clock says it should be (`os_gettime_ns()` minus buffer fill time). This prevents drift without introducing the jitter that pure clock-based timestamps would have.
+
+A pure running PTS drifts during decode stalls (no output = PTS freezes, but wall-clock time keeps advancing). A pure system clock timestamp jitters with every network hiccup. The PLL gives the smoothness of the running counter with the accuracy of the system clock — a 100ms drift corrects itself within about 4 seconds.
+
+Video uses a similar rebasing approach (anchoring stream PTS to the system clock via `video_sys_base` / `video_pts_base`).
 
 ## What this means in practice
 
