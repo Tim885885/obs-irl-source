@@ -33,7 +33,7 @@ struct irl_source;
 
 /* ── Configuration defaults ───────────────────────────────── */
 
-#define IRL_DEFAULT_RECONNECT_DELAY 5
+#define IRL_DEFAULT_RECONNECT_DELAY 2
 #define IRL_DEFAULT_BUFFER_TARGET_MS 80
 #define IRL_DEFAULT_BUFFER_MIN_MS 40
 #define IRL_DEFAULT_BUFFER_MAX_MS 200

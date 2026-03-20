@@ -542,6 +542,13 @@ void *irl_receiver_thread(void *data)
 		if (pkt->stream_index == ctx->audio_stream_idx &&
 		    ctx->audio_dec_ctx) {
 			ret = avcodec_send_packet(ctx->audio_dec_ctx, pkt);
+			if (ret < 0 && ret != AVERROR(EAGAIN) &&
+			    ret != AVERROR_EOF) {
+				/* Decoder in bad state (bitrate starvation,
+				 * corrupt packets).  Flush to recover instead
+				 * of letting audio break permanently. */
+				avcodec_flush_buffers(ctx->audio_dec_ctx);
+			}
 			while (ret >= 0) {
 				ret = avcodec_receive_frame(ctx->audio_dec_ctx,
 							   frame);
@@ -553,6 +560,10 @@ void *irl_receiver_thread(void *data)
 		} else if (pkt->stream_index == ctx->video_stream_idx &&
 			   ctx->video_dec_ctx) {
 			ret = avcodec_send_packet(ctx->video_dec_ctx, pkt);
+			if (ret < 0 && ret != AVERROR(EAGAIN) &&
+			    ret != AVERROR_EOF) {
+				avcodec_flush_buffers(ctx->video_dec_ctx);
+			}
 			while (ret >= 0) {
 				ret = avcodec_receive_frame(ctx->video_dec_ctx,
 							   frame);
