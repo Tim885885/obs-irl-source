@@ -123,10 +123,13 @@ static bool open_stream(struct irl_source *ctx)
 	AVDictionary *opts = NULL;
 	apply_demuxer_options(&opts, ctx->config.url, ctx->config.ffmpeg_options);
 
+	blog(LOG_INFO, "[irl-source] Connecting to: %s", ctx->config.url);
+
 	/* Pre-allocate format context to install the interrupt callback
 	 * before avformat_open_input performs blocking I/O. */
 	ctx->fmt_ctx = avformat_alloc_context();
 	if (!ctx->fmt_ctx) {
+		blog(LOG_ERROR, "[irl-source] Failed to allocate format context");
 		av_dict_free(&opts);
 		return false;
 	}
@@ -136,10 +139,19 @@ static bool open_stream(struct irl_source *ctx)
 	int ret = avformat_open_input(&ctx->fmt_ctx, ctx->config.url, NULL,
 				      &opts);
 	av_dict_free(&opts);
-	if (ret < 0)
+	if (ret < 0) {
+		char errbuf[AV_ERROR_MAX_STRING_SIZE];
+		av_strerror(ret, errbuf, sizeof(errbuf));
+		blog(LOG_WARNING, "[irl-source] Failed to open input: %s",
+		     errbuf);
 		return false;
+	}
+
+	blog(LOG_INFO, "[irl-source] Input opened, probing streams...");
 
 	if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) {
+		blog(LOG_WARNING,
+		     "[irl-source] Failed to find stream info");
 		avformat_close_input(&ctx->fmt_ctx);
 		return false;
 	}
@@ -152,20 +164,44 @@ static bool open_stream(struct irl_source *ctx)
 		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
 		    ctx->video_stream_idx < 0) {
 			ctx->video_dec_ctx = open_decoder(s);
-			if (ctx->video_dec_ctx)
+			if (ctx->video_dec_ctx) {
 				ctx->video_stream_idx = (int)i;
+				blog(LOG_INFO,
+				     "[irl-source] Video stream %u: %s %dx%d",
+				     i, avcodec_get_name(s->codecpar->codec_id),
+				     s->codecpar->width, s->codecpar->height);
+			} else {
+				blog(LOG_WARNING,
+				     "[irl-source] Failed to open video decoder for stream %u (%s)",
+				     i, avcodec_get_name(s->codecpar->codec_id));
+			}
 		} else if (s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
 			   ctx->audio_stream_idx < 0) {
 			ctx->audio_dec_ctx = open_decoder(s);
-			if (ctx->audio_dec_ctx)
+			if (ctx->audio_dec_ctx) {
 				ctx->audio_stream_idx = (int)i;
+				blog(LOG_INFO,
+				     "[irl-source] Audio stream %u: %s %dHz %dch",
+				     i, avcodec_get_name(s->codecpar->codec_id),
+				     s->codecpar->sample_rate,
+				     s->codecpar->ch_layout.nb_channels);
+			} else {
+				blog(LOG_WARNING,
+				     "[irl-source] Failed to open audio decoder for stream %u",
+				     i);
+			}
 		}
 	}
 
 	if (ctx->video_stream_idx < 0 && ctx->audio_stream_idx < 0) {
+		blog(LOG_WARNING,
+		     "[irl-source] No usable audio or video streams found");
 		close_ffmpeg(ctx);
 		return false;
 	}
+
+	blog(LOG_INFO, "[irl-source] Stream opened (video=%d, audio=%d)",
+	     ctx->video_stream_idx, ctx->audio_stream_idx);
 
 	/* Initialise PTS repair for audio stream */
 	if (ctx->audio_stream_idx >= 0) {
@@ -370,10 +406,17 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 {
 	/* Keyframe gate */
 	if (!ctx->first_keyframe_received) {
-		if (!irl_video_is_keyframe(frame))
+		if (!irl_video_is_keyframe(frame)) {
+			if (ctx->total_video_frames == 0)
+				blog(LOG_DEBUG,
+				     "[irl-source] Waiting for keyframe (dropped non-keyframe)");
 			return;
+		}
 
 		ctx->first_keyframe_received = true;
+		blog(LOG_INFO,
+		     "[irl-source] First keyframe received (%dx%d fmt=%d)",
+		     frame->width, frame->height, frame->format);
 
 		/* Release any buffered pre-keyframe audio */
 		if (ctx->pre_kf_audio_size > 0 && ctx->audio_buf.data) {
@@ -386,6 +429,8 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 
 	irl_video_output_frame(ctx, frame);
 	ctx->total_video_frames++;
+	if (ctx->total_video_frames == 1)
+		blog(LOG_INFO, "[irl-source] First video frame output");
 }
 
 /* ── Main read loop ───────────────────────────────────────── */
@@ -396,11 +441,17 @@ void *irl_receiver_thread(void *data)
 	AVPacket *pkt = av_packet_alloc();
 	AVFrame *frame = av_frame_alloc();
 
+	blog(LOG_INFO, "[irl-source] Receiver thread started for: %s",
+	     ctx->config.url ? ctx->config.url : "(null)");
+
 	while (ctx->thread_active) {
 		if (!ctx->fmt_ctx) {
 			if (!open_stream(ctx)) {
 				/* Reconnect after delay */
 				ctx->reconnecting = true;
+				blog(LOG_INFO,
+				     "[irl-source] Reconnecting in %ds...",
+				     ctx->config.reconnect_delay);
 				for (int i = 0;
 				     i < ctx->config.reconnect_delay * 10 &&
 				     ctx->thread_active;
@@ -417,6 +468,14 @@ void *irl_receiver_thread(void *data)
 
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
 		if (ret < 0) {
+			char errbuf[AV_ERROR_MAX_STRING_SIZE];
+			av_strerror(ret, errbuf, sizeof(errbuf));
+			blog(LOG_WARNING,
+			     "[irl-source] Stream read error: %s (video_frames=%llu, audio_frames=%llu)",
+			     errbuf,
+			     (unsigned long long)ctx->total_video_frames,
+			     (unsigned long long)ctx->total_audio_frames);
+
 			/* Fade out remaining audio to avoid click/pop */
 			if (ctx->audio_buf.data && ctx->audio_buf.fill > 0) {
 				size_t fade_bytes = audio_buffer_ms_to_bytes(

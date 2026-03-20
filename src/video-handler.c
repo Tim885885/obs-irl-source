@@ -56,6 +56,10 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	/* If format not directly supported, convert to NV12 via swscale */
 	if (obs_fmt == VIDEO_FORMAT_NONE) {
+		if (!ctx->sws_ctx)
+			blog(LOG_INFO,
+			     "[irl-source] Converting pixel format %d to NV12 via swscale",
+			     frame->format);
 		if (!ctx->sws_ctx || ctx->sws_src_w != frame->width ||
 		    ctx->sws_src_h != frame->height ||
 		    ctx->sws_src_fmt != frame->format) {

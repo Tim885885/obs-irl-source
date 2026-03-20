@@ -106,9 +106,13 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 
 	/* Start the receiver thread if we have a URL */
 	if (ctx->config.url) {
+		blog(LOG_INFO, "[irl-source] Created with URL: %s",
+		     ctx->config.url);
 		ctx->thread_active = true;
 		pthread_create(&ctx->receiver_thread, NULL,
 			       irl_receiver_thread, ctx);
+	} else {
+		blog(LOG_INFO, "[irl-source] Created with no URL configured");
 	}
 
 	return ctx;
