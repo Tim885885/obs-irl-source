@@ -2,6 +2,14 @@
 
 OBS plugin for receiving live IRL streams over SRT, RTMP, or any FFmpeg-supported protocol. Built for the specific challenges of IRL streaming: unreliable mobile connections, mid-stream joins, codec changes, and audio discontinuities.
 
+## Why open source?
+
+We run a commercial streaming service — relay infrastructure and more. We have plenty of closed-source code. But OBS itself is GPL-2.0 — free and open source software built by its community. Paywalling the thing that makes your stream not drop frames so you can upsell a subscription feels like the wrong move.
+
+Some competitors disagree. They ship closed-source OBS plugins as a product feature, locking basic stream reliability behind a monthly fee. We think that's a bad trade for streamers and for the ecosystem. The plugin layer should be something everyone can use, inspect, and improve — not a moat. That's why this is AGPL: if someone builds on it, those improvements come back to the community too.
+
+If you find this useful, great. If you want managed infrastructure on top of it, that's what [irlserver.com](https://irlserver.com) is for.
+
 ## Why not the built-in Media Source?
 
 OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It works, but it was designed for local file playback and general media, not for live IRL ingest. Here's what's different:
