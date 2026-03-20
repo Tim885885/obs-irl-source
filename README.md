@@ -6,7 +6,7 @@ OBS plugin for receiving live IRL streams over SRT, RTMP, or any FFmpeg-supporte
 
 We run a commercial streaming service — relay infrastructure and more. We have plenty of closed-source code. But OBS itself is GPL-2.0 — free and open source software built by its community. Paywalling the thing that makes your stream not drop frames so you can upsell a subscription feels like the wrong move.
 
-Some competitors disagree. They ship closed-source OBS plugins as a product feature, locking basic stream reliability behind a monthly fee. We think that's a bad trade for streamers and for the ecosystem. The plugin layer should be something everyone can use, inspect, and improve — not a moat. That's why this is AGPL: if someone builds on it, those improvements come back to the community too.
+The IRL streaming ecosystem was largely built in the open — projects like [Moblin](https://github.com/eerimoq/moblin), [NOALBS](https://github.com/NOALBS/nginx-obs-automatic-low-bitrate-switching), and [BELABOX](https://github.com/BELABOX) all started as open source and pushed the scene forward because anyone could use, learn from, and build on them. Some competitors went the other direction — shipping closed-source OBS plugins as a product feature, locking basic stream reliability behind a monthly fee. We think that's a bad trade for streamers and for the ecosystem. The plugin layer should be something everyone can use, inspect, and improve — not a moat. That's why this is AGPL: if someone builds on it, those improvements come back to the community too.
 
 If you find this useful, great. If you want managed infrastructure on top of it, that's what [irlserver.com](https://irlserver.com) is for.
 
@@ -201,9 +201,26 @@ The plugin automatically tries GPU-accelerated decoding in this order:
 Falls back to software decoding if no hardware decoder is available. Disable with the **Hardware Decode: Off** setting.
 
 The OBS log shows which decoder is active:
+
 ```
 [irl-source] Video stream 0: hevc 1920x1080 (NVDEC)
 ```
+
+## AI usage
+
+I (datagutt) don't really know too much C, and I am a bit unfamiliar with the OBS Studio code base.
+What i do have is quite a bit of experience working with video and SRT(LA) protocols from other projects.
+
+The initial version of this plugin was heavily built with LLM assistance. That includes most of this README (except this "AI Usage" section).
+
+Rest assured I will go through both the README and codebase and clean this up, once I have the initial builds working well.
+
+Any tagged release should at least be fully tested, single commits might not (though i will try to use branches).
+
+## Contributing
+
+If you wish to contribute PRs to this project, please understand what you are changing. Also, you should be able to write any replies to reviews/PRs yourself.
+Please don't just copy and paste replies directly from the AI.
 
 ## License
 
