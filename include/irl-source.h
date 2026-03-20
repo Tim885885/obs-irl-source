@@ -15,6 +15,7 @@
 #define OBS_IRL_SOURCE_VERSION "0.1.0"
 
 #include <obs-module.h>
+#include <util/platform.h>
 #include <media-io/audio-resampler.h>
 
 #include <libavformat/avformat.h>

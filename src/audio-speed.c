@@ -26,7 +26,6 @@ float irl_speed_calculate(struct irl_source *ctx)
 	if (!ctx->config.adaptive_speed)
 		return 1.0f;
 
-	float ratio = audio_buffer_fill_ratio(&ctx->audio_buf);
 	int fill_ms = audio_buffer_fill_ms(&ctx->audio_buf);
 	float target_speed = 1.0f;
 
