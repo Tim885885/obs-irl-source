@@ -211,6 +211,10 @@ endif()
 # ── Link libraries ───────────────────────────────────────────
 if(_OBS_USE_FIND_PACKAGE)
     set(_OBS_LINK_TARGET OBS::libobs)
+elseif(_OBS_LIB_PATH)
+    # Link against the exact library found by find_library (handles
+    # versioned names like libobs.0.dylib that -lobs can't find)
+    set(_OBS_LINK_TARGET "${_OBS_LIB_PATH}")
 else()
     set(_OBS_LINK_TARGET obs)
 endif()
