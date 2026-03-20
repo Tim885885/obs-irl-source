@@ -17,6 +17,8 @@ void irl_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "url", "");
 	obs_data_set_default_int(settings, "reconnect_delay",
 				 IRL_DEFAULT_RECONNECT_DELAY);
+	obs_data_set_default_int(settings, "network_buffer_mb",
+				 IRL_DEFAULT_NETWORK_BUFFER_MB);
 
 	obs_data_set_default_int(settings, "buffer_target_ms",
 				 IRL_DEFAULT_BUFFER_TARGET_MS);
@@ -57,6 +59,9 @@ obs_properties_t *irl_source_get_properties(void *data)
 				OBS_TEXT_DEFAULT);
 	obs_properties_add_int(props, "reconnect_delay",
 			       obs_module_text("Reconnect Delay (s)"), 1, 60,
+			       1);
+	obs_properties_add_int(props, "network_buffer_mb",
+			       obs_module_text("Network Buffer (MB)"), 0, 16,
 			       1);
 
 	/* ── Audio Buffer ──────────────────────────────────── */

@@ -36,6 +36,8 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 
 	cfg->reconnect_delay =
 		(int)obs_data_get_int(settings, "reconnect_delay");
+	cfg->network_buffer_mb =
+		(int)obs_data_get_int(settings, "network_buffer_mb");
 
 	cfg->buffer_target_ms =
 		(int)obs_data_get_int(settings, "buffer_target_ms");

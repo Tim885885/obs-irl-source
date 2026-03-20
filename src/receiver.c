@@ -23,7 +23,7 @@
 /* ── Internal helpers ─────────────────────────────────────── */
 
 static void apply_demuxer_options(AVDictionary **opts, const char *url,
-				  const char *extra)
+				  const char *extra, int network_buffer_mb)
 {
 	/* Live-stream tuned defaults.
 	 * HEVC/H.265 over SRT needs enough probe data to capture a keyframe
@@ -34,9 +34,24 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
 
-	/* SRT-specific: lower latency */
+	/* Network buffer: absorbs transport-level jitter before decoding.
+	 * Higher values = more resilient to network spikes, but add latency. */
+	if (network_buffer_mb > 0) {
+		char buf_size[32];
+		snprintf(buf_size, sizeof(buf_size), "%d",
+			 network_buffer_mb * 1024 * 1024);
+		av_dict_set(opts, "buffer_size", buf_size, 0);
+	}
+
+	/* SRT-specific: set receive buffer and latency */
 	if (url && strstr(url, "srt://")) {
 		av_dict_set(opts, "latency", "200000", 0); /* 200ms default */
+		if (network_buffer_mb > 0) {
+			char recv_buf[32];
+			snprintf(recv_buf, sizeof(recv_buf), "%d",
+				 network_buffer_mb * 1024 * 1024);
+			av_dict_set(opts, "recv_buffer_size", recv_buf, 0);
+		}
 	}
 
 	/* User-provided overrides */
@@ -123,7 +138,8 @@ static int interrupt_cb(void *opaque)
 static bool open_stream(struct irl_source *ctx)
 {
 	AVDictionary *opts = NULL;
-	apply_demuxer_options(&opts, ctx->config.url, ctx->config.ffmpeg_options);
+	apply_demuxer_options(&opts, ctx->config.url, ctx->config.ffmpeg_options,
+			      ctx->config.network_buffer_mb);
 
 	blog(LOG_INFO, "[irl-source] Connecting to: %s", ctx->config.url);
 

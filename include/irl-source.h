@@ -34,6 +34,7 @@ struct irl_source;
 /* ── Configuration defaults ───────────────────────────────── */
 
 #define IRL_DEFAULT_RECONNECT_DELAY 2
+#define IRL_DEFAULT_NETWORK_BUFFER_MB 2
 #define IRL_DEFAULT_BUFFER_TARGET_MS 80
 #define IRL_DEFAULT_BUFFER_MIN_MS 40
 #define IRL_DEFAULT_BUFFER_MAX_MS 200
@@ -54,6 +55,7 @@ struct irl_config {
 	/* General */
 	char *url;
 	int reconnect_delay;
+	int network_buffer_mb;
 
 	/* Audio buffer */
 	int buffer_target_ms;
