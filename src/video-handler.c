@@ -22,8 +22,12 @@ static enum video_format avpixfmt_to_obs(enum AVPixelFormat fmt)
 	switch (fmt) {
 	case AV_PIX_FMT_YUV420P:
 		return VIDEO_FORMAT_I420;
+	case AV_PIX_FMT_YUV420P10LE:
+		return VIDEO_FORMAT_I010;
 	case AV_PIX_FMT_NV12:
 		return VIDEO_FORMAT_NV12;
+	case AV_PIX_FMT_P010LE:
+		return VIDEO_FORMAT_P010;
 	case AV_PIX_FMT_YUV422P:
 		return VIDEO_FORMAT_I422;
 	case AV_PIX_FMT_YUV444P:
