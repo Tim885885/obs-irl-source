@@ -177,6 +177,9 @@ jobs:
           # Disable automatic dependency download
           sed -i '' 's/^include(buildspec)/# include(buildspec)/' obs-src/cmake/macos/defaults.cmake
 
+          # Allow Homebrew paths (OBS blocks them by default)
+          sed -i '' '/CMAKE_IGNORE_PREFIX_PATH/d' obs-src/cmake/macos/defaults.cmake
+
       - name: Configure OBS
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: >
