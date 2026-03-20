@@ -198,6 +198,7 @@ jobs:
           cmake -B build
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DOBS_SOURCE_DIR=$PWD/obs-src
+          -DCMAKE_C_FLAGS="-I$(brew --prefix)/include"
 
       - name: Build
         run: cmake --build build --parallel
