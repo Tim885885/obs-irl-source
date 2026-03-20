@@ -99,12 +99,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_frame.data[1] = dst_planes[1];
 		obs_frame.linesize[0] = dst_strides[0];
 		obs_frame.linesize[1] = dst_strides[1];
-		obs_frame.timestamp =
-			(uint64_t)(frame->pts * 1000000000LL *
-				   ctx->fmt_ctx->streams[ctx->video_stream_idx]
-					   ->time_base.num /
-				   ctx->fmt_ctx->streams[ctx->video_stream_idx]
-					   ->time_base.den);
+		obs_frame.timestamp = os_gettime_ns();
 
 		obs_source_output_video(ctx->source, &obs_frame);
 		free(nv12_data);
@@ -116,12 +111,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	obs_frame.width = frame->width;
 	obs_frame.height = frame->height;
 	obs_frame.format = obs_fmt;
-	obs_frame.timestamp =
-		(uint64_t)(frame->pts * 1000000000LL *
-			   ctx->fmt_ctx->streams[ctx->video_stream_idx]
-				   ->time_base.num /
-			   ctx->fmt_ctx->streams[ctx->video_stream_idx]
-				   ->time_base.den);
+	obs_frame.timestamp = os_gettime_ns();
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
 		obs_frame.data[i] = frame->data[i];
