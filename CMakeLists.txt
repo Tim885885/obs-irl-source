@@ -50,12 +50,23 @@ else()
                 "${OBS_SOURCE_DIR}/build/deps/w32-pthreads/Debug"
             )
         else()
-            list(APPEND _OBS_LIB_DIRS
-                "${OBS_SOURCE_DIR}/build/libobs"
-                "${OBS_SOURCE_DIR}/build/libobs/Release"
-                "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
-                "${OBS_SOURCE_DIR}/build/libobs/Debug"
+            # On macOS (Xcode) and Linux, search multiple possible locations.
+            # The library may be named libobs.dylib, libobs.so, or libobs.0.dylib.
+            find_library(_OBS_LIB_PATH
+                NAMES obs libobs
+                PATHS
+                    "${OBS_SOURCE_DIR}/build/libobs/Release"
+                    "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
+                    "${OBS_SOURCE_DIR}/build/libobs/Debug"
+                    "${OBS_SOURCE_DIR}/build/libobs"
+                NO_DEFAULT_PATH
             )
+            if(_OBS_LIB_PATH)
+                get_filename_component(_OBS_LIB_DIR "${_OBS_LIB_PATH}" DIRECTORY)
+                list(APPEND _OBS_LIB_DIRS "${_OBS_LIB_DIR}")
+            else()
+                list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
+            endif()
         endif()
     else()
         # Try system-installed OBS (e.g. libobs-dev on Ubuntu)
