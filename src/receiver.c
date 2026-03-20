@@ -456,22 +456,30 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			}
 		}
 
-		/* Anchor timestamps to the system clock so they stay
-		 * in OBS's clock domain.  Re-anchor if the running
-		 * PTS drifts too far behind (e.g. after a decode
-		 * stall where no audio was output but time passed). */
+		/* Timestamp strategy: running PTS for smooth inter-chunk
+		 * timing, with soft correction toward the system clock
+		 * to prevent drift.  Pure running PTS drifts during
+		 * decode stalls (no output = PTS freezes, clock keeps
+		 * going).  Pure system clock jitters with network
+		 * delivery.  Blending gives smooth + drift-free. */
 		if (!ctx->audio_output_pts_init) {
 			ctx->audio_output_pts_ns =
 				(int64_t)os_gettime_ns();
 			ctx->audio_output_pts_init = true;
 		} else {
-			int64_t now = (int64_t)os_gettime_ns();
-			int64_t drift = now - ctx->audio_output_pts_ns;
-			if (drift > 500000000LL || drift < -500000000LL) {
-				/* PTS drifted >500ms from system clock,
-				 * re-anchor to prevent OBS lag detection */
-				ctx->audio_output_pts_ns = now;
-			}
+			/* Soft PLL: nudge running PTS toward where the
+			 * system clock says we should be (now minus
+			 * buffer fill).  1% correction per output
+			 * smooths out jitter while correcting drift
+			 * within a few seconds. */
+			int fill_now =
+				audio_buffer_fill_ms(&ctx->audio_buf);
+			int64_t expected =
+				(int64_t)os_gettime_ns() -
+				(int64_t)fill_now * 1000000LL;
+			int64_t error =
+				expected - ctx->audio_output_pts_ns;
+			ctx->audio_output_pts_ns += error / 100;
 		}
 
 		uint32_t frames_out =
