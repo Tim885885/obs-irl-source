@@ -30,6 +30,15 @@ if(OBS_SOURCE_DIR)
     else()
         list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
     endif()
+else()
+    # Try system-installed OBS (e.g. libobs-dev on Ubuntu)
+    find_path(_SYSTEM_OBS_INCLUDE obs-module.h
+        PATHS /usr/include/obs /usr/local/include/obs
+        NO_DEFAULT_PATH
+    )
+    if(_SYSTEM_OBS_INCLUDE)
+        list(APPEND _OBS_INCLUDE_DIRS "${_SYSTEM_OBS_INCLUDE}")
+    endif()
 endif()
 
 # ── Find FFmpeg ──────────────────────────────────────────────
