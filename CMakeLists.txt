@@ -45,6 +45,9 @@ else()
                 "${OBS_SOURCE_DIR}/build/libobs/RelWithDebInfo"
                 "${OBS_SOURCE_DIR}/build/libobs/Debug"
                 "${OBS_SOURCE_DIR}/build/libobs"
+                "${OBS_SOURCE_DIR}/build/deps/w32-pthreads/Release"
+                "${OBS_SOURCE_DIR}/build/deps/w32-pthreads/RelWithDebInfo"
+                "${OBS_SOURCE_DIR}/build/deps/w32-pthreads/Debug"
             )
         else()
             list(APPEND _OBS_LIB_DIRS "${OBS_SOURCE_DIR}/build/libobs")
@@ -202,7 +205,10 @@ else()
     target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} ${_FFMPEG_MANUAL_LIBS})
 endif()
 
-if(NOT WIN32)
+if(WIN32 AND NOT _OBS_USE_FIND_PACKAGE)
+    # Link w32-pthreads from OBS source tree (plugin uses pthread API directly)
+    target_link_libraries(obs-irl-source PRIVATE w32-pthreads)
+elseif(NOT WIN32)
     target_link_libraries(obs-irl-source PRIVATE pthread)
 endif()
 

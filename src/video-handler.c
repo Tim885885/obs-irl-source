@@ -102,7 +102,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 				   ctx->fmt_ctx->streams[ctx->video_stream_idx]
 					   ->time_base.den);
 
-		obs_source_output_video_frame(ctx->source, &obs_frame);
+		obs_source_output_video(ctx->source, &obs_frame);
 		free(nv12_data);
 		return;
 	}
@@ -124,5 +124,5 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_frame.linesize[i] = frame->linesize[i];
 	}
 
-	obs_source_output_video_frame(ctx->source, &obs_frame);
+	obs_source_output_video(ctx->source, &obs_frame);
 }

@@ -52,7 +52,7 @@ jobs:
           path: |
             obs-src
             obs-deps
-          key: obs-build-${{ env.OBS_VERSION }}-${{ env.OBS_DEPS_VERSION }}-v1
+          key: obs-build-${{ env.OBS_VERSION }}-${{ env.OBS_DEPS_VERSION }}-v2
 
       - name: Download OBS dependencies
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -71,7 +71,7 @@ jobs:
         if: steps.cache-obs.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # Keep only libobs, remove all other subdirectories
+          # Keep only libobs + w32-pthreads, remove all other subdirectories
           # (plugins, frontend, renderers, tests)
           $lines = Get-Content obs-src/CMakeLists.txt
           $output = @()
@@ -79,6 +79,7 @@ jobs:
           foreach ($line in $lines) {
             if ($done) { continue }
             if ($line -match '^\s*add_subdirectory\(libobs\)\s*$') {
+              $output += 'add_subdirectory(deps/w32-pthreads)'
               $output += $line
               $done = $true
             } else {
@@ -115,7 +116,7 @@ jobs:
       - name: Build OBS (libobs only)
         if: steps.cache-obs.outputs.cache-hit != 'true'
         shell: cmd
-        run: cmake --build obs-src/build --config Release --target libobs
+        run: cmake --build obs-src/build --config Release --target libobs --target w32-pthreads
 
       - name: Download FFmpeg (shared, with import libs)
         shell: pwsh

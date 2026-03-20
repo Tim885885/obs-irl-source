@@ -14,6 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+#define strtok_r strtok_s
+#endif
+
 #include "../include/irl-source.h"
 
 /* ── Internal helpers ─────────────────────────────────────── */
@@ -463,7 +467,7 @@ void *irl_receiver_thread(void *data)
 			 * when no new frames arrive.  This is intentional:
 			 * viewers see a frozen image instead of black during
 			 * disconnection.  Do NOT call
-			 * obs_source_output_video_frame(NULL) here. */
+			 * obs_source_output_video(NULL) here. */
 
 			close_ffmpeg(ctx);
 			pts_repair_reset(&ctx->pts_state);
