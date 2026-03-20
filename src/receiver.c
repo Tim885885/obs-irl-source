@@ -410,104 +410,100 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (interleaved != frame->data[0])
 		free(interleaved);
 
-	/* Output audio to OBS when buffer has enough data */
-	if (audio_buffer_ready(&ctx->audio_buf)) {
-		/* Scale chunk size by speed: when speed > 1.0, read more
-		 * from the buffer per call to actually drain it.  The
-		 * samples_per_sec adjustment alone only changes OBS's
-		 * resampling, not our buffer drain rate. */
-		float speed = ctx->current_speed;
-		int chunk_ms = (int)(20.0f * speed);
-		if (chunk_ms < 10)
-			chunk_ms = 10;
-		if (chunk_ms > 40)
-			chunk_ms = 40;
+	/* Output audio to OBS in a loop until the buffer is at or below
+	 * target.  A single output per decoded frame cannot keep up when
+	 * the decoded frame is larger than the output chunk (e.g. AAC
+	 * 1024 samples = 21.3ms vs 20ms chunk), causing the buffer to
+	 * overflow and silently drop audio. */
+	while (audio_buffer_ready(&ctx->audio_buf)) {
+		int chunk_ms = 20;
 		size_t frame_bytes = audio_buffer_ms_to_bytes(
 			&ctx->audio_buf, chunk_ms);
 		uint8_t *out_buf = malloc(frame_bytes);
 		if (!out_buf)
-			return;
+			break;
 
 		size_t got = audio_buffer_read(&ctx->audio_buf, out_buf,
 					       frame_bytes);
-		if (got > 0) {
-			/* Fade-in after reconnect to avoid click */
-			if (ctx->fade_in_pending) {
-				ctx->fade_in_frames_remaining =
-					out_rate * IRL_FADE_DURATION_MS /
-					1000;
-				ctx->fade_in_pending = false;
-			}
-			if (ctx->fade_in_frames_remaining > 0) {
-				int total_fade =
-					out_rate * IRL_FADE_DURATION_MS /
-					1000;
-				float *s = (float *)out_buf;
-				int nf = (int)(got /
-					       (out_channels *
-						bytes_per_sample));
-				for (int f = 0;
-				     f < nf &&
-				     ctx->fade_in_frames_remaining > 0;
-				     f++) {
-					int into = total_fade -
-						   ctx->fade_in_frames_remaining;
-					float gain = (float)into /
-						     (float)total_fade;
-					for (int ch = 0; ch < out_channels;
-					     ch++)
-						s[f * out_channels + ch] *=
-							gain;
-					ctx->fade_in_frames_remaining--;
-				}
-			}
-
-			/* Initialise running output PTS on first output.
-			 * corrected_pts is from the frame just written,
-			 * but the buffer holds older data ahead of it.
-			 * Estimate the PTS of the oldest buffered sample. */
-			if (!ctx->audio_output_pts_init) {
-				int64_t cur_ns =
-					corrected_pts * 1000000000LL *
-					ctx->pts_state.tb_num /
-					ctx->pts_state.tb_den;
-				int fill_ms =
-					audio_buffer_fill_ms(&ctx->audio_buf);
-				ctx->audio_output_pts_ns =
-					cur_ns -
-					(int64_t)fill_ms * 1000000LL;
-				ctx->audio_output_pts_init = true;
-			}
-
-			uint32_t frames_out =
-				(uint32_t)(got /
-					   (out_channels * bytes_per_sample));
-
-			struct obs_source_audio obs_audio = {0};
-			obs_audio.data[0] = out_buf;
-			obs_audio.frames = frames_out;
-			obs_audio.format = AUDIO_FORMAT_FLOAT;
-			obs_audio.speakers =
-				(enum speaker_layout)out_channels;
-			obs_audio.timestamp =
-				(uint64_t)ctx->audio_output_pts_ns;
-			obs_audio.samples_per_sec = (uint32_t)out_rate;
-
-			/* Adaptive speed: must run after samples_per_sec
-			 * is set so it can scale the value. */
-			if (ctx->config.adaptive_speed)
-				irl_speed_apply(ctx, &obs_audio);
-
-			obs_source_output_audio(ctx->source, &obs_audio);
-
-			/* Advance running PTS by actual samples output */
-			ctx->audio_output_pts_ns +=
-				(int64_t)frames_out * 1000000000LL /
-				out_rate;
-			ctx->total_audio_frames++;
+		if (got == 0) {
+			free(out_buf);
+			break;
 		}
 
+		/* Fade-in after reconnect to avoid click */
+		if (ctx->fade_in_pending) {
+			ctx->fade_in_frames_remaining =
+				out_rate * IRL_FADE_DURATION_MS / 1000;
+			ctx->fade_in_pending = false;
+		}
+		if (ctx->fade_in_frames_remaining > 0) {
+			int total_fade =
+				out_rate * IRL_FADE_DURATION_MS / 1000;
+			float *s = (float *)out_buf;
+			int nf = (int)(got /
+				       (out_channels * bytes_per_sample));
+			for (int f = 0;
+			     f < nf &&
+			     ctx->fade_in_frames_remaining > 0;
+			     f++) {
+				int into = total_fade -
+					   ctx->fade_in_frames_remaining;
+				float gain =
+					(float)into / (float)total_fade;
+				for (int ch = 0; ch < out_channels; ch++)
+					s[f * out_channels + ch] *= gain;
+				ctx->fade_in_frames_remaining--;
+			}
+		}
+
+		/* Initialise running output PTS on first output.
+		 * corrected_pts is from the frame just written, but
+		 * the buffer holds older data ahead of it. */
+		if (!ctx->audio_output_pts_init) {
+			int64_t cur_ns =
+				corrected_pts * 1000000000LL *
+				ctx->pts_state.tb_num /
+				ctx->pts_state.tb_den;
+			int fill_ms =
+				audio_buffer_fill_ms(&ctx->audio_buf);
+			/* Account for the chunk we just read */
+			ctx->audio_output_pts_ns =
+				cur_ns -
+				(int64_t)(fill_ms + chunk_ms) * 1000000LL;
+			ctx->audio_output_pts_init = true;
+		}
+
+		uint32_t frames_out =
+			(uint32_t)(got /
+				   (out_channels * bytes_per_sample));
+
+		struct obs_source_audio obs_audio = {0};
+		obs_audio.data[0] = out_buf;
+		obs_audio.frames = frames_out;
+		obs_audio.format = AUDIO_FORMAT_FLOAT;
+		obs_audio.speakers = (enum speaker_layout)out_channels;
+		obs_audio.timestamp =
+			(uint64_t)ctx->audio_output_pts_ns;
+		obs_audio.samples_per_sec = (uint32_t)out_rate;
+
+		/* Adaptive speed: must run after samples_per_sec
+		 * is set so it can scale the value. */
+		if (ctx->config.adaptive_speed)
+			irl_speed_apply(ctx, &obs_audio);
+
+		obs_source_output_audio(ctx->source, &obs_audio);
+
+		/* Advance running PTS by actual samples output */
+		ctx->audio_output_pts_ns +=
+			(int64_t)frames_out * 1000000000LL / out_rate;
+		ctx->total_audio_frames++;
+
 		free(out_buf);
+
+		/* Stop once buffer is at or below target */
+		if (audio_buffer_fill_ms(&ctx->audio_buf) <=
+		    ctx->config.buffer_target_ms)
+			break;
 	}
 }
 
@@ -655,6 +651,8 @@ void *irl_receiver_thread(void *data)
 			pts_repair_reset(&ctx->pts_state);
 			audio_buffer_flush(&ctx->audio_buf);
 			ctx->audio_output_pts_init = false;
+			ctx->current_speed = 1.0f;
+			ctx->last_speed_adjust_time = 0;
 			ctx->fade_in_pending = true;
 			continue;
 		}
