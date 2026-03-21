@@ -49,10 +49,10 @@ FFmpeg URL → [receiver thread] → demux → decode → PTS repair
 
 - **`src/plugin.c`** — OBS module entry point. Registers `irl_source_info` with callbacks.
 - **`src/irl-source.c`** — Source lifecycle: create/destroy/update/tick. Loads config, manages receiver thread, registers `proc_handler` for stats.
-- **`src/receiver.c`** — FFmpeg demux/decode thread (~700 lines, the core). Opens URLs, sets up HW decode, runs `av_read_frame()` loop, handles reconnection, audio processing (PTS repair → resample → buffer → speed adjust → OBS output), video processing (keyframe gate → video handler).
+- **`src/receiver.c`** — FFmpeg demux/decode thread (the core). Opens URLs, sets up HW decode, runs `av_read_frame()` loop, handles reconnection, audio processing (PTS repair → resample → buffer → speed adjust → OBS output), video processing (keyframe gate → video handler). Pre-keyframe audio is discarded (not staged) to avoid decoder warm-up artifacts.
 - **`src/audio-buffer.c`** — Thread-safe ring buffer sized in milliseconds. Mutex-protected. Supports fade-out reads.
 - **`src/audio-speed.c`** — Adaptive playback speed controller (0.95x–1.05x). Adjusts `samples_per_sec` on OBS audio output to leverage OBS's built-in resampler.
-- **`src/video-handler.c`** — Converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats.
+- **`src/video-handler.c`** — Converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats. Re-anchors video timestamps when PTS drift exceeds 100ms (prevents freezes from discontinuities).
 - **`src/pts-repair.c`** — Three-tier PTS discontinuity repair: small gaps interpolated, medium gaps get silence, large gaps trigger full reset.
 - **`src/settings.c`** — OBS properties UI and default values.
 

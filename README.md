@@ -20,7 +20,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **Adaptive playback speed** | Fixed 1x. Buffer grows unbounded on slow connections, causing increasing latency | Dynamically adjusts speed between 0.95x-1.05x to keep buffer at target level, preventing drift |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three-tier repair: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt audio cutoff causes a loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
-| **Keyframe gating** | Starts decoding immediately, producing corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Buffers audio received before the keyframe so it's not lost |
+| **Keyframe gating** | Starts decoding immediately, producing corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Discards pre-keyframe audio to avoid decoder warm-up artifacts |
 | **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation — audio breaks permanently until source restart | Automatically flushes decoder on errors, audio self-recovers without user intervention |
 | **Reconnection** | Has reconnect support but with general-purpose defaults | 2-second default reconnect, designed for the frequent disconnects in IRL streaming |
 | **Hardware decoding** | Supports hardware decode | Auto-detects D3D11VA, CUDA/NVDEC, VAAPI — works on NVIDIA, Intel, and AMD with automatic fallback |

@@ -28,7 +28,7 @@ A ring buffer sized in milliseconds, not bytes. Default settings:
 
 The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in; smooth PCM comes out.
 
-Audio is output in 20ms chunks. The output loop drains multiple chunks per decoded frame if needed, keeping the buffer near its target. Without this, a codec producing frames larger than 20ms (AAC's 1024 samples at 48kHz = 21.3ms) would cause the buffer to grow by 1.3ms per frame — eventually overflowing and silently dropping audio.
+Audio is output in chunks matching the decoded frame size (AAC = 1024 samples, Opus = 960). Matching the output chunk size to the codec frame size eliminates drift between OBS's internal smoothed timestamp advance and our push rate. The output loop drains multiple chunks per decoded frame if needed, keeping the buffer near its target.
 
 ### 2. Adaptive playback speed (prevents buffer drift)
 
@@ -64,15 +64,23 @@ When the stream drops, the last audio chunk in the buffer gets a 50ms linear fad
 
 OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Live streams use MPEG-TS PTS values that can be hours or days into an arbitrary epoch — passing these raw causes OBS to report "audio is lagging by millions of ms" and restart the source repeatedly.
 
-The plugin uses a hybrid approach — a soft PLL (phase-locked loop):
+### Audio timestamps
 
-1. **Running PTS** — a counter anchored to the system clock on first output, then advanced by the exact sample count of each output chunk. This gives perfectly smooth inter-chunk timing with no jitter from network delivery variation.
+The plugin uses a running PTS counter anchored to `os_gettime_ns()` on first output, then advanced by a constant amount per push: `decoded_frame_samples / sample_rate`. Two properties keep this stable without any PLL or clock correction:
 
-2. **Soft correction** — each output nudges the running PTS 1% toward where the system clock says it should be (`os_gettime_ns()` minus buffer fill time). This prevents drift without introducing the jitter that pure clock-based timestamps would have.
+1. **Chunk size matches codec frame size** — output chunks are exactly one codec frame (AAC = 1024, Opus = 960 samples). OBS's internal smoothing advances `next_audio_ts_min` by `chunk_samples / mixer_rate` per push. When our PTS advance matches this exactly, there's zero drift and OBS always uses the fast `push_back` path (which doesn't reset `audio_ts`).
 
-A pure running PTS drifts during decode stalls (no output = PTS freezes, but wall-clock time keeps advancing). A pure system clock timestamp jitters with every network hiccup. The PLL gives the smoothness of the running counter with the accuracy of the system clock — a 100ms drift corrects itself within about 4 seconds.
+2. **Speed-compensated chunk size** — when the adaptive speed controller is active, the output chunk is scaled by the speed factor (`chunk_samples = base * speed`), but PTS still advances by the constant base duration. After OBS resamples (dividing by the adjusted `samples_per_sec`), the smoothed advance equals the base frame duration regardless of speed.
 
-Video uses a similar rebasing approach (anchoring stream PTS to the system clock via `video_sys_base` / `video_pts_base`).
+No PLL is used. Earlier iterations tried soft clock correction (0.5%–12.5% nudge toward the system clock), but any correction accumulates drift between the running PTS and OBS's smoothed position. This eventually breaches OBS's 70ms smoothing threshold, forcing a `place` (instead of `push_back`) that resets `audio_ts` — triggering the "audio is lagging" cascade.
+
+The initial PTS is set to `os_gettime_ns()` with no offset. OBS's valid range for `audio_ts` is only 21.33ms wide (one mixer tick: 1024/48000). Any offset risks placing `audio_ts` outside `[ts.start, ts.end)`, especially on reconnection when `audio_buffering_maxed` is already true.
+
+### Video timestamps
+
+Video uses a rebasing approach: the first frame's stream PTS is anchored to `os_gettime_ns()` via `video_sys_base` / `video_pts_base`. Subsequent frames compute their timestamp as `video_sys_base + (frame_pts_ns - video_pts_base)`, preserving the inter-frame timing from the stream.
+
+If the computed timestamp drifts more than 100ms from the current wall clock (due to PTS discontinuities from network hiccups or corrupt packets), the anchor is reset. Without this, a forward PTS jump would cause OBS to hold the previous frame on screen until the future timestamp arrives — visible as a freeze.
 
 ## What this means in practice
 

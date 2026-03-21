@@ -12,17 +12,14 @@
 
 #pragma once
 
-#define OBS_IRL_SOURCE_VERSION "0.2.1"
+#define OBS_IRL_SOURCE_VERSION "0.2.2"
 
 #include <obs-module.h>
 #include <util/platform.h>
-#include <media-io/audio-resampler.h>
-
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
-#include <libavutil/opt.h>
 #include <libavutil/time.h>
 #include <libavutil/hwcontext.h>
 
@@ -97,10 +94,8 @@ struct irl_source {
 	int video_stream_idx;
 	bool using_hw_decode;
 
-	/* Resampler for adaptive speed */
+	/* Resampler (planar → interleaved float) */
 	SwrContext *swr_ctx;
-	int swr_src_rate;
-	int swr_dst_rate;
 
 	/* Video scaler (for format conversion to OBS) */
 	struct SwsContext *sws_ctx;
@@ -123,21 +118,18 @@ struct irl_source {
 	float current_speed;
 	uint64_t last_speed_adjust_time;
 
-	/* Running output PTS: tracks the actual playback position in the
-	 * jitter buffer rather than using the latest decoded frame's PTS.
-	 * Without this, the buffer decouples data from timestamps, causing
-	 * OBS to see gaps and produce garbled/robotic audio. */
+	/* Decoded frame size (samples per frame).  Used as the output
+	 * chunk size so OBS's smoothing advance matches our push rate.
+	 * AAC = 1024, Opus = 960.  If mismatched, smoothing drifts
+	 * and periodically resets audio_ts → "audio is lagging". */
+	int decoded_frame_samples;
+
+	/* Running output PTS */
 	int64_t audio_output_pts_ns;
 	bool audio_output_pts_init;
 
 	/* Keyframe gate */
 	bool first_keyframe_received;
-	bool audio_buffering_pre_keyframe;
-
-	/* Pre-keyframe audio staging (circular buffer of decoded frames) */
-	uint8_t *pre_kf_audio_data;
-	size_t pre_kf_audio_size;
-	size_t pre_kf_audio_capacity;
 
 	/* Audio fade state */
 	bool fade_in_pending;
@@ -178,7 +170,6 @@ void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Adaptive speed (audio-speed.c) ───────────────────────── */
 
-float irl_speed_calculate(struct irl_source *ctx);
 void irl_speed_apply(struct irl_source *ctx, struct obs_source_audio *audio);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */

@@ -331,8 +331,6 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->audio_output_pts_init = false;
 		ctx->first_keyframe_received = false;
 		ctx->video_ts_init = false;
-		ctx->audio_buffering_pre_keyframe = false;
-		ctx->pre_kf_audio_size = 0;
 	}
 
 	if (action != PTS_ACTION_PASS)
@@ -355,8 +353,6 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 					    frame->format, frame->sample_rate,
 					    0, NULL);
 			swr_init(ctx->swr_ctx);
-			ctx->swr_src_rate = frame->sample_rate;
-			ctx->swr_dst_rate = out_rate;
 		}
 
 		int max_out = swr_get_out_samples(ctx->swr_ctx,
@@ -381,26 +377,13 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	size_t data_bytes =
 		(size_t)out_samples * out_channels * bytes_per_sample;
 
-	/* Keyframe gate: buffer audio until first video keyframe */
+	/* Keyframe gate: discard audio until first video keyframe.
+	 * Pre-keyframe audio contains decoder warm-up artifacts
+	 * (AAC priming frames) that cause audible stutter if played.
+	 * Instead of staging and replaying, drop it entirely.
+	 * After the keyframe gate opens, audio_buffer_ready (min_ms)
+	 * provides a brief fill delay for clean playback. */
 	if (ctx->config.wait_for_keyframe && !ctx->first_keyframe_received) {
-		/* Stage audio in pre-keyframe buffer */
-		if (!ctx->pre_kf_audio_data) {
-			ctx->pre_kf_audio_capacity =
-				audio_buffer_ms_to_bytes(&ctx->audio_buf, 500);
-			ctx->pre_kf_audio_data =
-				bmalloc(ctx->pre_kf_audio_capacity);
-			ctx->pre_kf_audio_size = 0;
-		}
-
-		size_t avail = ctx->pre_kf_audio_capacity -
-			       ctx->pre_kf_audio_size;
-		size_t to_copy = data_bytes < avail ? data_bytes : avail;
-		if (to_copy > 0) {
-			memcpy(ctx->pre_kf_audio_data + ctx->pre_kf_audio_size,
-			       interleaved, to_copy);
-			ctx->pre_kf_audio_size += to_copy;
-		}
-
 		if (interleaved != frame->data[0])
 			free(interleaved);
 		return;
@@ -410,15 +393,39 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (interleaved != frame->data[0])
 		free(interleaved);
 
-	/* Output audio to OBS in a loop until the buffer is at or below
-	 * target.  A single output per decoded frame cannot keep up when
-	 * the decoded frame is larger than the output chunk (e.g. AAC
-	 * 1024 samples = 21.3ms vs 20ms chunk), causing the buffer to
-	 * overflow and silently drop audio. */
+	/* Track decoded frame size so output chunks match.  When
+	 * OBS's smoothed advance (chunk_samples / sample_rate)
+	 * equals our push interval (decoded_frame / sample_rate),
+	 * there's zero drift → no smoothing threshold breach →
+	 * push_back is always used → audio_ts is never reset. */
+	ctx->decoded_frame_samples = frame->nb_samples;
+
+	/* Output audio to OBS in a loop until the buffer is at or
+	 * below target. */
 	while (audio_buffer_ready(&ctx->audio_buf)) {
-		int chunk_ms = 20;
-		size_t frame_bytes = audio_buffer_ms_to_bytes(
-			&ctx->audio_buf, chunk_ms);
+		int base_samples = ctx->decoded_frame_samples;
+		if (base_samples <= 0)
+			base_samples = 960; /* fallback (Opus default) */
+
+		/* Scale by speed so that after OBS resamples (at
+		 * samples_per_sec / mixer_rate), the resampled count
+		 * equals base_samples.  This keeps the smoothed
+		 * advance = base_samples / mixer_rate = push rate,
+		 * regardless of speed.  Without scaling, the speed
+		 * controller changes the resampled count, reintroducing
+		 * the drift we eliminated by matching chunk size. */
+		float speed = ctx->config.adaptive_speed
+				      ? ctx->current_speed
+				      : 1.0f;
+		if (speed < 0.9f)
+			speed = 0.9f;
+		if (speed > 1.1f)
+			speed = 1.1f;
+		int chunk_samples =
+			(int)((float)base_samples * speed + 0.5f);
+		size_t frame_bytes =
+			(size_t)chunk_samples *
+			ctx->audio_buf.frame_size;
 		uint8_t *out_buf = malloc(frame_bytes);
 		if (!out_buf)
 			break;
@@ -456,31 +463,40 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			}
 		}
 
-		/* Timestamp strategy: running PTS for smooth inter-chunk
-		 * timing, with soft correction toward the system clock
-		 * to prevent drift.  Pure running PTS drifts during
-		 * decode stalls (no output = PTS freezes, clock keeps
-		 * going).  Pure system clock jitters with network
-		 * delivery.  Blending gives smooth + drift-free. */
+		/* Timestamp: running counter, no PLL, no offset.
+		 *
+		 * Init at os_gettime_ns() so audio_ts lands at or
+		 * near ts.end.  Re-anchor if the running PTS drifts
+		 * more than 200ms from the wall clock — this happens
+		 * after network stalls where av_read_frame blocks for
+		 * seconds while the running PTS stays frozen.  Without
+		 * re-anchoring, the stale PTS causes audio_ts to fall
+		 * far behind ts.start → "audio is lagging" cascade.
+		 *
+		 * 200ms threshold is well above normal jitter but
+		 * catches stalls before OBS's lag detection fires. */
 		if (!ctx->audio_output_pts_init) {
 			ctx->audio_output_pts_ns =
 				(int64_t)os_gettime_ns();
 			ctx->audio_output_pts_init = true;
 		} else {
-			/* Soft PLL: nudge running PTS toward where the
-			 * system clock says we should be (now minus
-			 * buffer fill).  1% correction per output
-			 * smooths out jitter while correcting drift
-			 * within a few seconds. */
-			int fill_now =
-				audio_buffer_fill_ms(&ctx->audio_buf);
-			int64_t expected =
-				(int64_t)os_gettime_ns() -
-				(int64_t)fill_now * 1000000LL;
-			int64_t error =
-				expected - ctx->audio_output_pts_ns;
-			ctx->audio_output_pts_ns += error / 100;
+			int64_t audio_drift =
+				ctx->audio_output_pts_ns -
+				(int64_t)os_gettime_ns();
+			if (audio_drift < -200000000LL ||
+			    audio_drift > 200000000LL) {
+				blog(LOG_INFO,
+				     "[irl-source] Audio PTS drift: %lldms, re-anchoring",
+				     (long long)(audio_drift / 1000000));
+				ctx->audio_output_pts_ns =
+					(int64_t)os_gettime_ns();
+			}
 		}
+		/* No PLL.  With matching chunk/frame sizes, our PTS
+		 * advances at exactly frame_duration per push.  OBS's
+		 * smoothed position also advances at frame_duration
+		 * (after speed-compensated resampling).  Zero drift
+		 * → push_back always used → audio_ts never reset. */
 
 		uint32_t frames_out =
 			(uint32_t)(got /
@@ -502,9 +518,12 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 		obs_source_output_audio(ctx->source, &obs_audio);
 
-		/* Advance running PTS by actual samples output */
+		/* Advance PTS by decoded frame size (constant), not
+		 * frames_out (varies with speed).  After OBS resamples,
+		 * the smoothed advance = base_samples / mixer_rate.
+		 * Our PTS must advance by the same amount. */
 		ctx->audio_output_pts_ns +=
-			(int64_t)frames_out * 1000000000LL / out_rate;
+			(int64_t)base_samples * 1000000000LL / out_rate;
 		ctx->total_audio_frames++;
 
 		free(out_buf);
@@ -531,14 +550,6 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 		blog(LOG_INFO,
 		     "[irl-source] First keyframe received (%dx%d fmt=%d)",
 		     frame->width, frame->height, frame->format);
-
-		/* Release any buffered pre-keyframe audio */
-		if (ctx->pre_kf_audio_size > 0 && ctx->audio_buf.data) {
-			audio_buffer_write(&ctx->audio_buf,
-					   ctx->pre_kf_audio_data,
-					   ctx->pre_kf_audio_size);
-			ctx->pre_kf_audio_size = 0;
-		}
 	}
 
 	/* Detect mid-stream resolution changes (adaptive bitrate, phone rotation) */
@@ -591,7 +602,6 @@ void *irl_receiver_thread(void *data)
 			/* Reset state for new connection */
 			ctx->first_keyframe_received = false;
 			ctx->video_ts_init = false;
-			ctx->pre_kf_audio_size = 0;
 		}
 
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
