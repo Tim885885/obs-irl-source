@@ -1,6 +1,8 @@
-# obs-irl-source
+# IRL Source
 
-OBS plugin for receiving live IRL streams over SRT, RTMP, or any FFmpeg-supported protocol. Built for the specific challenges of IRL streaming: unreliable mobile connections, mid-stream joins, codec changes, and audio discontinuities.
+Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live IRL streams over SRT, RTMP, or any FFmpeg-supported protocol. Built for the specific challenges of IRL streaming: unreliable mobile connections, mid-stream joins, codec changes, and audio discontinuities.
+
+> **Note:** This is an independent project by [irlserver.com](https://irlserver.com). It is not developed by, affiliated with, or endorsed by the OBS Project.
 
 ## Why open source?
 
