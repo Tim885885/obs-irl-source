@@ -77,6 +77,25 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 (long long)ctx->pts_repairs);
 	calldata_set_int(cd, "silence_insertions",
 			 (long long)ctx->silence_insertions);
+
+	/* Stream delay: how far behind real-time the video output is.
+	 * Computed as wall_clock - anchored_video_PTS.  Includes SRT
+	 * latency, decode time, and any buffering.  Useful for
+	 * monitoring end-to-end latency in stats overlays. */
+	int64_t stream_delay_ms = 0;
+	if (ctx->video_ts_init && ctx->latest_video_stream_pts_ns != 0) {
+		int64_t video_wall_ns =
+			(int64_t)ctx->video_sys_base +
+			(ctx->latest_video_stream_pts_ns -
+			 ctx->video_pts_base);
+		stream_delay_ms =
+			((int64_t)os_gettime_ns() - video_wall_ns) /
+			1000000;
+		if (stream_delay_ms < 0)
+			stream_delay_ms = 0;
+	}
+	calldata_set_int(cd, "stream_delay_ms",
+			 (long long)stream_delay_ms);
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */
@@ -102,7 +121,8 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"void get_stats(out int buffer_fill_ms, "
 		"out float current_speed, out bool reconnecting, "
 		"out int total_audio_frames, out int total_video_frames, "
-		"out int pts_repairs, out int silence_insertions)",
+		"out int pts_repairs, out int silence_insertions, "
+		"out int stream_delay_ms)",
 		irl_source_get_stats, ctx);
 
 	/* Start the receiver thread if we have a URL */
