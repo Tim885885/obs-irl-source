@@ -30,7 +30,8 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	 * with SPS/PPS — 500KB/0.5s is too small for typical 2-4s GOPs. */
 	av_dict_set(opts, "probesize", "5000000", 0);   /* 5 MB */
 	av_dict_set(opts, "analyzeduration", "5000000", 0); /* 5 s */
-	av_dict_set(opts, "fflags", "+discardcorrupt+genpts", 0);
+	av_dict_set(opts, "fflags", "+genpts", 0);
+	av_dict_set(opts, "thread_queue_size", "1024", 0);
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
 
@@ -45,7 +46,7 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 
 	/* SRT-specific: set receive buffer and latency */
 	if (url && strstr(url, "srt://")) {
-		av_dict_set(opts, "latency", "200000", 0); /* 200ms default */
+		av_dict_set(opts, "latency", "300000", 0); /* 300ms default */
 		if (network_buffer_mb > 0) {
 			char recv_buf[32];
 			snprintf(recv_buf, sizeof(recv_buf), "%d",
@@ -219,6 +220,12 @@ static bool open_stream(struct irl_source *ctx)
 
 	blog(LOG_INFO, "[irl-source] Input opened, probing streams...");
 
+	/* Note: probing an HEVC/SRT stream mid-GOP produces expected
+	 * "PPS id out of range" and "Skipping invalid undecodable NALU"
+	 * errors until the first keyframe with parameter sets arrives.
+	 * These are harmless and cannot be suppressed reliably —
+	 * av_log_set_level is global/not thread-safe, and the errors
+	 * come from internal codec contexts we don't control. */
 	if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) {
 		blog(LOG_WARNING,
 		     "[irl-source] Failed to find stream info");
@@ -328,7 +335,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
-		ctx->audio_output_pts_init = false;
+		ctx->audio_ts_init = false;
 		ctx->first_keyframe_received = false;
 		ctx->video_ts_init = false;
 	}
@@ -389,9 +396,19 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		return;
 	}
 
-	audio_buffer_write(&ctx->audio_buf, interleaved, data_bytes);
+	/* Write audio with its stream PTS to the PTS-aware buffer.
+	 * The PTS flows through the buffer so output timestamps
+	 * are exact (same approach as OBS Media Source). */
+	int64_t frame_pts_ns = corrected_pts * 1000000000LL *
+			       ctx->pts_state.tb_num /
+			       ctx->pts_state.tb_den;
+	audio_buffer_write_pts(&ctx->audio_buf, interleaved, data_bytes,
+			       frame_pts_ns);
 	if (interleaved != frame->data[0])
 		free(interleaved);
+
+	/* Track stream PTS for A/V sync monitoring */
+	ctx->latest_audio_stream_pts_ns = frame_pts_ns;
 
 	/* Track decoded frame size so output chunks match.  When
 	 * OBS's smoothed advance (chunk_samples / sample_rate)
@@ -400,8 +417,35 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * push_back is always used → audio_ts is never reset. */
 	ctx->decoded_frame_samples = frame->nb_samples;
 
-	/* Output audio to OBS in a loop until the buffer is at or
-	 * below target. */
+	/* Silence on underrun: only when we were previously outputting
+	 * real audio and the buffer drained (a stall).  Do NOT output
+	 * silence during initial fill-up — it advances OBS's audio
+	 * timeline before video starts, causing A/V desync. */
+	if (!audio_buffer_ready(&ctx->audio_buf) &&
+	    ctx->total_audio_frames > 0 &&
+	    ctx->decoded_frame_samples > 0) {
+		int base_samples = ctx->decoded_frame_samples;
+		size_t silence_bytes =
+			(size_t)base_samples *
+			ctx->audio_buf.frame_size;
+		uint8_t *silence_buf = calloc(1, silence_bytes);
+		if (silence_buf) {
+			struct obs_source_audio obs_audio = {0};
+			obs_audio.data[0] = silence_buf;
+			obs_audio.frames = (uint32_t)base_samples;
+			obs_audio.format = AUDIO_FORMAT_FLOAT;
+			obs_audio.speakers =
+				(enum speaker_layout)
+					ctx->audio_buf.channels;
+			obs_audio.timestamp = os_gettime_ns();
+			obs_audio.samples_per_sec =
+				(uint32_t)ctx->audio_buf.sample_rate;
+			obs_source_output_audio(ctx->source, &obs_audio);
+			free(silence_buf);
+		}
+		return;
+	}
+
 	while (audio_buffer_ready(&ctx->audio_buf)) {
 		int base_samples = ctx->decoded_frame_samples;
 		if (base_samples <= 0)
@@ -430,8 +474,45 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		if (!out_buf)
 			break;
 
-		size_t got = audio_buffer_read(&ctx->audio_buf, out_buf,
-					       frame_bytes);
+		/* Re-sync mode (Moblin hasBestBufferSynching):
+		 * If the oldest chunk's PTS is >50ms behind where
+		 * we expect, skip forward to re-align with the
+		 * stream.  Handles PTS discontinuities without
+		 * playing stale audio. */
+		if (ctx->audio_buf.chunk_count > 1 &&
+		    ctx->latest_audio_stream_pts_ns != 0) {
+			int64_t peek = audio_buffer_peek_pts(
+				&ctx->audio_buf);
+			if (peek != 0) {
+				int64_t expected =
+					ctx->latest_audio_stream_pts_ns -
+					(int64_t)audio_buffer_fill_ms(
+						 &ctx->audio_buf) *
+						1000000LL;
+				if (peek - expected < -50000000LL) {
+					blog(LOG_INFO,
+					     "[irl-source] Audio re-sync: skipping stale data (gap=%lldms)",
+					     (long long)((peek - expected) /
+							 1000000));
+					while (ctx->audio_buf.chunk_count >
+					       1) {
+						audio_buffer_skip_chunk(
+							&ctx->audio_buf);
+						int64_t next =
+							audio_buffer_peek_pts(
+								&ctx->audio_buf);
+						if (next >= expected)
+							break;
+					}
+				}
+			}
+		}
+
+		/* Read with PTS for A/V sync monitoring. */
+		int64_t chunk_pts_ns = 0;
+		size_t got = audio_buffer_read_pts(
+			&ctx->audio_buf, out_buf, frame_bytes,
+			&chunk_pts_ns);
 		if (got == 0) {
 			free(out_buf);
 			break;
@@ -463,40 +544,55 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			}
 		}
 
-		/* Timestamp: running counter, no PLL, no offset.
+		/* Timestamp: running counter (Moblin outputCounter).
 		 *
-		 * Init at os_gettime_ns() so audio_ts lands at or
-		 * near ts.end.  Re-anchor if the running PTS drifts
-		 * more than 200ms from the wall clock — this happens
-		 * after network stalls where av_read_frame blocks for
-		 * seconds while the running PTS stays frozen.  Without
-		 * re-anchoring, the stale PTS causes audio_ts to fall
-		 * far behind ts.start → "audio is lagging" cascade.
+		 * Advances by constant frame_duration per push,
+		 * exactly matching OBS's smoothed advance. Stream
+		 * PTS can't be used directly because the speed
+		 * controller changes chunk size, causing PTS to
+		 * advance at a different rate than OBS expects.
+		 * After ~14s of speed != 1.0, the drift exceeds
+		 * OBS's 70ms smoothing → lag cascade.
 		 *
-		 * 200ms threshold is well above normal jitter but
-		 * catches stalls before OBS's lag detection fires. */
-		if (!ctx->audio_output_pts_init) {
-			ctx->audio_output_pts_ns =
-				(int64_t)os_gettime_ns();
-			ctx->audio_output_pts_init = true;
-		} else {
-			int64_t audio_drift =
-				ctx->audio_output_pts_ns -
-				(int64_t)os_gettime_ns();
-			if (audio_drift < -200000000LL ||
-			    audio_drift > 200000000LL) {
-				blog(LOG_INFO,
-				     "[irl-source] Audio PTS drift: %lldms, re-anchoring",
-				     (long long)(audio_drift / 1000000));
-				ctx->audio_output_pts_ns =
-					(int64_t)os_gettime_ns();
-			}
+		 * The running counter stays in lockstep with OBS's
+		 * next_audio_ts_min because both advance by exactly
+		 * base_samples / sample_rate per push.
+		 *
+		 * Forward-only PLL: corrects when counter drifts
+		 * >30ms ahead of wall clock (step back 1 frame).
+		 * Never steps backward — would trigger lag cascade
+		 * with Low Latency Audio mode.  Speed controller
+		 * handles backward drift. */
+		int64_t frame_ns =
+			(int64_t)base_samples * 1000000000LL / out_rate;
+
+		if (!ctx->audio_ts_init) {
+			ctx->audio_sys_base = os_gettime_ns();
+			ctx->audio_pll_offset_ns = 0;
+			ctx->audio_ts_init = true;
 		}
-		/* No PLL.  With matching chunk/frame sizes, our PTS
-		 * advances at exactly frame_duration per push.  OBS's
-		 * smoothed position also advances at frame_duration
-		 * (after speed-compensated resampling).  Zero drift
-		 * → push_back always used → audio_ts never reset. */
+
+		uint64_t audio_ts = ctx->audio_sys_base +
+				    ctx->audio_pll_offset_ns;
+
+		/* Forward-only PLL: Moblin-style -1 frame */
+		uint64_t now = os_gettime_ns();
+		int64_t drift = (int64_t)audio_ts - (int64_t)now;
+		if (drift > 30000000LL) {
+			ctx->audio_pll_offset_ns -= frame_ns;
+			audio_ts -= frame_ns;
+		}
+
+		/* Safety clamp for extreme drift (stall/burst) */
+		drift = (int64_t)audio_ts - (int64_t)now;
+		if (drift < -500000000LL || drift > 500000000LL) {
+			ctx->audio_sys_base = now;
+			ctx->audio_pll_offset_ns = 0;
+			audio_ts = now;
+		}
+
+		/* Advance counter for next push */
+		ctx->audio_pll_offset_ns += frame_ns;
 
 		uint32_t frames_out =
 			(uint32_t)(got /
@@ -507,8 +603,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_audio.frames = frames_out;
 		obs_audio.format = AUDIO_FORMAT_FLOAT;
 		obs_audio.speakers = (enum speaker_layout)out_channels;
-		obs_audio.timestamp =
-			(uint64_t)ctx->audio_output_pts_ns;
+		obs_audio.timestamp = audio_ts;
 		obs_audio.samples_per_sec = (uint32_t)out_rate;
 
 		/* Adaptive speed: must run after samples_per_sec
@@ -517,13 +612,6 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			irl_speed_apply(ctx, &obs_audio);
 
 		obs_source_output_audio(ctx->source, &obs_audio);
-
-		/* Advance PTS by decoded frame size (constant), not
-		 * frames_out (varies with speed).  After OBS resamples,
-		 * the smoothed advance = base_samples / mixer_rate.
-		 * Our PTS must advance by the same amount. */
-		ctx->audio_output_pts_ns +=
-			(int64_t)base_samples * 1000000000LL / out_rate;
 		ctx->total_audio_frames++;
 
 		free(out_buf);
@@ -533,6 +621,16 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		    ctx->config.buffer_target_ms)
 			break;
 	}
+
+	/* Note: Moblin's TargetLatenciesSynchronizer doesn't apply to
+	 * push-based audio.  In Moblin (pull-based), increasing the
+	 * buffer target delays audio output.  In OBS push-based,
+	 * audio plays when we push it — buffer target only affects
+	 * the speed controller threshold.  Additionally, comparing
+	 * latest_audio_stream_pts (newest in buffer) with
+	 * latest_video_stream_pts (last output) creates a false
+	 * positive: the diff IS the buffer fill, not a desync.
+	 * A/V sync is maintained by the video +target_ms offset. */
 }
 
 static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
@@ -547,9 +645,33 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 
 		ctx->first_keyframe_received = true;
+		ctx->video_corrupted = false;
 		blog(LOG_INFO,
 		     "[irl-source] First keyframe received (%dx%d fmt=%d)",
 		     frame->width, frame->height, frame->format);
+	}
+
+	/* Clear corruption flag on keyframe — the decoder has a
+	 * fresh reference point and can produce clean output. */
+	if (irl_video_is_keyframe(frame))
+		ctx->video_corrupted = false;
+
+	/* Skip frames with decode errors or from a corrupted decoder
+	 * state.  OBS_SOURCE_ASYNC_VIDEO holds the last good frame
+	 * automatically, so viewers see a freeze instead of
+	 * black/corrupted flickering.  Matches Moblin's approach. */
+	if (ctx->video_corrupted || frame->decode_error_flags != 0) {
+		if (!ctx->video_skip_logged) {
+			blog(LOG_WARNING,
+			     "[irl-source] Skipping corrupt video frames, holding last good frame");
+			ctx->video_skip_logged = true;
+		}
+		return;
+	}
+	if (ctx->video_skip_logged) {
+		blog(LOG_INFO,
+		     "[irl-source] Clean video frame received, resuming output");
+		ctx->video_skip_logged = false;
 	}
 
 	/* Detect mid-stream resolution changes (adaptive bitrate, phone rotation) */
@@ -564,6 +686,15 @@ static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 	ctx->last_video_width = frame->width;
 	ctx->last_video_height = frame->height;
+
+	/* Track video stream PTS for A/V sync monitoring */
+	if (ctx->fmt_ctx && ctx->video_stream_idx >= 0) {
+		AVStream *vs =
+			ctx->fmt_ctx->streams[ctx->video_stream_idx];
+		ctx->latest_video_stream_pts_ns =
+			frame->pts * 1000000000LL * vs->time_base.num /
+			vs->time_base.den;
+	}
 
 	irl_video_output_frame(ctx, frame);
 	ctx->total_video_frames++;
@@ -669,7 +800,8 @@ void *irl_receiver_thread(void *data)
 			close_ffmpeg(ctx);
 			pts_repair_reset(&ctx->pts_state);
 			audio_buffer_flush(&ctx->audio_buf);
-			ctx->audio_output_pts_init = false;
+			ctx->audio_ts_init = false;
+			ctx->audio_pll_offset_ns = 0;
 			ctx->current_speed = 1.0f;
 			ctx->last_speed_adjust_time = 0;
 			ctx->fade_in_pending = true;
@@ -681,12 +813,31 @@ void *irl_receiver_thread(void *data)
 			ret = avcodec_send_packet(ctx->audio_dec_ctx, pkt);
 			if (ret < 0 && ret != AVERROR(EAGAIN) &&
 			    ret != AVERROR_EOF) {
-				/* Decoder in bad state (bitrate starvation,
-				 * corrupt packets).  Flush to recover instead
-				 * of letting audio break permanently. */
-				avcodec_flush_buffers(ctx->audio_dec_ctx);
+				/* Only flush after 3 consecutive errors.
+				 * A single corrupt packet shouldn't reset
+				 * the decoder — the decoder can usually
+				 * continue and error-conceal the damage.
+				 * Flushing loses decoder state (reference
+				 * frames) and requires a new keyframe. */
+				ctx->audio_decode_errors++;
+				if (ctx->audio_decode_errors >= 3) {
+					blog(LOG_WARNING,
+					     "[irl-source] Audio decoder: %d consecutive errors, flushing",
+					     ctx->audio_decode_errors);
+					avcodec_flush_buffers(
+						ctx->audio_dec_ctx);
+					ctx->audio_decode_errors = 0;
+				}
+			} else {
+				ctx->audio_decode_errors = 0;
 			}
-			while (ret >= 0) {
+			/* Always drain queued frames, even if send_packet
+			 * failed.  The decoder may have frames buffered
+			 * from previous packets that are ready to output.
+			 * The old code used `while (ret >= 0)` which
+			 * skipped receive_frame entirely when send_packet
+			 * returned an error — silently losing frames. */
+			for (;;) {
 				ret = avcodec_receive_frame(ctx->audio_dec_ctx,
 							   frame);
 				if (ret < 0)
@@ -699,9 +850,20 @@ void *irl_receiver_thread(void *data)
 			ret = avcodec_send_packet(ctx->video_dec_ctx, pkt);
 			if (ret < 0 && ret != AVERROR(EAGAIN) &&
 			    ret != AVERROR_EOF) {
-				avcodec_flush_buffers(ctx->video_dec_ctx);
+				ctx->video_decode_errors++;
+				ctx->video_corrupted = true;
+				if (ctx->video_decode_errors >= 3) {
+					blog(LOG_WARNING,
+					     "[irl-source] Video decoder: %d consecutive errors, flushing",
+					     ctx->video_decode_errors);
+					avcodec_flush_buffers(
+						ctx->video_dec_ctx);
+					ctx->video_decode_errors = 0;
+				}
+			} else {
+				ctx->video_decode_errors = 0;
 			}
-			while (ret >= 0) {
+			for (;;) {
 				ret = avcodec_receive_frame(ctx->video_dec_ctx,
 							   frame);
 				if (ret < 0)

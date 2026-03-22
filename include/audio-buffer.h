@@ -5,10 +5,16 @@
  * Copyright (C) 2026 Thomas Lekanger
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * audio-buffer.h — Codec-agnostic jitter buffer
+ * audio-buffer.h — PTS-aware jitter buffer
  *
- * Ring buffer sized in milliseconds (not frames).  Adapts automatically
- * to any sample rate, channel count, and sample format.
+ * Ring buffer for PCM storage with a parallel queue of PTS-tagged
+ * chunk metadata.  Each write records the stream PTS of the data;
+ * each read returns the PTS of the oldest data.  This gives exact
+ * A/V sync (same approach as OBS Media Source — stream PTS anchored
+ * to wall clock).
+ *
+ * Inspired by Moblin's Deque<CMSampleBuffer>, adapted for C with
+ * a fixed-size ring buffer instead of per-chunk allocation.
  */
 
 #pragma once
@@ -18,6 +24,19 @@
 #include <stddef.h>
 #include <util/threading.h> /* OBS cross-platform pthread wrappers */
 
+/* ── PTS chunk metadata ──────────────────────────────────── */
+
+/* Max chunks in the PTS queue.  At 21ms per AAC frame with a
+ * 300ms max buffer, that's ~14 chunks.  256 gives ample headroom
+ * for burst decode and speed controller variations. */
+#define AUDIO_PTS_MAX_CHUNKS 256
+
+struct audio_pts_chunk {
+	int64_t pts_ns;  /* stream PTS in nanoseconds */
+	size_t size;     /* bytes of PCM data for this chunk */
+	size_t consumed; /* bytes already read from this chunk */
+};
+
 /* ── Audio buffer ─────────────────────────────────────────── */
 
 struct audio_buffer {
@@ -26,6 +45,13 @@ struct audio_buffer {
 	size_t head;         /* write position */
 	size_t tail;         /* read position */
 	size_t fill;         /* current fill in bytes */
+
+	/* PTS chunk queue: tracks what PTS corresponds to each
+	 * segment of data in the ring buffer. */
+	struct audio_pts_chunk chunks[AUDIO_PTS_MAX_CHUNKS];
+	int chunk_head; /* next write slot */
+	int chunk_tail; /* next read slot */
+	int chunk_count;
 
 	/* Stream format (set once per session) */
 	int sample_rate;
@@ -58,18 +84,45 @@ void audio_buffer_free(struct audio_buffer *buf);
 void audio_buffer_flush(struct audio_buffer *buf);
 
 /**
- * Write decoded PCM samples into the buffer.
+ * Write decoded PCM samples with their stream PTS.
  * Returns the number of bytes actually written (may be less if buffer is full).
+ */
+size_t audio_buffer_write_pts(struct audio_buffer *buf, const uint8_t *samples,
+			      size_t bytes, int64_t pts_ns);
+
+/**
+ * Write decoded PCM samples (no PTS tracking).
+ * Used for silence insertion and legacy paths.
  */
 size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
 			  size_t bytes);
 
 /**
- * Read up to `max_bytes` of PCM from the buffer.
+ * Read up to `max_bytes` of PCM from the buffer, returning the PTS
+ * of the oldest data read via `out_pts_ns`.
+ * Returns the number of bytes read.
+ */
+size_t audio_buffer_read_pts(struct audio_buffer *buf, uint8_t *out,
+			     size_t max_bytes, int64_t *out_pts_ns);
+
+/**
+ * Read up to `max_bytes` of PCM from the buffer (no PTS).
  * Returns the number of bytes read.
  */
 size_t audio_buffer_read(struct audio_buffer *buf, uint8_t *out,
 			 size_t max_bytes);
+
+/**
+ * Peek at the PTS of the oldest chunk without consuming it.
+ * Returns 0 if the chunk queue is empty.
+ */
+int64_t audio_buffer_peek_pts(const struct audio_buffer *buf);
+
+/**
+ * Discard the oldest chunk from the buffer (advance tail past it).
+ * Used by re-sync mode to skip stale data after PTS discontinuities.
+ */
+void audio_buffer_skip_chunk(struct audio_buffer *buf);
 
 /** Current fill level in milliseconds. */
 int audio_buffer_fill_ms(const struct audio_buffer *buf);

@@ -16,7 +16,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 
 | | Media Source | IRL Source |
 |---|---|---|
-| **Audio jitter buffer** | None. Plays audio as fast as it arrives, leading to stuttering or speedups on unstable connections | Configurable ring buffer (default 80ms) absorbs network jitter and outputs smooth audio |
+| **Audio jitter buffer** | None. Plays audio as fast as it arrives, leading to stuttering or speedups on unstable connections | Configurable ring buffer (default 120ms) absorbs network jitter and outputs smooth audio |
 | **Adaptive playback speed** | Fixed 1x. Buffer grows unbounded on slow connections, causing increasing latency | Dynamically adjusts speed between 0.95x-1.05x to keep buffer at target level, preventing drift |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three-tier repair: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt audio cutoff causes a loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
@@ -81,9 +81,9 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 | URL | — | Any FFmpeg-supported URL (SRT, RTMP, etc.) |
 | Reconnect Delay | 2s | Seconds between reconnect attempts |
 | Network Buffer | 2 MB | Transport-level buffer size (higher = more resilient, more latency) |
-| Target Buffer | 80ms | Audio jitter buffer target fill level |
-| Min Buffer | 40ms | Minimum buffer before playback starts |
-| Max Buffer | 200ms | Maximum buffer size (excess is trimmed) |
+| Target Buffer | 120ms | Audio jitter buffer target fill level |
+| Min Buffer | 60ms | Minimum buffer before playback starts |
+| Max Buffer | 300ms | Maximum buffer size (excess is trimmed) |
 | Adaptive Speed | On | Auto-adjust playback speed to maintain buffer level |
 | Speed Min/Max | 0.95/1.05 | Playback speed range for adaptive mode |
 | Small Gap | 70ms | PTS gaps below this are interpolated silently |

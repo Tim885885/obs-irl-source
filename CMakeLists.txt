@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.16)
-project(obs-irl-source VERSION 0.2.2 LANGUAGES C)
+project(obs-irl-source VERSION 0.2.5 LANGUAGES C)
 
 # ── Find OBS ─────────────────────────────────────────────────
 # Try find_package first (works with OBS build tree, cmake install, or

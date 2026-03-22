@@ -12,7 +12,7 @@
 
 #pragma once
 
-#define OBS_IRL_SOURCE_VERSION "0.2.2"
+#define OBS_IRL_SOURCE_VERSION "0.2.5"
 
 #include <obs-module.h>
 #include <util/platform.h>
@@ -34,9 +34,9 @@ struct irl_source;
 
 #define IRL_DEFAULT_RECONNECT_DELAY 2
 #define IRL_DEFAULT_NETWORK_BUFFER_MB 2
-#define IRL_DEFAULT_BUFFER_TARGET_MS 80
-#define IRL_DEFAULT_BUFFER_MIN_MS 40
-#define IRL_DEFAULT_BUFFER_MAX_MS 200
+#define IRL_DEFAULT_BUFFER_TARGET_MS 120
+#define IRL_DEFAULT_BUFFER_MIN_MS 60
+#define IRL_DEFAULT_BUFFER_MAX_MS 300
 #define IRL_DEFAULT_ADAPTIVE_SPEED true
 #define IRL_DEFAULT_SPEED_MIN 0.95f
 #define IRL_DEFAULT_SPEED_MAX 1.05f
@@ -108,6 +108,23 @@ struct irl_source {
 	uint64_t video_sys_base;  /* os_gettime_ns() at first frame */
 	int64_t video_pts_base;   /* stream PTS at first frame (in ns) */
 
+	/* Audio timestamp sync (same approach as video — stream PTS
+	 * anchored to system clock, giving proper A/V sync).
+	 * PTS comes from the PTS-aware jitter buffer, not estimated. */
+	bool audio_ts_init;
+	uint64_t audio_sys_base;  /* os_gettime_ns() at first audio output */
+	int64_t audio_pts_base;   /* stream PTS at first audio output (ns) */
+
+	/* Gentle PLL: Moblin-style ±1 frame correction when the
+	 * computed audio PTS drifts >30ms from wall clock.  Each
+	 * correction is ~21ms (one frame), well within OBS's 70ms
+	 * smoothing window — absorbed safely, no cascade. */
+	int64_t audio_pll_offset_ns;
+
+	/* Stream PTS tracking for A/V sync and re-sync mode */
+	int64_t latest_audio_stream_pts_ns;
+	int64_t latest_video_stream_pts_ns;
+
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
 
@@ -124,9 +141,17 @@ struct irl_source {
 	 * and periodically resets audio_ts → "audio is lagging". */
 	int decoded_frame_samples;
 
-	/* Running output PTS */
-	int64_t audio_output_pts_ns;
-	bool audio_output_pts_init;
+	/* Consecutive decode error counters.  Only flush the decoder
+	 * after 3+ consecutive errors — a single corrupt packet should
+	 * not reset the decoder state (losing reference frames). */
+	int audio_decode_errors;
+	int video_decode_errors;
+
+	/* Video corruption tracking.  Set when send_packet fails
+	 * (HW decoders may not set decode_error_flags reliably).
+	 * Cleared on next keyframe. */
+	bool video_corrupted;
+	bool video_skip_logged;
 
 	/* Keyframe gate */
 	bool first_keyframe_received;

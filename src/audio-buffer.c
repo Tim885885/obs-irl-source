@@ -5,10 +5,12 @@
  * Copyright (C) 2026 Thomas Lekanger
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * audio-buffer.c — Codec-agnostic jitter buffer
+ * audio-buffer.c — PTS-aware jitter buffer
  *
- * Ring buffer sized in milliseconds.  Works with any sample rate,
- * channel count, and sample format.
+ * Ring buffer for PCM with a parallel PTS chunk queue.  Each
+ * write records the stream PTS; each read returns the PTS of
+ * the oldest data.  Enables exact A/V sync with stream-PTS-based
+ * timestamps (same approach as OBS Media Source).
  */
 
 #include <stdlib.h>
@@ -24,6 +26,77 @@ static size_t ms_to_bytes(const struct audio_buffer *buf, int ms)
 		return 0;
 	return (size_t)((int64_t)ms * buf->sample_rate / 1000) *
 	       buf->frame_size;
+}
+
+/* Write raw bytes to the ring buffer (no PTS tracking). */
+static size_t ring_write(struct audio_buffer *buf, const uint8_t *samples,
+			 size_t bytes)
+{
+	size_t avail = buf->capacity - buf->fill;
+	size_t to_write = bytes < avail ? bytes : avail;
+
+	if (to_write == 0)
+		return 0;
+
+	size_t first_chunk = buf->capacity - buf->head;
+	if (first_chunk >= to_write) {
+		memcpy(buf->data + buf->head, samples, to_write);
+	} else {
+		memcpy(buf->data + buf->head, samples, first_chunk);
+		memcpy(buf->data, samples + first_chunk,
+		       to_write - first_chunk);
+	}
+
+	buf->head = (buf->head + to_write) % buf->capacity;
+	buf->fill += to_write;
+	return to_write;
+}
+
+/* Read raw bytes from the ring buffer (no PTS tracking). */
+static size_t ring_read(struct audio_buffer *buf, uint8_t *out,
+			size_t max_bytes)
+{
+	size_t to_read = max_bytes < buf->fill ? max_bytes : buf->fill;
+
+	if (to_read == 0)
+		return 0;
+
+	size_t first_chunk = buf->capacity - buf->tail;
+	if (first_chunk >= to_read) {
+		memcpy(out, buf->data + buf->tail, to_read);
+	} else {
+		memcpy(out, buf->data + buf->tail, first_chunk);
+		memcpy(out + first_chunk, buf->data,
+		       to_read - first_chunk);
+	}
+
+	buf->tail = (buf->tail + to_read) % buf->capacity;
+	buf->fill -= to_read;
+	return to_read;
+}
+
+/* Retire PTS chunks as data is consumed. */
+static void pts_consume(struct audio_buffer *buf, size_t bytes_consumed)
+{
+	size_t remaining = bytes_consumed;
+	while (remaining > 0 && buf->chunk_count > 0) {
+		struct audio_pts_chunk *c =
+			&buf->chunks[buf->chunk_tail];
+		size_t avail = c->size - c->consumed;
+
+		if (remaining >= avail) {
+			/* Fully consumed this chunk */
+			remaining -= avail;
+			buf->chunk_tail =
+				(buf->chunk_tail + 1) %
+				AUDIO_PTS_MAX_CHUNKS;
+			buf->chunk_count--;
+		} else {
+			/* Partially consumed */
+			c->consumed += remaining;
+			remaining = 0;
+		}
+	}
 }
 
 /* ── Public API ───────────────────────────────────────────── */
@@ -70,7 +143,36 @@ void audio_buffer_flush(struct audio_buffer *buf)
 	buf->head = 0;
 	buf->tail = 0;
 	buf->fill = 0;
+	buf->chunk_head = 0;
+	buf->chunk_tail = 0;
+	buf->chunk_count = 0;
 	pthread_mutex_unlock(&buf->lock);
+}
+
+size_t audio_buffer_write_pts(struct audio_buffer *buf, const uint8_t *samples,
+			      size_t bytes, int64_t pts_ns)
+{
+	if (!buf->data || bytes == 0)
+		return 0;
+
+	pthread_mutex_lock(&buf->lock);
+
+	size_t written = ring_write(buf, samples, bytes);
+
+	/* Record PTS chunk metadata if there's room */
+	if (written > 0 && buf->chunk_count < AUDIO_PTS_MAX_CHUNKS) {
+		struct audio_pts_chunk *c =
+			&buf->chunks[buf->chunk_head];
+		c->pts_ns = pts_ns;
+		c->size = written;
+		c->consumed = 0;
+		buf->chunk_head =
+			(buf->chunk_head + 1) % AUDIO_PTS_MAX_CHUNKS;
+		buf->chunk_count++;
+	}
+
+	pthread_mutex_unlock(&buf->lock);
+	return written;
 }
 
 size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
@@ -80,30 +182,48 @@ size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
 		return 0;
 
 	pthread_mutex_lock(&buf->lock);
+	size_t written = ring_write(buf, samples, bytes);
+	pthread_mutex_unlock(&buf->lock);
+	return written;
+}
 
-	size_t avail = buf->capacity - buf->fill;
-	size_t to_write = bytes < avail ? bytes : avail;
-
-	if (to_write == 0) {
-		pthread_mutex_unlock(&buf->lock);
+size_t audio_buffer_read_pts(struct audio_buffer *buf, uint8_t *out,
+			     size_t max_bytes, int64_t *out_pts_ns)
+{
+	if (!buf->data || max_bytes == 0)
 		return 0;
+
+	pthread_mutex_lock(&buf->lock);
+
+	/* Get PTS of the oldest data before reading */
+	if (out_pts_ns) {
+		if (buf->chunk_count > 0) {
+			struct audio_pts_chunk *c =
+				&buf->chunks[buf->chunk_tail];
+			/* Interpolate PTS based on how much of this
+			 * chunk has already been consumed. */
+			if (buf->sample_rate > 0 && buf->frame_size > 0) {
+				int64_t consumed_samples =
+					(int64_t)c->consumed /
+					buf->frame_size;
+				*out_pts_ns =
+					c->pts_ns +
+					consumed_samples * 1000000000LL /
+						buf->sample_rate;
+			} else {
+				*out_pts_ns = c->pts_ns;
+			}
+		} else {
+			*out_pts_ns = 0;
+		}
 	}
 
-	/* Handle wrap-around */
-	size_t first_chunk = buf->capacity - buf->head;
-	if (first_chunk >= to_write) {
-		memcpy(buf->data + buf->head, samples, to_write);
-	} else {
-		memcpy(buf->data + buf->head, samples, first_chunk);
-		memcpy(buf->data, samples + first_chunk,
-		       to_write - first_chunk);
-	}
-
-	buf->head = (buf->head + to_write) % buf->capacity;
-	buf->fill += to_write;
+	size_t got = ring_read(buf, out, max_bytes);
+	if (got > 0)
+		pts_consume(buf, got);
 
 	pthread_mutex_unlock(&buf->lock);
-	return to_write;
+	return got;
 }
 
 size_t audio_buffer_read(struct audio_buffer *buf, uint8_t *out,
@@ -113,29 +233,51 @@ size_t audio_buffer_read(struct audio_buffer *buf, uint8_t *out,
 		return 0;
 
 	pthread_mutex_lock(&buf->lock);
+	size_t got = ring_read(buf, out, max_bytes);
+	if (got > 0)
+		pts_consume(buf, got);
+	pthread_mutex_unlock(&buf->lock);
+	return got;
+}
 
-	size_t to_read = max_bytes < buf->fill ? max_bytes : buf->fill;
-
-	if (to_read == 0) {
-		pthread_mutex_unlock(&buf->lock);
+int64_t audio_buffer_peek_pts(const struct audio_buffer *buf)
+{
+	if (buf->chunk_count <= 0)
 		return 0;
+
+	const struct audio_pts_chunk *c =
+		&buf->chunks[buf->chunk_tail];
+	if (buf->sample_rate > 0 && buf->frame_size > 0) {
+		int64_t consumed_samples =
+			(int64_t)c->consumed / buf->frame_size;
+		return c->pts_ns +
+		       consumed_samples * 1000000000LL / buf->sample_rate;
+	}
+	return c->pts_ns;
+}
+
+void audio_buffer_skip_chunk(struct audio_buffer *buf)
+{
+	if (!buf->data || buf->chunk_count <= 0)
+		return;
+
+	pthread_mutex_lock(&buf->lock);
+
+	struct audio_pts_chunk *c = &buf->chunks[buf->chunk_tail];
+	size_t remaining = c->size - c->consumed;
+
+	/* Advance ring buffer tail past this chunk's data */
+	if (remaining > 0 && remaining <= buf->fill) {
+		buf->tail = (buf->tail + remaining) % buf->capacity;
+		buf->fill -= remaining;
 	}
 
-	/* Handle wrap-around */
-	size_t first_chunk = buf->capacity - buf->tail;
-	if (first_chunk >= to_read) {
-		memcpy(out, buf->data + buf->tail, to_read);
-	} else {
-		memcpy(out, buf->data + buf->tail, first_chunk);
-		memcpy(out + first_chunk, buf->data,
-		       to_read - first_chunk);
-	}
-
-	buf->tail = (buf->tail + to_read) % buf->capacity;
-	buf->fill -= to_read;
+	/* Retire the chunk metadata */
+	buf->chunk_tail =
+		(buf->chunk_tail + 1) % AUDIO_PTS_MAX_CHUNKS;
+	buf->chunk_count--;
 
 	pthread_mutex_unlock(&buf->lock);
-	return to_read;
 }
 
 int audio_buffer_fill_ms(const struct audio_buffer *buf)

@@ -101,27 +101,25 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 
 /* ── Timestamp sync ───────────────────────────────────────── */
 
-/* Maximum allowed deviation between computed timestamp and wall clock
- * before re-anchoring (500ms).  Must be large enough to tolerate
- * burst decode catch-up (~100-150ms at 30fps) without triggering.
- * Real PTS discontinuities (SRT reconnection, encoder restart) cause
- * jumps of 300ms+, which this catches. */
-#define VIDEO_TS_REANCHOR_NS 500000000LL
+/* Drift threshold for video PTS clamping (500ms).
+ *
+ * Instead of re-anchoring (which causes visible timeline jumps),
+ * clamp the computed timestamp to a reasonable range:
+ * - Too far behind wall clock: display immediately (use `now`)
+ * - Too far ahead: cap at `now + 200ms`
+ *
+ * The anchor stays unchanged — normal frames self-correct after
+ * the burst.  This produces smooth video with no visible skips.
+ * Backward drift catches up via brief speedup (frames displayed
+ * immediately until PTS catches up).  Forward drift is capped
+ * so OBS doesn't hold the previous frame for too long. */
+#define VIDEO_TS_CLAMP_NS 500000000LL   /* 500ms */
+#define VIDEO_TS_CAP_NS   200000000ULL  /* 200ms forward cap */
 
 /* Convert stream PTS to OBS nanosecond timestamp, anchored to the
  * system clock at the time of the first frame.  This preserves the
  * inter-frame timing from the stream (smooth playback) while keeping
- * timestamps in OBS's clock domain.
- *
- * If the computed timestamp drifts more than VIDEO_TS_REANCHOR_NS
- * from the current wall clock, re-anchor to avoid video freezes
- * caused by PTS discontinuities (network hiccups, corrupt packets).
- *
- * Normal burst decode after a network stall produces ~100-150ms of
- * forward drift (stream PTS advances at real-time rate while the
- * decoder outputs frames in milliseconds).  OBS's async video system
- * handles this correctly — frames are queued and displayed at their
- * timestamp.  Only large jumps need re-anchoring. */
+ * timestamps in OBS's clock domain. */
 static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 {
 	AVStream *vs = ctx->fmt_ctx->streams[ctx->video_stream_idx];
@@ -139,15 +137,22 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	uint64_t now = os_gettime_ns();
 	int64_t drift = (int64_t)computed - (int64_t)now;
 
-	if (drift > VIDEO_TS_REANCHOR_NS ||
-	    drift < -VIDEO_TS_REANCHOR_NS) {
-		blog(LOG_WARNING,
-		     "[irl-source] Video PTS discontinuity: drift=%lldms, re-anchoring",
-		     (long long)(drift / 1000000));
-		ctx->video_sys_base = now;
-		ctx->video_pts_base = pts_ns;
+	/* Clamp without re-anchoring — no visible skip, anchor
+	 * stays stable so subsequent frames self-correct. */
+	if (drift < -(int64_t)VIDEO_TS_CLAMP_NS) {
 		computed = now;
+	} else if (drift > (int64_t)VIDEO_TS_CLAMP_NS) {
+		computed = now + VIDEO_TS_CAP_NS;
 	}
+
+	/* A/V sync: delay video by the audio buffer target.
+	 * Audio uses a running counter starting at os_gettime_ns(),
+	 * but the audio DATA being played is ~target_ms old (sat in
+	 * the jitter buffer).  Video has no buffer and plays at
+	 * real-time.  Adding target_ms to video timestamps delays
+	 * video by the same amount, keeping them in sync.
+	 * OBS's async video system queues frames by timestamp. */
+	computed += (uint64_t)ctx->config.buffer_target_ms * 1000000ULL;
 
 	return computed;
 }

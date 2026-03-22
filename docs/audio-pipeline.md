@@ -1,6 +1,6 @@
 # Audio pipeline
 
-How the plugin keeps audio stable on unreliable mobile connections, and why an 80ms buffer works where Media Source needs seconds.
+How the plugin keeps audio stable on unreliable mobile connections, and why a 120ms buffer works where Media Source needs seconds.
 
 ## The problem with big buffers
 
@@ -22,9 +22,9 @@ A ring buffer sized in milliseconds, not bytes. Default settings:
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| Target | 80ms | Where the buffer tries to stay |
-| Min | 40ms | Playback starts when buffer reaches this level |
-| Max | 200ms | Upper bound before the buffer is considered overfull |
+| Target | 120ms | Where the buffer tries to stay |
+| Min | 60ms | Playback starts when buffer reaches this level |
+| Max | 300ms | Upper bound before the buffer is considered overfull |
 
 The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in; smooth PCM comes out.
 
@@ -36,11 +36,11 @@ Even with the drain loop, the buffer level drifts over time due to clock differe
 
 When the buffer is above target, the plugin reports a slightly higher `samples_per_sec` to OBS (e.g., 50400 instead of 48000). OBS's audio subsystem resamples accordingly, effectively playing audio ~5% faster. When the buffer drops below target, it reports a lower rate to slow down.
 
-A ±15ms dead zone around the target prevents oscillation. If the buffer is between 65ms and 95ms (with the default 80ms target), speed stays at 1.0 — no resampling, no artifacts. Speed correction only kicks in outside this range, scaling proportionally toward the configured min/max (0.95x/1.05x).
+A ±15ms dead zone around the target prevents oscillation. If the buffer is between 105ms and 135ms (with the default 120ms target), speed stays at 1.0 — no resampling, no artifacts. Speed correction only kicks in outside this range, scaling proportionally toward the configured min/max (0.95x/1.05x).
 
 The adjustment range is 0.95x to 1.05x. Changes below 5% are inaudible — no pitch-shifting library is needed. An exponential moving average (500ms ramp) smooths the transitions so the rate doesn't jump between chunks.
 
-The result: the buffer stays at 80ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
+The result: the buffer stays at 120ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
 
 ### 3. PTS repair (handles timestamp discontinuities)
 
@@ -86,11 +86,11 @@ If the computed timestamp drifts more than 100ms from the current wall clock (du
 
 | Scenario | Media Source | IRL Source |
 |---|---|---|
-| Stable connection | Works fine, but adds seconds of latency | Works fine, adds ~80ms of latency |
+| Stable connection | Works fine, but adds seconds of latency | Works fine, adds ~120ms of latency |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift | Buffer grows forever, latency increases | Speed adjusts, buffer stays at 80ms |
+| Sender clock drift | Buffer grows forever, latency increases | Speed adjusts, buffer stays at 120ms |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps anchored to system clock |
 
-The tradeoff: if the network drops for longer than the max buffer (200ms), there's no cushion left and you'll hear it. But for SRTLA with bonded connections, sustained 200ms+ gaps are rare — and when they happen, you'd rather know immediately than have the problem hidden behind seconds of buffer.
+The tradeoff: if the network drops for longer than the max buffer (300ms), there's no cushion left and you'll hear it. But for SRTLA with bonded connections, sustained 300ms+ gaps are rare — and when they happen, you'd rather know immediately than have the problem hidden behind seconds of buffer.
