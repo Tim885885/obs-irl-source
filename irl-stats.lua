@@ -21,14 +21,15 @@ function script_tick(seconds)
     local video = obs.calldata_int(cd, "total_video_frames")
     local audio = obs.calldata_int(cd, "total_audio_frames")
     local repairs = obs.calldata_int(cd, "pts_repairs")
+    local delay = obs.calldata_int(cd, "stream_delay_ms")
 
     obs.calldata_destroy(cd)
     obs.obs_source_release(source)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nBuffer: %dms\nSpeed: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
-        status, buf_ms, speed, video, audio, repairs
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nSpeed: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
+        status, delay, buf_ms, speed, video, audio, repairs
     )
 
     local text_source = obs.obs_get_source_by_name("IRL Stats")
