@@ -106,10 +106,6 @@ else()
     )
     if(SIMDE_FALLBACK_INCLUDE_DIR)
         list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${SIMDE_FALLBACK_INCLUDE_DIR}")
-    elseif(OBS_SOURCE_DIR)
-    message(FATAL_ERROR
-        "Building against OBS source requires SIMDe headers. "
-        "Install SIMDe or add it to CMAKE_PREFIX_PATH.")
     endif()
 endif()
 
@@ -129,10 +125,6 @@ else()
     if(JANSSON_FALLBACK_INCLUDE_DIR AND JANSSON_FALLBACK_LIBRARY)
         list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${JANSSON_FALLBACK_INCLUDE_DIR}")
         list(APPEND _OBS_EXTRA_LIBS "${JANSSON_FALLBACK_LIBRARY}")
-    elseif(OBS_SOURCE_DIR)
-    message(FATAL_ERROR
-        "Building against OBS source requires jansson. "
-        "Install jansson dev files or add them to CMAKE_PREFIX_PATH.")
     endif()
 endif()
 
@@ -146,10 +138,6 @@ else()
     )
     if(UTHASH_FALLBACK_INCLUDE_DIR)
         list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${UTHASH_FALLBACK_INCLUDE_DIR}")
-    elseif(OBS_SOURCE_DIR)
-    message(FATAL_ERROR
-        "Building against OBS source requires uthash headers. "
-        "Install uthash or add it to CMAKE_PREFIX_PATH.")
     endif()
 endif()
 
