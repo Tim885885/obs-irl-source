@@ -359,10 +359,41 @@ static void reset_stream_timing_state(struct irl_source *ctx)
 	ctx->video_skip_logged = false;
 }
 
+static void reset_audio_timing_state(struct irl_source *ctx)
+{
+	ctx->audio_ts_init = false;
+	ctx->audio_pll_offset_ns = 0;
+	ctx->latest_audio_stream_pts_ns = 0;
+	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->decoded_frame_samples = 0;
+}
+
+static int64_t audio_frame_pts(const AVFrame *frame)
+{
+	if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+		return frame->best_effort_timestamp;
+	if (frame->pts != AV_NOPTS_VALUE)
+		return frame->pts;
+	return AV_NOPTS_VALUE;
+}
+
+static int64_t video_frame_pts(const AVFrame *frame)
+{
+	if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+		return frame->best_effort_timestamp;
+	if (frame->pts != AV_NOPTS_VALUE)
+		return frame->pts;
+	return AV_NOPTS_VALUE;
+}
+
 /* ── Decoded frame handling ───────────────────────────────── */
 
 static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 {
+	AVStream *as = NULL;
+	if (ctx->fmt_ctx && ctx->audio_stream_idx >= 0)
+		as = ctx->fmt_ctx->streams[ctx->audio_stream_idx];
+
 	/* Determine output format: planar float → interleaved float for OBS */
 	int out_channels = frame->ch_layout.nb_channels;
 	int out_rate = frame->sample_rate;
@@ -383,10 +414,32 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 
 	/* PTS repair */
+	int64_t input_pts = audio_frame_pts(frame);
+	if (input_pts == AV_NOPTS_VALUE) {
+		if (ctx->pts_state.initialised) {
+			input_pts =
+				ctx->pts_state.last_pts +
+				ctx->pts_state.last_duration;
+		} else {
+			blog(LOG_WARNING,
+			     "[irl-source] Dropping audio frame without valid PTS");
+			return;
+		}
+	}
+
+	int64_t duration = frame->duration;
+	if (duration <= 0 && as && out_rate > 0 && frame->nb_samples > 0) {
+		duration = av_rescale_q(frame->nb_samples,
+					(AVRational){1, out_rate},
+					as->time_base);
+	}
+	if (duration <= 0)
+		duration = 1;
+
 	int64_t corrected_pts;
 	int silence_ms = 0;
 	enum pts_action action = pts_repair_evaluate(
-		&ctx->pts_state, frame->pts, frame->duration, &corrected_pts,
+		&ctx->pts_state, input_pts, duration, &corrected_pts,
 		&silence_ms);
 
 	if (action == PTS_ACTION_SILENCE && silence_ms > 0) {
@@ -689,6 +742,17 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 {
+	int64_t pts = video_frame_pts(frame);
+	if (pts == AV_NOPTS_VALUE) {
+		if (!ctx->video_skip_logged) {
+			blog(LOG_WARNING,
+			     "[irl-source] Dropping video frame without valid PTS");
+			ctx->video_skip_logged = true;
+		}
+		return;
+	}
+	frame->pts = pts;
+
 	/* Keyframe gate */
 	if (!ctx->first_keyframe_received) {
 		if (!irl_video_is_keyframe(frame)) {
@@ -898,8 +962,41 @@ void *irl_receiver_thread(void *data)
 			for (;;) {
 				ret = avcodec_receive_frame(ctx->audio_dec_ctx,
 							   frame);
-				if (ret < 0)
+				if (ret == AVERROR(EAGAIN) ||
+				    ret == AVERROR_EOF)
 					break;
+				if (ret < 0) {
+					ctx->audio_decode_errors++;
+					if (ctx->audio_decode_errors >= 3) {
+						blog(LOG_WARNING,
+						     "[irl-source] Audio decoder receive: %d consecutive errors, resetting audio state",
+						     ctx->audio_decode_errors);
+						avcodec_flush_buffers(
+							ctx->audio_dec_ctx);
+						audio_buffer_flush(
+							&ctx->audio_buf);
+						reset_audio_timing_state(
+							ctx);
+						pts_repair_reset(
+							&ctx->pts_state);
+						if (ctx->fmt_ctx &&
+						    ctx->audio_stream_idx >=
+							    0) {
+							AVStream *as =
+								ctx->fmt_ctx->streams
+									[ctx->audio_stream_idx];
+							pts_repair_init(
+								&ctx->pts_state,
+								ctx->config.small_gap_ms,
+								ctx->config.large_gap_ms,
+								as->time_base.num,
+								as->time_base.den);
+						}
+						ctx->audio_decode_errors = 0;
+					}
+					break;
+				}
+				ctx->audio_decode_errors = 0;
 				handle_audio_frame(ctx, frame);
 				av_frame_unref(frame);
 			}
@@ -924,8 +1021,23 @@ void *irl_receiver_thread(void *data)
 			for (;;) {
 				ret = avcodec_receive_frame(ctx->video_dec_ctx,
 							   frame);
-				if (ret < 0)
+				if (ret == AVERROR(EAGAIN) ||
+				    ret == AVERROR_EOF)
 					break;
+				if (ret < 0) {
+					ctx->video_decode_errors++;
+					ctx->video_corrupted = true;
+					if (ctx->video_decode_errors >= 3) {
+						blog(LOG_WARNING,
+						     "[irl-source] Video decoder receive: %d consecutive errors, flushing",
+						     ctx->video_decode_errors);
+						avcodec_flush_buffers(
+							ctx->video_dec_ctx);
+						ctx->video_decode_errors = 0;
+					}
+					break;
+				}
+				ctx->video_decode_errors = 0;
 				handle_video_frame(ctx, frame);
 				av_frame_unref(frame);
 			}
