@@ -197,12 +197,21 @@ void irl_source_update(void *data, obs_data_t *settings)
 	if (ctx->config.url) {
 		/* Reset keyframe gate and buffers */
 		ctx->first_keyframe_received = false;
+		ctx->reconnecting = false;
+		ctx->video_corrupted = false;
+		ctx->video_skip_logged = false;
 		audio_buffer_flush(&ctx->audio_buf);
 		pts_repair_reset(&ctx->pts_state);
 		ctx->current_speed = 1.0f;
+		ctx->latest_audio_stream_pts_ns = 0;
 		ctx->latest_audio_buffered_pts_ns = 0;
+		ctx->latest_video_stream_pts_ns = 0;
 		ctx->audio_ts_init = false;
 		ctx->audio_pll_offset_ns = 0;
+		ctx->video_ts_init = false;
+		ctx->decoded_frame_samples = 0;
+		ctx->audio_decode_errors = 0;
+		ctx->video_decode_errors = 0;
 
 		ctx->thread_active = true;
 		pthread_create(&ctx->receiver_thread, NULL,

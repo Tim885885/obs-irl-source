@@ -344,6 +344,21 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 	return audio_ts;
 }
 
+static void reset_stream_timing_state(struct irl_source *ctx)
+{
+	ctx->audio_ts_init = false;
+	ctx->audio_pll_offset_ns = 0;
+	ctx->video_ts_init = false;
+	ctx->latest_audio_stream_pts_ns = 0;
+	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_video_stream_pts_ns = 0;
+	ctx->decoded_frame_samples = 0;
+	ctx->audio_decode_errors = 0;
+	ctx->video_decode_errors = 0;
+	ctx->video_corrupted = false;
+	ctx->video_skip_logged = false;
+}
+
 /* ── Decoded frame handling ───────────────────────────────── */
 
 static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
@@ -364,6 +379,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->audio_ts_init = false;
 		ctx->audio_pll_offset_ns = 0;
 		ctx->latest_audio_buffered_pts_ns = 0;
+		ctx->latest_audio_stream_pts_ns = 0;
 	}
 
 	/* PTS repair */
@@ -394,11 +410,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		}
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
-		ctx->audio_ts_init = false;
-		ctx->audio_pll_offset_ns = 0;
-		ctx->latest_audio_buffered_pts_ns = 0;
+		reset_stream_timing_state(ctx);
 		ctx->first_keyframe_received = false;
-		ctx->video_ts_init = false;
 	}
 
 	if (action != PTS_ACTION_PASS)
@@ -807,15 +820,14 @@ void *irl_receiver_thread(void *data)
 								fade_buf,
 								fade_bytes);
 						if (got > 0) {
+							uint32_t fade_frames = (uint32_t)(
+								got /
+								(ctx->audio_buf.channels *
+								 ctx->audio_buf.bytes_per_sample));
 							struct obs_source_audio
 								a = {0};
 							a.data[0] = fade_buf;
-							a.frames = (uint32_t)(
-								got /
-								(ctx->audio_buf
-									 .channels *
-								 ctx->audio_buf
-									 .bytes_per_sample));
+							a.frames = fade_frames;
 							a.format =
 								AUDIO_FORMAT_FLOAT;
 							a.speakers =
@@ -826,8 +838,9 @@ void *irl_receiver_thread(void *data)
 								(uint32_t)
 									ctx->audio_buf
 										.sample_rate;
-							a.timestamp =
-								os_gettime_ns();
+							a.timestamp = next_audio_timestamp(
+								ctx, (int)fade_frames,
+								ctx->audio_buf.sample_rate);
 							obs_source_output_audio(
 								ctx->source,
 								&a);
@@ -846,9 +859,7 @@ void *irl_receiver_thread(void *data)
 			close_ffmpeg(ctx);
 			pts_repair_reset(&ctx->pts_state);
 			audio_buffer_flush(&ctx->audio_buf);
-			ctx->audio_ts_init = false;
-			ctx->audio_pll_offset_ns = 0;
-			ctx->latest_audio_buffered_pts_ns = 0;
+			reset_stream_timing_state(ctx);
 			ctx->current_speed = 1.0f;
 			ctx->last_speed_adjust_time = 0;
 			ctx->fade_in_pending = true;

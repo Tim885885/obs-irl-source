@@ -148,10 +148,13 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	/* Delay video by the actual buffered audio age when available.
 	 * This tracks jitter-buffer changes and low-latency mode better
 	 * than a fixed target offset. */
-	int audio_delay_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
-	if (audio_delay_ms <= 0)
-		audio_delay_ms = ctx->config.buffer_target_ms;
-	computed += (uint64_t)audio_delay_ms * 1000000ULL;
+	if (ctx->audio_stream_idx >= 0) {
+		int audio_delay_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
+		if (audio_delay_ms <= 0 && !ctx->config.low_latency_audio)
+			audio_delay_ms = ctx->config.buffer_target_ms;
+		if (audio_delay_ms > 0)
+			computed += (uint64_t)audio_delay_ms * 1000000ULL;
+	}
 
 	return computed;
 }
