@@ -157,6 +157,9 @@ static void close_ffmpeg(struct irl_source *ctx)
 		swr_free(&ctx->swr_ctx);
 		ctx->swr_ctx = NULL;
 	}
+	ctx->swr_in_rate = 0;
+	ctx->swr_in_channels = 0;
+	ctx->swr_in_format = AV_SAMPLE_FMT_NONE;
 	if (ctx->sws_ctx) {
 		sws_freeContext(ctx->sws_ctx);
 		ctx->sws_ctx = NULL;
@@ -296,6 +299,51 @@ static bool open_stream(struct irl_source *ctx)
 	return true;
 }
 
+static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
+				     int out_rate)
+{
+	int64_t frame_ns =
+		(int64_t)base_samples * 1000000000LL / out_rate;
+	uint64_t now = os_gettime_ns();
+
+	if (!ctx->audio_ts_init) {
+		ctx->audio_sys_base = now;
+		ctx->audio_pll_offset_ns = 0;
+		ctx->audio_ts_init = true;
+	}
+
+	int64_t audio_ts_i64 =
+		(int64_t)ctx->audio_sys_base + ctx->audio_pll_offset_ns;
+	if (audio_ts_i64 < 0)
+		audio_ts_i64 = 0;
+	uint64_t audio_ts = (uint64_t)audio_ts_i64;
+	int64_t drift = (int64_t)audio_ts - (int64_t)now;
+
+	/* Buffered mode favors continuity with OBS's expected cadence.
+	 * Low-latency mode keeps timestamps close to wall clock so
+	 * async unbuffered/decoupled mode stays stable. */
+	if (ctx->config.low_latency_audio) {
+		if (drift < -10000000LL || drift > 10000000LL) {
+			int64_t base = (int64_t)now - ctx->audio_pll_offset_ns;
+			ctx->audio_sys_base = (uint64_t)(base > 0 ? base : 0);
+			audio_ts = now;
+		}
+	} else if (drift > 30000000LL) {
+		ctx->audio_pll_offset_ns -= frame_ns;
+		audio_ts -= frame_ns;
+	}
+
+	drift = (int64_t)audio_ts - (int64_t)now;
+	if (drift < -500000000LL || drift > 500000000LL) {
+		ctx->audio_sys_base = now;
+		ctx->audio_pll_offset_ns = 0;
+		audio_ts = now;
+	}
+
+	ctx->audio_pll_offset_ns += frame_ns;
+	return audio_ts;
+}
+
 /* ── Decoded frame handling ───────────────────────────────── */
 
 static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
@@ -313,6 +361,9 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				  bytes_per_sample, ctx->config.buffer_target_ms,
 				  ctx->config.buffer_min_ms,
 				  ctx->config.buffer_max_ms);
+		ctx->audio_ts_init = false;
+		ctx->audio_pll_offset_ns = 0;
+		ctx->latest_audio_buffered_pts_ns = 0;
 	}
 
 	/* PTS repair */
@@ -328,14 +379,24 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			audio_buffer_ms_to_bytes(&ctx->audio_buf, silence_ms);
 		uint8_t *silence = calloc(1, silence_bytes);
 		if (silence) {
-			audio_buffer_write(&ctx->audio_buf, silence,
-					   silence_bytes);
+			int64_t silence_pts_ns =
+				(corrected_pts * 1000000000LL *
+				 ctx->pts_state.tb_num /
+				 ctx->pts_state.tb_den) -
+				(int64_t)silence_ms * 1000000LL;
+			if (silence_pts_ns < 0)
+				silence_pts_ns = 0;
+			audio_buffer_write_pts(&ctx->audio_buf, silence,
+					       silence_bytes,
+					       silence_pts_ns);
 			free(silence);
 			ctx->silence_insertions++;
 		}
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
 		ctx->audio_ts_init = false;
+		ctx->audio_pll_offset_ns = 0;
+		ctx->latest_audio_buffered_pts_ns = 0;
 		ctx->first_keyframe_received = false;
 		ctx->video_ts_init = false;
 	}
@@ -347,10 +408,13 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	uint8_t *interleaved = NULL;
 	int out_samples = frame->nb_samples;
 
-	if (frame->format != AV_SAMPLE_FMT_FLT ||
-	    frame->ch_layout.nb_channels != out_channels) {
+	if (frame->format != AV_SAMPLE_FMT_FLT) {
 		/* Set up resampler */
-		if (!ctx->swr_ctx) {
+		if (!ctx->swr_ctx || ctx->swr_in_rate != frame->sample_rate ||
+		    ctx->swr_in_channels != frame->ch_layout.nb_channels ||
+		    ctx->swr_in_format != frame->format) {
+			if (ctx->swr_ctx)
+				swr_free(&ctx->swr_ctx);
 			ctx->swr_ctx = swr_alloc();
 			AVChannelLayout out_layout;
 			av_channel_layout_default(&out_layout, out_channels);
@@ -359,7 +423,15 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 					    &frame->ch_layout,
 					    frame->format, frame->sample_rate,
 					    0, NULL);
-			swr_init(ctx->swr_ctx);
+			if (swr_init(ctx->swr_ctx) < 0) {
+				swr_free(&ctx->swr_ctx);
+				av_channel_layout_uninit(&out_layout);
+				return;
+			}
+			av_channel_layout_uninit(&out_layout);
+			ctx->swr_in_rate = frame->sample_rate;
+			ctx->swr_in_channels = frame->ch_layout.nb_channels;
+			ctx->swr_in_format = frame->format;
 		}
 
 		int max_out = swr_get_out_samples(ctx->swr_ctx,
@@ -390,7 +462,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * Instead of staging and replaying, drop it entirely.
 	 * After the keyframe gate opens, audio_buffer_ready (min_ms)
 	 * provides a brief fill delay for clean playback. */
-	if (ctx->config.wait_for_keyframe && !ctx->first_keyframe_received) {
+	if (ctx->config.wait_for_keyframe && ctx->video_stream_idx >= 0 &&
+	    !ctx->first_keyframe_received) {
 		if (interleaved != frame->data[0])
 			free(interleaved);
 		return;
@@ -421,7 +494,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * real audio and the buffer drained (a stall).  Do NOT output
 	 * silence during initial fill-up — it advances OBS's audio
 	 * timeline before video starts, causing A/V desync. */
-	if (!audio_buffer_ready(&ctx->audio_buf) &&
+	if (!audio_buffer_ready_locked(&ctx->audio_buf) &&
 	    ctx->total_audio_frames > 0 &&
 	    ctx->decoded_frame_samples > 0) {
 		int base_samples = ctx->decoded_frame_samples;
@@ -437,7 +510,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			obs_audio.speakers =
 				(enum speaker_layout)
 					ctx->audio_buf.channels;
-			obs_audio.timestamp = os_gettime_ns();
+			obs_audio.timestamp = next_audio_timestamp(
+				ctx, base_samples, ctx->audio_buf.sample_rate);
 			obs_audio.samples_per_sec =
 				(uint32_t)ctx->audio_buf.sample_rate;
 			obs_source_output_audio(ctx->source, &obs_audio);
@@ -446,7 +520,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		return;
 	}
 
-	while (audio_buffer_ready(&ctx->audio_buf)) {
+	while (audio_buffer_ready_locked(&ctx->audio_buf)) {
 		int base_samples = ctx->decoded_frame_samples;
 		if (base_samples <= 0)
 			base_samples = 960; /* fallback (Opus default) */
@@ -479,31 +553,25 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		 * we expect, skip forward to re-align with the
 		 * stream.  Handles PTS discontinuities without
 		 * playing stale audio. */
-		if (ctx->audio_buf.chunk_count > 1 &&
-		    ctx->latest_audio_stream_pts_ns != 0) {
-			int64_t peek = audio_buffer_peek_pts(
-				&ctx->audio_buf);
-			if (peek != 0) {
-				int64_t expected =
-					ctx->latest_audio_stream_pts_ns -
-					(int64_t)audio_buffer_fill_ms(
-						 &ctx->audio_buf) *
-						1000000LL;
-				if (peek - expected < -50000000LL) {
+		int64_t peek = 0;
+		int fill_ms = 0;
+		int chunk_count = 0;
+		if (ctx->latest_audio_stream_pts_ns != 0 &&
+		    audio_buffer_peek_state(&ctx->audio_buf, &peek, &fill_ms,
+					    &chunk_count) &&
+		    chunk_count > 1) {
+			int64_t expected =
+				ctx->latest_audio_stream_pts_ns -
+				(int64_t)fill_ms * 1000000LL;
+			if (peek - expected < -50000000LL) {
+				int skipped = audio_buffer_skip_until_pts(
+					&ctx->audio_buf, expected);
+				if (skipped > 0) {
 					blog(LOG_INFO,
-					     "[irl-source] Audio re-sync: skipping stale data (gap=%lldms)",
+					     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
+					     skipped,
 					     (long long)((peek - expected) /
 							 1000000));
-					while (ctx->audio_buf.chunk_count >
-					       1) {
-						audio_buffer_skip_chunk(
-							&ctx->audio_buf);
-						int64_t next =
-							audio_buffer_peek_pts(
-								&ctx->audio_buf);
-						if (next >= expected)
-							break;
-					}
 				}
 			}
 		}
@@ -517,6 +585,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			free(out_buf);
 			break;
 		}
+		ctx->latest_audio_buffered_pts_ns = chunk_pts_ns;
 
 		/* Fade-in after reconnect to avoid click */
 		if (ctx->fade_in_pending) {
@@ -563,36 +632,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		 * Never steps backward — would trigger lag cascade
 		 * with Low Latency Audio mode.  Speed controller
 		 * handles backward drift. */
-		int64_t frame_ns =
-			(int64_t)base_samples * 1000000000LL / out_rate;
-
-		if (!ctx->audio_ts_init) {
-			ctx->audio_sys_base = os_gettime_ns();
-			ctx->audio_pll_offset_ns = 0;
-			ctx->audio_ts_init = true;
-		}
-
-		uint64_t audio_ts = ctx->audio_sys_base +
-				    ctx->audio_pll_offset_ns;
-
-		/* Forward-only PLL: Moblin-style -1 frame */
-		uint64_t now = os_gettime_ns();
-		int64_t drift = (int64_t)audio_ts - (int64_t)now;
-		if (drift > 30000000LL) {
-			ctx->audio_pll_offset_ns -= frame_ns;
-			audio_ts -= frame_ns;
-		}
-
-		/* Safety clamp for extreme drift (stall/burst) */
-		drift = (int64_t)audio_ts - (int64_t)now;
-		if (drift < -500000000LL || drift > 500000000LL) {
-			ctx->audio_sys_base = now;
-			ctx->audio_pll_offset_ns = 0;
-			audio_ts = now;
-		}
-
-		/* Advance counter for next push */
-		ctx->audio_pll_offset_ns += frame_ns;
+		uint64_t audio_ts = next_audio_timestamp(ctx, base_samples,
+							 out_rate);
 
 		uint32_t frames_out =
 			(uint32_t)(got /
@@ -617,7 +658,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		free(out_buf);
 
 		/* Stop once buffer is at or below target */
-		if (audio_buffer_fill_ms(&ctx->audio_buf) <=
+		if (audio_buffer_fill_ms_locked(&ctx->audio_buf) <=
 		    ctx->config.buffer_target_ms)
 			break;
 	}
@@ -718,6 +759,7 @@ void *irl_receiver_thread(void *data)
 			if (!open_stream(ctx)) {
 				/* Reconnect after delay */
 				ctx->reconnecting = true;
+				ctx->reconnect_count++;
 				blog(LOG_INFO,
 				     "[irl-source] Reconnecting in %ds...",
 				     ctx->config.reconnect_delay);
@@ -746,12 +788,16 @@ void *irl_receiver_thread(void *data)
 			     (unsigned long long)ctx->total_audio_frames);
 
 			/* Fade out remaining audio to avoid click/pop */
-			if (ctx->audio_buf.data && ctx->audio_buf.fill > 0) {
+			int buffered_ms = audio_buffer_fill_ms_locked(
+				&ctx->audio_buf);
+			if (ctx->audio_buf.data && buffered_ms > 0) {
 				size_t fade_bytes = audio_buffer_ms_to_bytes(
 					&ctx->audio_buf,
 					IRL_FADE_DURATION_MS);
-				if (fade_bytes > ctx->audio_buf.fill)
-					fade_bytes = ctx->audio_buf.fill;
+				size_t buffered_bytes = audio_buffer_ms_to_bytes(
+					&ctx->audio_buf, buffered_ms);
+				if (fade_bytes > buffered_bytes)
+					fade_bytes = buffered_bytes;
 				if (fade_bytes > 0) {
 					uint8_t *fade_buf = malloc(fade_bytes);
 					if (fade_buf) {
@@ -802,6 +848,7 @@ void *irl_receiver_thread(void *data)
 			audio_buffer_flush(&ctx->audio_buf);
 			ctx->audio_ts_init = false;
 			ctx->audio_pll_offset_ns = 0;
+			ctx->latest_audio_buffered_pts_ns = 0;
 			ctx->current_speed = 1.0f;
 			ctx->last_speed_adjust_time = 0;
 			ctx->fade_in_pending = true;
@@ -885,7 +932,7 @@ void *irl_receiver_thread(void *data)
 			     "silence=%llu res=%dx%d",
 			     (unsigned long long)ctx->total_video_frames,
 			     (unsigned long long)ctx->total_audio_frames,
-			     audio_buffer_fill_ms(&ctx->audio_buf),
+			     audio_buffer_fill_ms_locked(&ctx->audio_buf),
 			     (double)ctx->current_speed,
 			     (unsigned long long)ctx->pts_repairs,
 			     (unsigned long long)ctx->silence_insertions,

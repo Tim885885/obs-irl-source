@@ -28,6 +28,14 @@ static size_t ms_to_bytes(const struct audio_buffer *buf, int ms)
 	       buf->frame_size;
 }
 
+static int fill_ms_unlocked(const struct audio_buffer *buf)
+{
+	if (buf->frame_size == 0 || buf->sample_rate == 0)
+		return 0;
+	size_t samples = buf->fill / buf->frame_size;
+	return (int)(samples * 1000 / buf->sample_rate);
+}
+
 /* Write raw bytes to the ring buffer (no PTS tracking). */
 static size_t ring_write(struct audio_buffer *buf, const uint8_t *samples,
 			 size_t bytes)
@@ -73,6 +81,23 @@ static size_t ring_read(struct audio_buffer *buf, uint8_t *out,
 	buf->tail = (buf->tail + to_read) % buf->capacity;
 	buf->fill -= to_read;
 	return to_read;
+}
+
+static void skip_oldest_chunk_locked(struct audio_buffer *buf)
+{
+	if (!buf->data || buf->chunk_count <= 0)
+		return;
+
+	struct audio_pts_chunk *c = &buf->chunks[buf->chunk_tail];
+	size_t remaining = c->size - c->consumed;
+
+	if (remaining > 0 && remaining <= buf->fill) {
+		buf->tail = (buf->tail + remaining) % buf->capacity;
+		buf->fill -= remaining;
+	}
+
+	buf->chunk_tail = (buf->chunk_tail + 1) % AUDIO_PTS_MAX_CHUNKS;
+	buf->chunk_count--;
 }
 
 /* Retire PTS chunks as data is consumed. */
@@ -157,10 +182,13 @@ size_t audio_buffer_write_pts(struct audio_buffer *buf, const uint8_t *samples,
 
 	pthread_mutex_lock(&buf->lock);
 
+	while (buf->chunk_count >= AUDIO_PTS_MAX_CHUNKS)
+		skip_oldest_chunk_locked(buf);
+
 	size_t written = ring_write(buf, samples, bytes);
 
-	/* Record PTS chunk metadata if there's room */
-	if (written > 0 && buf->chunk_count < AUDIO_PTS_MAX_CHUNKS) {
+	/* Record PTS chunk metadata for every successful write. */
+	if (written > 0) {
 		struct audio_pts_chunk *c =
 			&buf->chunks[buf->chunk_head];
 		c->pts_ns = pts_ns;
@@ -256,36 +284,107 @@ int64_t audio_buffer_peek_pts(const struct audio_buffer *buf)
 	return c->pts_ns;
 }
 
+int audio_buffer_fill_ms_locked(struct audio_buffer *buf)
+{
+	if (!buf->data)
+		return 0;
+
+	pthread_mutex_lock(&buf->lock);
+	int fill_ms = fill_ms_unlocked(buf);
+	pthread_mutex_unlock(&buf->lock);
+	return fill_ms;
+}
+
+bool audio_buffer_ready_locked(struct audio_buffer *buf)
+{
+	if (!buf->data)
+		return false;
+
+	pthread_mutex_lock(&buf->lock);
+	bool ready = fill_ms_unlocked(buf) >= buf->min_ms;
+	pthread_mutex_unlock(&buf->lock);
+	return ready;
+}
+
+bool audio_buffer_peek_state(struct audio_buffer *buf, int64_t *out_pts_ns,
+			     int *out_fill_ms, int *out_chunk_count)
+{
+	if (!buf->data)
+		return false;
+
+	pthread_mutex_lock(&buf->lock);
+
+	if (out_fill_ms)
+		*out_fill_ms = fill_ms_unlocked(buf);
+	if (out_chunk_count)
+		*out_chunk_count = buf->chunk_count;
+
+	bool has_pts = buf->chunk_count > 0;
+	if (out_pts_ns) {
+		if (has_pts) {
+			const struct audio_pts_chunk *c =
+				&buf->chunks[buf->chunk_tail];
+			if (buf->sample_rate > 0 && buf->frame_size > 0) {
+				int64_t consumed_samples =
+					(int64_t)c->consumed / buf->frame_size;
+				*out_pts_ns = c->pts_ns +
+					      consumed_samples * 1000000000LL /
+						      buf->sample_rate;
+			} else {
+				*out_pts_ns = c->pts_ns;
+			}
+		} else {
+			*out_pts_ns = 0;
+		}
+	}
+
+	pthread_mutex_unlock(&buf->lock);
+	return has_pts;
+}
+
 void audio_buffer_skip_chunk(struct audio_buffer *buf)
 {
 	if (!buf->data || buf->chunk_count <= 0)
 		return;
 
 	pthread_mutex_lock(&buf->lock);
+	skip_oldest_chunk_locked(buf);
+	pthread_mutex_unlock(&buf->lock);
+}
 
-	struct audio_pts_chunk *c = &buf->chunks[buf->chunk_tail];
-	size_t remaining = c->size - c->consumed;
+int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns)
+{
+	if (!buf->data)
+		return 0;
 
-	/* Advance ring buffer tail past this chunk's data */
-	if (remaining > 0 && remaining <= buf->fill) {
-		buf->tail = (buf->tail + remaining) % buf->capacity;
-		buf->fill -= remaining;
+	pthread_mutex_lock(&buf->lock);
+
+	int skipped = 0;
+	while (buf->chunk_count > 1) {
+		const struct audio_pts_chunk *c =
+			&buf->chunks[buf->chunk_tail];
+		int64_t pts_ns = c->pts_ns;
+		if (buf->sample_rate > 0 && buf->frame_size > 0) {
+			int64_t consumed_samples =
+				(int64_t)c->consumed / buf->frame_size;
+			pts_ns += consumed_samples * 1000000000LL /
+				  buf->sample_rate;
+		}
+
+		if (pts_ns >= min_pts_ns)
+			break;
+
+		skip_oldest_chunk_locked(buf);
+		skipped++;
 	}
 
-	/* Retire the chunk metadata */
-	buf->chunk_tail =
-		(buf->chunk_tail + 1) % AUDIO_PTS_MAX_CHUNKS;
-	buf->chunk_count--;
-
 	pthread_mutex_unlock(&buf->lock);
+	return skipped;
 }
 
 int audio_buffer_fill_ms(const struct audio_buffer *buf)
 {
-	if (buf->frame_size == 0 || buf->sample_rate == 0)
-		return 0;
-	size_t samples = buf->fill / buf->frame_size;
-	return (int)(samples * 1000 / buf->sample_rate);
+	return fill_ms_unlocked(buf);
 }
 
 bool audio_buffer_ready(const struct audio_buffer *buf)

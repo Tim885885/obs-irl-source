@@ -44,6 +44,8 @@ struct irl_source;
 #define IRL_DEFAULT_LARGE_GAP_MS 2000
 #define IRL_DEFAULT_HW_DECODE 0 /* 0 = auto, 1 = off */
 #define IRL_DEFAULT_WAIT_KEYFRAME true
+#define IRL_DEFAULT_LOW_LATENCY_AUDIO false
+#define IRL_DEFAULT_DECOUPLED_AUDIO false
 
 /* Audio fade duration on disconnect/reconnect (avoids clicks/pops) */
 #define IRL_FADE_DURATION_MS 50
@@ -72,6 +74,8 @@ struct irl_config {
 	char *ffmpeg_options;
 	int hw_decode;
 	bool wait_for_keyframe;
+	bool low_latency_audio;
+	bool decoupled_audio;
 };
 
 /* ── Main source context ──────────────────────────────────── */
@@ -96,6 +100,9 @@ struct irl_source {
 
 	/* Resampler (planar → interleaved float) */
 	SwrContext *swr_ctx;
+	int swr_in_rate;
+	int swr_in_channels;
+	enum AVSampleFormat swr_in_format;
 
 	/* Video scaler (for format conversion to OBS) */
 	struct SwsContext *sws_ctx;
@@ -169,6 +176,8 @@ struct irl_source {
 	uint64_t total_video_frames;
 	uint64_t pts_repairs;
 	uint64_t silence_insertions;
+	uint64_t reconnect_count;
+	int64_t latest_audio_buffered_pts_ns;
 	uint64_t last_stats_time;
 };
 

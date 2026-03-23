@@ -119,10 +119,33 @@ size_t audio_buffer_read(struct audio_buffer *buf, uint8_t *out,
 int64_t audio_buffer_peek_pts(const struct audio_buffer *buf);
 
 /**
+ * Thread-safe variant of audio_buffer_fill_ms().
+ */
+int audio_buffer_fill_ms_locked(struct audio_buffer *buf);
+
+/**
+ * Thread-safe variant of audio_buffer_ready().
+ */
+bool audio_buffer_ready_locked(struct audio_buffer *buf);
+
+/**
+ * Snapshot the oldest chunk PTS/fill/chunk count atomically.
+ * Returns true if a PTS-bearing chunk exists.
+ */
+bool audio_buffer_peek_state(struct audio_buffer *buf, int64_t *out_pts_ns,
+			     int *out_fill_ms, int *out_chunk_count);
+
+/**
  * Discard the oldest chunk from the buffer (advance tail past it).
  * Used by re-sync mode to skip stale data after PTS discontinuities.
  */
 void audio_buffer_skip_chunk(struct audio_buffer *buf);
+
+/**
+ * Drop stale PTS chunks older than min_pts_ns, keeping at least one chunk.
+ * Returns the number of chunks skipped.
+ */
+int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns);
 
 /** Current fill level in milliseconds. */
 int audio_buffer_fill_ms(const struct audio_buffer *buf);

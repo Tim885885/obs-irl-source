@@ -7,6 +7,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(obs-irl-source VERSION 0.2.5 LANGUAGES C)
 
+if(DEFINED OBS_SOURCE_DIR AND EXISTS "${OBS_SOURCE_DIR}/cmake/finders")
+    list(APPEND CMAKE_MODULE_PATH "${OBS_SOURCE_DIR}/cmake/finders")
+elseif(DEFINED ENV{OBS_SOURCE_DIR} AND EXISTS "$ENV{OBS_SOURCE_DIR}/cmake/finders")
+    list(APPEND CMAKE_MODULE_PATH "$ENV{OBS_SOURCE_DIR}/cmake/finders")
+endif()
+
 # ── Find OBS ─────────────────────────────────────────────────
 # Try find_package first (works with OBS build tree, cmake install, or
 # system libobs-dev which ships CMake config files).
@@ -38,6 +44,12 @@ else()
         # OBS threading.h includes <pthread.h> from w32-pthreads on Windows
         if(WIN32 AND EXISTS "${OBS_SOURCE_DIR}/deps/w32-pthreads")
             list(APPEND _OBS_INCLUDE_DIRS "${OBS_SOURCE_DIR}/deps/w32-pthreads")
+        endif()
+        if(NOT EXISTS "${OBS_SOURCE_DIR}/build/config/obsconfig.h" AND
+           NOT EXISTS "${OBS_SOURCE_DIR}/build/libobs/libobs_EXPORT.h")
+            message(WARNING
+                "OBS_SOURCE_DIR is set, but generated OBS headers were not found. "
+                "Build libobs in ../obs-studio first so obsconfig.h/libobs_EXPORT.h exist.")
         endif()
         if(WIN32)
             list(APPEND _OBS_LIB_DIRS
@@ -77,6 +89,67 @@ else()
         if(_SYSTEM_OBS_INCLUDE)
             list(APPEND _OBS_INCLUDE_DIRS "${_SYSTEM_OBS_INCLUDE}")
         endif()
+    endif()
+endif()
+
+# ── OBS dependency headers when using an OBS source tree ─────────────────────
+set(_OBS_EXTRA_INCLUDE_DIRS "")
+set(_OBS_EXTRA_LIBS "")
+
+find_package(SIMDe QUIET)
+if(SIMDe_FOUND)
+    list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${SIMDe_INCLUDE_DIR}")
+else()
+    find_path(SIMDE_FALLBACK_INCLUDE_DIR
+        NAMES simde/simde-common.h
+        PATHS /usr/include /usr/local/include
+    )
+    if(SIMDE_FALLBACK_INCLUDE_DIR)
+        list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${SIMDE_FALLBACK_INCLUDE_DIR}")
+    elseif(OBS_SOURCE_DIR)
+    message(FATAL_ERROR
+        "Building against OBS source requires SIMDe headers. "
+        "Install SIMDe or add it to CMAKE_PREFIX_PATH.")
+    endif()
+endif()
+
+find_package(jansson QUIET)
+if(jansson_FOUND)
+    list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${jansson_INCLUDE_DIR}")
+    list(APPEND _OBS_EXTRA_LIBS jansson::jansson)
+else()
+    find_path(JANSSON_FALLBACK_INCLUDE_DIR
+        NAMES jansson.h
+        PATHS /usr/include /usr/local/include
+    )
+    find_library(JANSSON_FALLBACK_LIBRARY
+        NAMES jansson
+        PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib
+    )
+    if(JANSSON_FALLBACK_INCLUDE_DIR AND JANSSON_FALLBACK_LIBRARY)
+        list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${JANSSON_FALLBACK_INCLUDE_DIR}")
+        list(APPEND _OBS_EXTRA_LIBS "${JANSSON_FALLBACK_LIBRARY}")
+    elseif(OBS_SOURCE_DIR)
+    message(FATAL_ERROR
+        "Building against OBS source requires jansson. "
+        "Install jansson dev files or add them to CMAKE_PREFIX_PATH.")
+    endif()
+endif()
+
+find_package(Uthash QUIET)
+if(Uthash_FOUND)
+    list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${Uthash_INCLUDE_DIR}")
+else()
+    find_path(UTHASH_FALLBACK_INCLUDE_DIR
+        NAMES uthash.h
+        PATHS /usr/include /usr/local/include
+    )
+    if(UTHASH_FALLBACK_INCLUDE_DIR)
+        list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${UTHASH_FALLBACK_INCLUDE_DIR}")
+    elseif(OBS_SOURCE_DIR)
+    message(FATAL_ERROR
+        "Building against OBS source requires uthash headers. "
+        "Install uthash or add it to CMAKE_PREFIX_PATH.")
     endif()
 endif()
 
@@ -197,6 +270,11 @@ if(NOT _OBS_USE_FIND_PACKAGE AND _OBS_INCLUDE_DIRS)
     endif()
 endif()
 
+if(_OBS_EXTRA_INCLUDE_DIRS)
+    list(REMOVE_DUPLICATES _OBS_EXTRA_INCLUDE_DIRS)
+    target_include_directories(obs-irl-source PRIVATE ${_OBS_EXTRA_INCLUDE_DIRS})
+endif()
+
 if(LIBAV_FOUND)
     target_include_directories(obs-irl-source PRIVATE ${LIBAV_INCLUDE_DIRS})
 elseif(_FFMPEG_MANUAL_INCLUDE_DIRS)
@@ -223,6 +301,10 @@ if(LIBAV_FOUND)
     target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} PkgConfig::LIBAV)
 else()
     target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} ${_FFMPEG_MANUAL_LIBS})
+endif()
+
+if(_OBS_EXTRA_LIBS)
+    target_link_libraries(obs-irl-source PRIVATE ${_OBS_EXTRA_LIBS})
 endif()
 
 if(WIN32 AND NOT _OBS_USE_FIND_PACKAGE)

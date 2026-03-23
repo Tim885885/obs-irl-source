@@ -145,14 +145,13 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 		computed = now + VIDEO_TS_CAP_NS;
 	}
 
-	/* A/V sync: delay video by the audio buffer target.
-	 * Audio uses a running counter starting at os_gettime_ns(),
-	 * but the audio DATA being played is ~target_ms old (sat in
-	 * the jitter buffer).  Video has no buffer and plays at
-	 * real-time.  Adding target_ms to video timestamps delays
-	 * video by the same amount, keeping them in sync.
-	 * OBS's async video system queues frames by timestamp. */
-	computed += (uint64_t)ctx->config.buffer_target_ms * 1000000ULL;
+	/* Delay video by the actual buffered audio age when available.
+	 * This tracks jitter-buffer changes and low-latency mode better
+	 * than a fixed target offset. */
+	int audio_delay_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
+	if (audio_delay_ms <= 0)
+		audio_delay_ms = ctx->config.buffer_target_ms;
+	computed += (uint64_t)audio_delay_ms * 1000000ULL;
 
 	return computed;
 }

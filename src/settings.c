@@ -42,6 +42,10 @@ void irl_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "hw_decode", IRL_DEFAULT_HW_DECODE);
 	obs_data_set_default_bool(settings, "wait_for_keyframe",
 				  IRL_DEFAULT_WAIT_KEYFRAME);
+	obs_data_set_default_bool(settings, "low_latency_audio",
+				  IRL_DEFAULT_LOW_LATENCY_AUDIO);
+	obs_data_set_default_bool(settings, "decoupled_audio",
+				  IRL_DEFAULT_DECOUPLED_AUDIO);
 }
 
 /* ── Properties ───────────────────────────────────────────── */
@@ -106,6 +110,10 @@ obs_properties_t *irl_source_get_properties(void *data)
 
 	obs_properties_add_bool(props, "wait_for_keyframe",
 				obs_module_text("Wait for Keyframe"));
+	obs_properties_add_bool(props, "low_latency_audio",
+				obs_module_text("Low Latency Audio"));
+	obs_properties_add_bool(props, "decoupled_audio",
+				obs_module_text("Decoupled Audio"));
 
 	/* ── About ─────────────────────────────────────────── */
 

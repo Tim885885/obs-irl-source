@@ -57,6 +57,21 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 	cfg->hw_decode = (int)obs_data_get_int(settings, "hw_decode");
 	cfg->wait_for_keyframe =
 		obs_data_get_bool(settings, "wait_for_keyframe");
+	cfg->low_latency_audio =
+		obs_data_get_bool(settings, "low_latency_audio");
+	cfg->decoupled_audio =
+		obs_data_get_bool(settings, "decoupled_audio");
+	if (!cfg->low_latency_audio)
+		cfg->decoupled_audio = false;
+}
+
+static void apply_async_audio_mode(struct irl_source *ctx)
+{
+	obs_source_set_async_unbuffered(ctx->source,
+					ctx->config.low_latency_audio);
+	obs_source_set_async_decoupled(ctx->source,
+				       ctx->config.low_latency_audio &&
+					       ctx->config.decoupled_audio);
 }
 
 /* ── Stats proc_handler callback ──────────────────────────── */
@@ -65,7 +80,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 {
 	struct irl_source *ctx = data;
 	calldata_set_int(cd, "buffer_fill_ms",
-			 audio_buffer_fill_ms(&ctx->audio_buf));
+			 audio_buffer_fill_ms_locked(&ctx->audio_buf));
 	calldata_set_float(cd, "current_speed",
 			   (double)ctx->current_speed);
 	calldata_set_bool(cd, "reconnecting", ctx->reconnecting);
@@ -96,6 +111,12 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	}
 	calldata_set_int(cd, "stream_delay_ms",
 			 (long long)stream_delay_ms);
+	calldata_set_bool(cd, "low_latency_audio",
+			  ctx->config.low_latency_audio);
+	calldata_set_bool(cd, "decoupled_audio",
+			  ctx->config.decoupled_audio);
+	calldata_set_int(cd, "reconnect_count",
+			 (long long)ctx->reconnect_count);
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */
@@ -113,6 +134,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	ctx->current_speed = 1.0f;
 
 	config_load(&ctx->config, settings);
+	apply_async_audio_mode(ctx);
 
 	/* Register stats proc_handler so scripts/overlays can query state */
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
@@ -122,7 +144,8 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out float current_speed, out bool reconnecting, "
 		"out int total_audio_frames, out int total_video_frames, "
 		"out int pts_repairs, out int silence_insertions, "
-		"out int stream_delay_ms)",
+		"out int stream_delay_ms, out bool low_latency_audio, "
+		"out bool decoupled_audio, out int reconnect_count)",
 		irl_source_get_stats, ctx);
 
 	/* Start the receiver thread if we have a URL */
@@ -168,6 +191,7 @@ void irl_source_update(void *data, obs_data_t *settings)
 
 	/* Reload config */
 	config_load(&ctx->config, settings);
+	apply_async_audio_mode(ctx);
 
 	/* Restart if we have a URL */
 	if (ctx->config.url) {
@@ -176,6 +200,9 @@ void irl_source_update(void *data, obs_data_t *settings)
 		audio_buffer_flush(&ctx->audio_buf);
 		pts_repair_reset(&ctx->pts_state);
 		ctx->current_speed = 1.0f;
+		ctx->latest_audio_buffered_pts_ns = 0;
+		ctx->audio_ts_init = false;
+		ctx->audio_pll_offset_ns = 0;
 
 		ctx->thread_active = true;
 		pthread_create(&ctx->receiver_thread, NULL,
