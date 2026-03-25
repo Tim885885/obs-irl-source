@@ -28,7 +28,7 @@
 
 static float irl_speed_calculate(struct irl_source *ctx)
 {
-	if (!ctx->config.adaptive_speed)
+	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio)
 		return 1.0f;
 
 	int fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);

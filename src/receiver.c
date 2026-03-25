@@ -560,7 +560,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * real audio and the buffer drained (a stall).  Do NOT output
 	 * silence during initial fill-up — it advances OBS's audio
 	 * timeline before video starts, causing A/V desync. */
-	if (!audio_buffer_ready_locked(&ctx->audio_buf) &&
+	bool low_latency = ctx->config.low_latency_audio;
+	if (!low_latency && !audio_buffer_ready_locked(&ctx->audio_buf) &&
 	    ctx->total_audio_frames > 0 &&
 	    ctx->decoded_frame_samples > 0) {
 		int base_samples = ctx->decoded_frame_samples;
@@ -586,7 +587,18 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		return;
 	}
 
-	while (audio_buffer_ready_locked(&ctx->audio_buf)) {
+	for (;;) {
+		int64_t peek = 0;
+		int fill_ms = 0;
+		int chunk_count = 0;
+		bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
+							 &fill_ms,
+							 &chunk_count);
+		if (!(low_latency ? has_audio
+				  : (fill_ms >= ctx->audio_buf.min_ms))) {
+			break;
+		}
+
 		int base_samples = ctx->decoded_frame_samples;
 		if (base_samples <= 0)
 			base_samples = 960; /* fallback (Opus default) */
@@ -619,12 +631,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		 * we expect, skip forward to re-align with the
 		 * stream.  Handles PTS discontinuities without
 		 * playing stale audio. */
-		int64_t peek = 0;
-		int fill_ms = 0;
-		int chunk_count = 0;
-		if (ctx->latest_audio_stream_pts_ns != 0 &&
-		    audio_buffer_peek_state(&ctx->audio_buf, &peek, &fill_ms,
-					    &chunk_count) &&
+		if (ctx->latest_audio_stream_pts_ns != 0 && has_audio &&
 		    chunk_count > 1) {
 			int64_t expected =
 				ctx->latest_audio_stream_pts_ns -
@@ -698,12 +705,15 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		 * Never steps backward — would trigger lag cascade
 		 * with Low Latency Audio mode.  Speed controller
 		 * handles backward drift. */
-		uint64_t audio_ts = next_audio_timestamp(ctx, base_samples,
-							 out_rate);
-
 		uint32_t frames_out =
 			(uint32_t)(got /
 				   (out_channels * bytes_per_sample));
+		int ts_samples =
+			low_latency ? (int)frames_out : base_samples;
+		if (ts_samples <= 0)
+			ts_samples = base_samples;
+		uint64_t audio_ts = next_audio_timestamp(ctx, ts_samples,
+							 out_rate);
 
 		struct obs_source_audio obs_audio = {0};
 		obs_audio.data[0] = out_buf;
@@ -724,7 +734,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		free(out_buf);
 
 		/* Stop once buffer is at or below target */
-		if (audio_buffer_fill_ms_locked(&ctx->audio_buf) <=
+		if (low_latency ||
+		    audio_buffer_fill_ms_locked(&ctx->audio_buf) <=
 		    ctx->config.buffer_target_ms)
 			break;
 	}
