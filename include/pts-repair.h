@@ -42,6 +42,10 @@ struct pts_repair {
 	int small_gap_ms;
 	int large_gap_ms;
 
+	/* Self-healing for sustained small offsets after corruption. */
+	int last_gap_ms;
+	int consecutive_small_repairs;
+
 	/* Whether we have a valid reference PTS yet */
 	bool initialised;
 };

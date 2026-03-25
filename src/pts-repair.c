@@ -15,6 +15,9 @@
 
 #include "../include/pts-repair.h"
 
+#define PTS_SMALL_GAP_RELOCK_COUNT 8
+#define PTS_SMALL_GAP_TOLERANCE_MS 2
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 static int ts_to_ms(const struct pts_repair *r, int64_t ts)
@@ -35,6 +38,8 @@ void pts_repair_init(struct pts_repair *r, int small_gap_ms, int large_gap_ms,
 	r->tb_den = tb_den;
 	r->small_gap_ms = small_gap_ms;
 	r->large_gap_ms = large_gap_ms;
+	r->last_gap_ms = 0;
+	r->consecutive_small_repairs = 0;
 	r->initialised = false;
 }
 
@@ -42,6 +47,8 @@ void pts_repair_reset(struct pts_repair *r)
 {
 	r->last_pts = 0;
 	r->last_duration = 0;
+	r->last_gap_ms = 0;
+	r->consecutive_small_repairs = 0;
 	r->initialised = false;
 }
 
@@ -56,6 +63,8 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	if (!r->initialised) {
 		r->last_pts = pts;
 		r->last_duration = duration > 0 ? duration : 1;
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
 		r->initialised = true;
 		*corrected_pts = pts;
 		return PTS_ACTION_PASS;
@@ -73,6 +82,8 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	if (is_backward || gap_ms < 1) {
 		r->last_pts = pts;
 		r->last_duration = duration > 0 ? duration : r->last_duration;
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
 		*corrected_pts = pts;
 		return PTS_ACTION_PASS;
 	}
@@ -80,15 +91,43 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	enum pts_action action;
 
 	if (gap_ms < r->small_gap_ms) {
+		bool same_small_gap =
+			r->consecutive_small_repairs > 0 &&
+			gap_ms >= r->last_gap_ms - PTS_SMALL_GAP_TOLERANCE_MS &&
+			gap_ms <= r->last_gap_ms + PTS_SMALL_GAP_TOLERANCE_MS;
+		if (same_small_gap)
+			r->consecutive_small_repairs++;
+		else
+			r->consecutive_small_repairs = 1;
+		r->last_gap_ms = gap_ms;
+
+		/* If the same small positive gap repeats for long enough,
+		 * corruption likely shifted the sender timeline and the
+		 * old baseline is now wrong. Re-lock to the incoming PTS
+		 * instead of interpolating forever. */
+		if (r->consecutive_small_repairs >= PTS_SMALL_GAP_RELOCK_COUNT) {
+			*corrected_pts = pts;
+			r->last_pts = pts;
+			r->last_duration =
+				duration > 0 ? duration : r->last_duration;
+			r->last_gap_ms = 0;
+			r->consecutive_small_repairs = 0;
+			return PTS_ACTION_PASS;
+		}
+
 		/* Small gap — interpolate: use expected PTS */
 		*corrected_pts = expected;
 		action = PTS_ACTION_INTERPOLATE;
 	} else if (gap_ms < r->large_gap_ms) {
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
 		/* Medium gap — insert silence, then use original PTS */
 		*corrected_pts = pts;
 		*silence_ms = gap_ms;
 		action = PTS_ACTION_SILENCE;
 	} else {
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
 		/* Large gap — full reset */
 		*corrected_pts = pts;
 		action = PTS_ACTION_RESET;
