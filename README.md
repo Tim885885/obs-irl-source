@@ -18,17 +18,17 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 
 | | Media Source | IRL Source |
 |---|---|---|
-| **Audio jitter buffer** | None. Plays audio as fast as it arrives, leading to stuttering or speedups on unstable connections | Configurable ring buffer (default 120ms) absorbs network jitter and outputs smooth audio |
-| **Adaptive playback speed** | Fixed 1x. Buffer grows unbounded on slow connections, causing increasing latency | Dynamically adjusts speed between 0.95x-1.05x to keep buffer at target level, preventing drift |
+| **Audio jitter buffer** | None. Plays audio as fast as it arrives, leading to stuttering or speedups on unstable connections | Configurable ring buffer (default 120ms) absorbs network jitter and outputs smooth audio, or can run in low-latency mode |
+| **Adaptive playback speed** | Fixed 1x. Buffer grows unbounded on slow connections, causing increasing latency | Dynamically adjusts speed between 0.95x-1.05x in buffered mode to keep buffer near target and prevent drift |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three-tier repair: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt audio cutoff causes a loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
 | **Keyframe gating** | Starts decoding immediately, producing corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Discards pre-keyframe audio to avoid decoder warm-up artifacts |
-| **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation — audio breaks permanently until source restart | Automatically flushes decoder on errors, audio self-recovers without user intervention |
+| **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation — audio breaks permanently until source restart | Automatically flushes decoder on repeated send/receive errors, resets bad timing state, and holds last good video frame during corruption |
 | **Reconnection** | Has reconnect support but with general-purpose defaults | 2-second default reconnect, designed for the frequent disconnects in IRL streaming |
 | **Hardware decoding** | Supports hardware decode | Auto-detects D3D11VA, CUDA/NVDEC, VAAPI — works on NVIDIA, Intel, and AMD with automatic fallback |
 | **Resolution changes** | May crash or freeze on adaptive bitrate resolution changes | Detects and handles mid-stream resolution changes gracefully (phone rotation, adaptive bitrate) |
 | **Network buffer** | Configurable but not optimized for live | 2MB default transport buffer tuned for SRT live streaming |
-| **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, and silence insertions via `proc_handler` for monitoring overlays |
+| **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, silence insertions, stream delay, reconnect count, and active low-latency mode via `proc_handler` |
 
 For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and timestamp handling work together, see [Audio pipeline](docs/audio-pipeline.md).
 
@@ -37,17 +37,19 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 - **Protocol agnostic** — SRT, RTMP, RIST, UDP, TCP, HTTP, or anything FFmpeg can open
 - **Codec agnostic** — H.264, HEVC (8-bit and 10-bit), AV1, VP9, AAC, Opus, etc.
 - **Audio jitter buffer** — Ring buffer sized in milliseconds, adapts to any sample rate/channel count
-- **Adaptive playback speed** — Keeps buffer at target level by micro-adjusting playback speed (inaudible 0.95x-1.05x range)
+- **Adaptive playback speed** — Keeps buffered mode near target level by micro-adjusting playback speed (inaudible 0.95x-1.05x range)
+- **Low Latency Audio mode** — Uses OBS async unbuffered audio semantics and drains immediately instead of building a 60-120ms startup cushion
 - **PTS discontinuity repair** — Handles the timestamp jumps that happen during cell tower handoffs and packet loss
 - **Keyframe gating** — No corrupted frames on stream join or reconnect
 - **Audio fade in/out** — Smooth transitions on disconnect/reconnect (no clicks)
 - **Hardware decoding** — Auto-detects NVDEC, D3D11VA, VAAPI with automatic software fallback
-- **Decoder auto-recovery** — Flushes decoder on errors (SRT bitrate starvation), audio self-heals
+- **Decoder auto-recovery** — Flushes decoder on repeated decode errors (including receive-frame failures), audio self-heals
 - **Resolution change handling** — Graceful mid-stream resolution changes (adaptive bitrate, rotation)
 - **Network buffer** — Configurable transport buffer (default 2MB) absorbs network-level jitter
 - **10-bit video support** — Native passthrough of YUV420P10LE (I010) and P010 formats
 - **FFmpeg option passthrough** — Override any demuxer option (latency, probesize, etc.) from the UI
 - **Zero-copy video** — Passes decoded frame planes directly to OBS for supported pixel formats
+- **Corrupt-frame handling** — Holds the last good video frame instead of exposing gray/corrupt output while the decoder is damaged
 - **Periodic stats logging** — Frame counts, buffer level, speed, and PTS repairs logged every 30s
 
 ## Installation
@@ -93,6 +95,16 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
 | Hardware Decode | Auto | GPU decoding (Auto tries D3D11VA/CUDA/VAAPI, Off forces software) |
 | Wait for Keyframe | On | Don't output video until a keyframe arrives |
+| Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of waiting for the normal buffer minimum |
+| Decoupled Audio | Off | Enables OBS async decoupled mode when Low Latency Audio is on |
+
+### Buffered vs low-latency audio mode
+
+`Low Latency Audio` changes the plugin behavior, not just an OBS flag.
+
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values and adaptive speed to stay stable on rough mobile links.
+- Low-latency mode drains audio as soon as chunks are available and disables plugin-side adaptive speed. This matches OBS async unbuffered timing better and is meant for cases where absolute latency matters more than having a larger jitter cushion.
+- `Decoupled Audio` is only applied when low-latency mode is enabled.
 
 ## Building from source
 
@@ -113,6 +125,7 @@ Requires Visual Studio 2022 and OBS source + obs-deps:
 # Clone OBS and download pre-built dependencies
 git clone --depth 1 --branch 32.1.0 https://github.com/obsproject/obs-studio.git obs-src
 # Download obs-deps from https://github.com/obsproject/obs-deps/releases
+# Install SIMDe headers or add them to CMAKE_PREFIX_PATH
 
 # Build
 cmake -B build -G "Visual Studio 17 2022" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
@@ -135,6 +148,9 @@ The plugin exposes live statistics via OBS's `proc_handler` API, which you can q
 | `pts_repairs` | int | Number of PTS discontinuities repaired |
 | `silence_insertions` | int | Number of silence insertions for gap filling |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |
+| `low_latency_audio` | bool | Whether OBS async unbuffered low-latency mode is enabled |
+| `decoupled_audio` | bool | Whether OBS async decoupled mode is enabled |
+| `reconnect_count` | int | Number of reconnect attempts since the source was created |
 
 ### Example Lua script (stats text overlay)
 

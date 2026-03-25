@@ -1,6 +1,6 @@
 # Audio pipeline
 
-How the plugin keeps audio stable on unreliable mobile connections, and why a 120ms buffer works where Media Source needs seconds.
+How the plugin keeps audio stable on unreliable mobile connections, and how the buffered and low-latency modes differ.
 
 ## The problem with big buffers
 
@@ -10,11 +10,19 @@ The plugin takes the opposite approach: keep the buffer as small as possible and
 
 ## How it works
 
-The audio pipeline has four layers that work together:
+The normal buffered audio pipeline has four layers that work together:
 
 ```
 decode -> PTS repair -> jitter buffer -> adaptive speed -> OBS output
 ```
+
+Low-latency mode uses a shorter path:
+
+```
+decode -> PTS repair -> minimal buffer -> OBS output
+```
+
+In that mode the plugin still repairs discontinuities and keeps monotonic OBS-facing timestamps, but it does not wait for the normal `min_ms` fill level and it does not use adaptive speed.
 
 ### 1. Jitter buffer (absorbs short-term network jitter)
 
@@ -40,7 +48,7 @@ A ±15ms dead zone around the target prevents oscillation. If the buffer is betw
 
 The adjustment range is 0.95x to 1.05x. Changes below 5% are inaudible — no pitch-shifting library is needed. An exponential moving average (500ms ramp) smooths the transitions so the rate doesn't jump between chunks.
 
-The result: the buffer stays at 120ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
+The result: in buffered mode the buffer stays near 120ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
 
 ### 3. PTS repair (handles timestamp discontinuities)
 
@@ -62,35 +70,40 @@ When the stream drops, the last audio chunk in the buffer gets a 50ms linear fad
 
 ## Timestamp handling
 
-OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Live streams use MPEG-TS PTS values that can be hours or days into an arbitrary epoch — passing these raw causes OBS to report "audio is lagging by millions of ms" and restart the source repeatedly.
+OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Live streams use PTS values in a stream-local epoch, and decoded frames may occasionally arrive with missing or damaged timestamps. Passing these raw causes OBS to report "audio is lagging" and restart the source repeatedly.
 
 ### Audio timestamps
 
-The plugin uses a running PTS counter anchored to `os_gettime_ns()` on first output, then advanced by a constant amount per push: `decoded_frame_samples / sample_rate`. Two properties keep this stable without any PLL or clock correction:
+The plugin uses a running timestamp counter anchored to `os_gettime_ns()` on first output. In buffered mode it advances by the decoded frame duration; in low-latency mode it advances by the actual emitted frame count so OBS async unbuffered mode stays close to real time.
+
+Three properties keep this stable:
 
 1. **Chunk size matches codec frame size** — output chunks are exactly one codec frame (AAC = 1024, Opus = 960 samples). OBS's internal smoothing advances `next_audio_ts_min` by `chunk_samples / mixer_rate` per push. When our PTS advance matches this exactly, there's zero drift and OBS always uses the fast `push_back` path (which doesn't reset `audio_ts`).
 
-2. **Speed-compensated chunk size** — when the adaptive speed controller is active, the output chunk is scaled by the speed factor (`chunk_samples = base * speed`), but PTS still advances by the constant base duration. After OBS resamples (dividing by the adjusted `samples_per_sec`), the smoothed advance equals the base frame duration regardless of speed.
+2. **Speed-compensated chunk size in buffered mode** — when the adaptive speed controller is active, the output chunk is scaled by the speed factor (`chunk_samples = base * speed`), but timestamps still advance by the constant base duration. After OBS resamples (dividing by the adjusted `samples_per_sec`), the smoothed advance equals the base frame duration regardless of speed.
 
-No PLL is used. Earlier iterations tried soft clock correction (0.5%–12.5% nudge toward the system clock), but any correction accumulates drift between the running PTS and OBS's smoothed position. This eventually breaches OBS's 70ms smoothing threshold, forcing a `place` (instead of `push_back`) that resets `audio_ts` — triggering the "audio is lagging" cascade.
+3. **Small wall-clock guardrails** — the running counter is periodically pulled back toward wall clock if it drifts too far ahead or too far away from real time. This is intentionally limited: buffered mode favors continuity, while low-latency mode is stricter about staying near wall clock.
 
-The initial PTS is set to `os_gettime_ns()` with no offset. OBS's valid range for `audio_ts` is only 21.33ms wide (one mixer tick: 1024/48000). Any offset risks placing `audio_ts` outside `[ts.start, ts.end)`, especially on reconnection when `audio_buffering_maxed` is already true.
+The initial audio timestamp is set to `os_gettime_ns()` with no large offset. When decoded audio frames arrive without a usable PTS, the plugin falls back to `best_effort_timestamp` and only synthesizes continuity from the previous repaired PTS when necessary. Frames with no safe starting point are dropped instead of pushing broken timing into OBS.
 
 ### Video timestamps
 
 Video uses a rebasing approach: the first frame's stream PTS is anchored to `os_gettime_ns()` via `video_sys_base` / `video_pts_base`. Subsequent frames compute their timestamp as `video_sys_base + (frame_pts_ns - video_pts_base)`, preserving the inter-frame timing from the stream.
 
-If the computed timestamp drifts more than 100ms from the current wall clock (due to PTS discontinuities from network hiccups or corrupt packets), the anchor is reset. Without this, a forward PTS jump would cause OBS to hold the previous frame on screen until the future timestamp arrives — visible as a freeze.
+Instead of a fixed audio offset, video is delayed by the current buffered-audio age when audio exists. That tracks the real state of the audio path better than always adding the configured target buffer.
+
+If the computed timestamp drifts too far from wall clock, it is clamped rather than fully re-anchored. That avoids visible jumps while still preventing long freezes if the stream sends a bad future timestamp.
 
 ## What this means in practice
 
 | Scenario | Media Source | IRL Source |
 |---|---|---|
-| Stable connection | Works fine, but adds seconds of latency | Works fine, adds ~120ms of latency |
+| Stable connection | Works fine, but adds seconds of latency | Buffered mode adds ~120ms, low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift | Buffer grows forever, latency increases | Speed adjusts, buffer stays at 120ms |
+| Sender clock drift | Buffer grows forever, latency increases | Buffered mode speed-adjusts, low-latency mode stays pinned close to OBS wall clock |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
-| Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps anchored to system clock |
+| Decoder corruption | Gray/corrupt flicker until manual restart | Last good frame is held, bad frames are skipped, decoder state is flushed on repeated errors |
+| Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |
 
-The tradeoff: if the network drops for longer than the max buffer (300ms), there's no cushion left and you'll hear it. But for SRTLA with bonded connections, sustained 300ms+ gaps are rare — and when they happen, you'd rather know immediately than have the problem hidden behind seconds of buffer.
+The tradeoff: buffered mode is more resilient to short stalls, but adds intentional latency. Low-latency mode reacts faster and works better with OBS async unbuffered audio, but it gives up most of that jitter cushion. For rough SRTLA field conditions, buffered mode should still be the default. Low-latency mode is there when absolute latency matters more than smoothing over short network wobble.
