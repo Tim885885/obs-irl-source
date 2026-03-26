@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.16)
-project(obs-irl-source VERSION 0.2.5 LANGUAGES C)
+project(obs-irl-source VERSION 0.3.0 LANGUAGES C)
 
 if(DEFINED OBS_SOURCE_DIR AND EXISTS "${OBS_SOURCE_DIR}/cmake/finders")
     list(APPEND CMAKE_MODULE_PATH "${OBS_SOURCE_DIR}/cmake/finders")
