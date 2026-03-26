@@ -46,6 +46,8 @@ void irl_source_get_defaults(obs_data_t *settings)
 				  IRL_DEFAULT_LOW_LATENCY_AUDIO);
 	obs_data_set_default_bool(settings, "decoupled_audio",
 				  IRL_DEFAULT_DECOUPLED_AUDIO);
+	obs_data_set_default_bool(settings, "close_when_inactive",
+				  IRL_DEFAULT_CLOSE_WHEN_INACTIVE);
 }
 
 /* ── Properties ───────────────────────────────────────────── */
@@ -67,6 +69,14 @@ obs_properties_t *irl_source_get_properties(void *data)
 	obs_properties_add_int(props, "network_buffer_mb",
 			       obs_module_text("Network Buffer (MB)"), 0, 16,
 			       1);
+	obs_properties_add_text(
+		props, "general_help",
+		obs_module_text(
+			"Reconnect Delay controls how quickly the source retries "
+			"after a disconnect. Network Buffer is transport-level "
+			"buffering before decode; the default 2 MB is usually the "
+			"right starting point for SRT/mobile links."),
+		OBS_TEXT_INFO);
 
 	/* ── Audio Buffer ──────────────────────────────────── */
 
@@ -86,6 +96,14 @@ obs_properties_t *irl_source_get_properties(void *data)
 	obs_properties_add_float_slider(props, "speed_max",
 					obs_module_text("Speed Max"), 1.0,
 					1.10, 0.01);
+	obs_properties_add_text(
+		props, "audio_buffer_help",
+		obs_module_text(
+			"Buffered mode is the normal IRL path: Target/Min/Max "
+			"Buffer and Adaptive Speed work together to smooth short "
+			"network wobble. Lower values reduce delay but make random "
+			"hitches more likely."),
+		OBS_TEXT_INFO);
 
 	/* ── PTS Repair ────────────────────────────────────── */
 
@@ -95,6 +113,13 @@ obs_properties_t *irl_source_get_properties(void *data)
 	obs_properties_add_int(props, "large_gap_ms",
 			       obs_module_text("Large Gap Threshold (ms)"), 500,
 			       10000, 100);
+	obs_properties_add_text(
+		props, "pts_help",
+		obs_module_text(
+			"Small gaps are interpolated. Medium gaps insert silence. "
+			"Large gaps trigger a clean timing reset. The defaults are "
+			"meant to be a safe starting point."),
+		OBS_TEXT_INFO);
 
 	/* ── Advanced ──────────────────────────────────────── */
 
@@ -108,12 +133,30 @@ obs_properties_t *irl_source_get_properties(void *data)
 	obs_property_list_add_int(hw, obs_module_text("Auto"), 0);
 	obs_property_list_add_int(hw, obs_module_text("Off"), 1);
 
-	obs_properties_add_bool(props, "wait_for_keyframe",
-				obs_module_text("Wait for Keyframe"));
-	obs_properties_add_bool(props, "low_latency_audio",
-				obs_module_text("Low Latency Audio"));
-	obs_properties_add_bool(props, "decoupled_audio",
-				obs_module_text("Decoupled Audio"));
+	obs_properties_add_bool(
+		props, "wait_for_keyframe",
+		obs_module_text("Wait for Keyframe on Start/Reconnect"));
+	obs_properties_add_bool(
+		props, "low_latency_audio",
+		obs_module_text("Use OBS Low-Latency Async Audio Mode"));
+	obs_properties_add_bool(
+		props, "decoupled_audio",
+		obs_module_text("Decoupled Audio (Low Latency Only)"));
+	obs_properties_add_bool(props, "close_when_inactive",
+				obs_module_text("Close Stream When Inactive"));
+	obs_properties_add_text(
+		props, "advanced_help",
+		obs_module_text(
+			"Wait for Keyframe avoids corrupt startup/reconnect frames, "
+			"but it can add up to one keyframe interval of delay. The "
+			"low-latency option enables OBS async unbuffered audio mode "
+			"for this source and makes the plugin drain immediately "
+			"instead of waiting for the normal buffer minimum, so it is "
+			"faster but less tolerant of jitter. Decoupled Audio only "
+			"matters when the low-latency mode is enabled. Close Stream "
+			"When Inactive stops receiving when the source is not active "
+			"and clears the last frame to black."),
+		OBS_TEXT_INFO);
 
 	/* ── About ─────────────────────────────────────────── */
 

@@ -61,6 +61,8 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 		obs_data_get_bool(settings, "low_latency_audio");
 	cfg->decoupled_audio =
 		obs_data_get_bool(settings, "decoupled_audio");
+	cfg->close_when_inactive =
+		obs_data_get_bool(settings, "close_when_inactive");
 	if (!cfg->low_latency_audio)
 		cfg->decoupled_audio = false;
 }
@@ -72,6 +74,56 @@ static void apply_async_audio_mode(struct irl_source *ctx)
 	obs_source_set_async_decoupled(ctx->source,
 				       ctx->config.low_latency_audio &&
 					       ctx->config.decoupled_audio);
+}
+
+static void reset_runtime_state(struct irl_source *ctx)
+{
+	ctx->first_keyframe_received = false;
+	ctx->reconnecting = false;
+	ctx->video_corrupted = false;
+	ctx->video_skip_logged = false;
+	audio_buffer_flush(&ctx->audio_buf);
+	pts_repair_reset(&ctx->pts_state);
+	ctx->current_speed = 1.0f;
+	ctx->latest_audio_stream_pts_ns = 0;
+	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_video_stream_pts_ns = 0;
+	ctx->audio_ts_init = false;
+	ctx->audio_pll_offset_ns = 0;
+	ctx->video_ts_init = false;
+	ctx->decoded_frame_samples = 0;
+	ctx->audio_decode_errors = 0;
+	ctx->video_decode_errors = 0;
+}
+
+static bool should_run_receiver(const struct irl_source *ctx)
+{
+	return ctx->config.url &&
+	       (!ctx->config.close_when_inactive ||
+		obs_source_active(ctx->source));
+}
+
+static void clear_async_video(struct irl_source *ctx)
+{
+	obs_source_output_video(ctx->source, NULL);
+}
+
+static void start_receiver(struct irl_source *ctx)
+{
+	if (ctx->thread_active || !should_run_receiver(ctx))
+		return;
+
+	reset_runtime_state(ctx);
+	ctx->thread_active = true;
+	pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread, ctx);
+}
+
+static void stop_receiver(struct irl_source *ctx, bool clear_video)
+{
+	irl_receiver_stop(ctx);
+	reset_runtime_state(ctx);
+	if (clear_video)
+		clear_async_video(ctx);
 }
 
 /* ── Stats proc_handler callback ──────────────────────────── */
@@ -152,9 +204,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	if (ctx->config.url) {
 		blog(LOG_INFO, "[irl-source] Created with URL: %s",
 		     ctx->config.url);
-		ctx->thread_active = true;
-		pthread_create(&ctx->receiver_thread, NULL,
-			       irl_receiver_thread, ctx);
+		start_receiver(ctx);
 	} else {
 		blog(LOG_INFO, "[irl-source] Created with no URL configured");
 	}
@@ -168,7 +218,7 @@ void irl_source_destroy(void *data)
 	if (!ctx)
 		return;
 
-	irl_receiver_stop(ctx);
+	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
 
 	if (ctx->swr_ctx)
@@ -187,36 +237,35 @@ void irl_source_update(void *data, obs_data_t *settings)
 	struct irl_source *ctx = data;
 
 	/* Stop existing receiver */
-	irl_receiver_stop(ctx);
+	stop_receiver(ctx, false);
 
 	/* Reload config */
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
 
-	/* Restart if we have a URL */
-	if (ctx->config.url) {
-		/* Reset keyframe gate and buffers */
-		ctx->first_keyframe_received = false;
-		ctx->reconnecting = false;
-		ctx->video_corrupted = false;
-		ctx->video_skip_logged = false;
-		audio_buffer_flush(&ctx->audio_buf);
-		pts_repair_reset(&ctx->pts_state);
-		ctx->current_speed = 1.0f;
-		ctx->latest_audio_stream_pts_ns = 0;
-		ctx->latest_audio_buffered_pts_ns = 0;
-		ctx->latest_video_stream_pts_ns = 0;
-		ctx->audio_ts_init = false;
-		ctx->audio_pll_offset_ns = 0;
-		ctx->video_ts_init = false;
-		ctx->decoded_frame_samples = 0;
-		ctx->audio_decode_errors = 0;
-		ctx->video_decode_errors = 0;
+	start_receiver(ctx);
+	if (!should_run_receiver(ctx))
+		clear_async_video(ctx);
+}
 
-		ctx->thread_active = true;
-		pthread_create(&ctx->receiver_thread, NULL,
-			       irl_receiver_thread, ctx);
-	}
+void irl_source_activate(void *data)
+{
+	struct irl_source *ctx = data;
+
+	if (!ctx || !ctx->config.close_when_inactive)
+		return;
+
+	start_receiver(ctx);
+}
+
+void irl_source_deactivate(void *data)
+{
+	struct irl_source *ctx = data;
+
+	if (!ctx || !ctx->config.close_when_inactive)
+		return;
+
+	stop_receiver(ctx, true);
 }
 
 void irl_source_tick(void *data, float seconds)

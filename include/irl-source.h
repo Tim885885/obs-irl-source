@@ -46,6 +46,7 @@ struct irl_source;
 #define IRL_DEFAULT_WAIT_KEYFRAME true
 #define IRL_DEFAULT_LOW_LATENCY_AUDIO false
 #define IRL_DEFAULT_DECOUPLED_AUDIO false
+#define IRL_DEFAULT_CLOSE_WHEN_INACTIVE false
 
 /* Audio fade duration on disconnect/reconnect (avoids clicks/pops) */
 #define IRL_FADE_DURATION_MS 50
@@ -76,6 +77,7 @@ struct irl_config {
 	bool wait_for_keyframe;
 	bool low_latency_audio;
 	bool decoupled_audio;
+	bool close_when_inactive;
 };
 
 /* ── Main source context ──────────────────────────────────── */
@@ -186,6 +188,8 @@ struct irl_source {
 void *irl_source_create(obs_data_t *settings, obs_source_t *source);
 void irl_source_destroy(void *data);
 void irl_source_update(void *data, obs_data_t *settings);
+void irl_source_activate(void *data);
+void irl_source_deactivate(void *data);
 void irl_source_tick(void *data, float seconds);
 const char *irl_source_get_name(void *unused);
 
