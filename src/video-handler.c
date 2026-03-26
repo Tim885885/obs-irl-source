@@ -153,10 +153,15 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 		if (ctx->latest_audio_obs_end_ts_ns > now) {
 			audio_lead_ns =
 				(int64_t)(ctx->latest_audio_obs_end_ts_ns - now);
-		} else if (ctx->latest_audio_obs_end_ts_ns == 0 &&
-			   !ctx->config.low_latency_audio) {
+		} else if (ctx->latest_audio_obs_end_ts_ns == 0) {
 			audio_lead_ns =
-				(int64_t)ctx->config.buffer_target_ms * 1000000LL;
+				(int64_t)ctx->startup_audio_warmup_remaining_ms *
+				1000000LL;
+			if (!ctx->config.low_latency_audio) {
+				audio_lead_ns +=
+					(int64_t)ctx->config.buffer_target_ms *
+					1000000LL;
+			}
 		}
 		if (audio_lead_ns > 0)
 			computed += (uint64_t)audio_lead_ns;

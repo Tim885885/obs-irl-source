@@ -51,6 +51,11 @@ struct irl_source;
 /* Audio fade duration on disconnect/reconnect (avoids clicks/pops) */
 #define IRL_FADE_DURATION_MS 50
 
+/* Decode/resample/PTS-repair audio in the background on startup,
+ * but discard a short window before sending anything to OBS. This
+ * avoids AAC/decoder warm-up artifacts without adding steady-state delay. */
+#define IRL_STARTUP_AUDIO_WARMUP_MS 150
+
 /* ── Source configuration ─────────────────────────────────── */
 
 struct irl_config {
@@ -173,6 +178,7 @@ struct irl_source {
 	/* Audio fade state */
 	bool fade_in_pending;
 	int fade_in_frames_remaining;
+	int startup_audio_warmup_remaining_ms;
 
 	/* Resolution tracking (for mid-stream changes) */
 	int last_video_width;

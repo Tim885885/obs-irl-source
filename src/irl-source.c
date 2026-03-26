@@ -97,6 +97,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->video_decode_errors = 0;
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
+	ctx->startup_audio_warmup_remaining_ms = 0;
 }
 
 static bool should_run_receiver(const struct irl_source *ctx)

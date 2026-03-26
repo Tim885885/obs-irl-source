@@ -354,6 +354,7 @@ static void reset_stream_timing_state(struct irl_source *ctx)
 	ctx->latest_video_stream_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
+	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
 	ctx->video_corrupted = false;
@@ -368,6 +369,7 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
+	ctx->startup_audio_warmup_remaining_ms = 0;
 }
 
 static int64_t audio_frame_pts(const AVFrame *frame)
@@ -386,6 +388,17 @@ static int64_t video_frame_pts(const AVFrame *frame)
 	if (frame->pts != AV_NOPTS_VALUE)
 		return frame->pts;
 	return AV_NOPTS_VALUE;
+}
+
+static int audio_frame_duration_ms(int samples, int sample_rate)
+{
+	if (samples <= 0 || sample_rate <= 0)
+		return 0;
+
+	int64_t ms = (int64_t)samples * 1000LL / sample_rate;
+	if (ms <= 0)
+		ms = 1;
+	return (int)ms;
 }
 
 /* ── Decoded frame handling ───────────────────────────────── */
@@ -414,6 +427,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->latest_audio_buffered_pts_ns = 0;
 		ctx->latest_audio_stream_pts_ns = 0;
 		ctx->latest_audio_obs_end_ts_ns = 0;
+		ctx->startup_audio_warmup_remaining_ms =
+			IRL_STARTUP_AUDIO_WARMUP_MS;
 	}
 
 	/* PTS repair */
@@ -444,6 +459,15 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	enum pts_action action = pts_repair_evaluate(
 		&ctx->pts_state, input_pts, duration, &corrected_pts,
 		&silence_ms);
+
+	int frame_ms = audio_frame_duration_ms(frame->nb_samples, out_rate);
+
+	if (ctx->startup_audio_warmup_remaining_ms > 0) {
+		ctx->startup_audio_warmup_remaining_ms -= frame_ms;
+		if (ctx->startup_audio_warmup_remaining_ms < 0)
+			ctx->startup_audio_warmup_remaining_ms = 0;
+		return;
+	}
 
 	if (action == PTS_ACTION_SILENCE && silence_ms > 0) {
 		/* Insert silence into the buffer */
@@ -876,6 +900,8 @@ void *irl_receiver_thread(void *data)
 			ctx->video_ts_init = false;
 			ctx->fade_in_pending = true;
 			ctx->fade_in_frames_remaining = 0;
+			ctx->startup_audio_warmup_remaining_ms =
+				IRL_STARTUP_AUDIO_WARMUP_MS;
 		}
 
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
