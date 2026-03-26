@@ -464,7 +464,6 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	} else if (action == PTS_ACTION_RESET) {
 		audio_buffer_flush(&ctx->audio_buf);
 		reset_stream_timing_state(ctx);
-		ctx->first_keyframe_received = false;
 	}
 
 	if (action != PTS_ACTION_PASS)
@@ -863,6 +862,8 @@ void *irl_receiver_thread(void *data)
 			/* Reset state for new connection */
 			ctx->first_keyframe_received = false;
 			ctx->video_ts_init = false;
+			ctx->fade_in_pending = true;
+			ctx->fade_in_frames_remaining = 0;
 		}
 
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
