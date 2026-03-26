@@ -88,6 +88,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_video_stream_pts_ns = 0;
+	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->audio_ts_init = false;
 	ctx->audio_pll_offset_ns = 0;
 	ctx->video_ts_init = false;
@@ -102,7 +103,7 @@ static bool should_run_receiver(const struct irl_source *ctx)
 {
 	return ctx->config.url &&
 	       (!ctx->config.close_when_inactive ||
-		obs_source_active(ctx->source));
+		obs_source_showing(ctx->source));
 }
 
 static void clear_async_video(struct irl_source *ctx)
@@ -261,6 +262,27 @@ void irl_source_activate(void *data)
 }
 
 void irl_source_deactivate(void *data)
+{
+	struct irl_source *ctx = data;
+
+	if (!ctx || !ctx->config.close_when_inactive)
+		return;
+
+	if (!obs_source_showing(ctx->source))
+		stop_receiver(ctx, true);
+}
+
+void irl_source_show(void *data)
+{
+	struct irl_source *ctx = data;
+
+	if (!ctx || !ctx->config.close_when_inactive)
+		return;
+
+	start_receiver(ctx);
+}
+
+void irl_source_hide(void *data)
 {
 	struct irl_source *ctx = data;
 

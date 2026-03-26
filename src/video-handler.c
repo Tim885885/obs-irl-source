@@ -145,15 +145,21 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 		computed = now + VIDEO_TS_CAP_NS;
 	}
 
-	/* Delay video by the actual buffered audio age when available.
-	 * This tracks jitter-buffer changes and low-latency mode better
-	 * than a fixed target offset. */
+	/* Delay video by the amount of audio already queued to OBS in
+	 * OBS's own clock domain. This aligns with actual playout better
+	 * than approximating from the plugin-side jitter-buffer fill. */
 	if (ctx->audio_stream_idx >= 0) {
-		int audio_delay_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
-		if (audio_delay_ms <= 0 && !ctx->config.low_latency_audio)
-			audio_delay_ms = ctx->config.buffer_target_ms;
-		if (audio_delay_ms > 0)
-			computed += (uint64_t)audio_delay_ms * 1000000ULL;
+		int64_t audio_lead_ns = 0;
+		if (ctx->latest_audio_obs_end_ts_ns > now) {
+			audio_lead_ns =
+				(int64_t)(ctx->latest_audio_obs_end_ts_ns - now);
+		} else if (ctx->latest_audio_obs_end_ts_ns == 0 &&
+			   !ctx->config.low_latency_audio) {
+			audio_lead_ns =
+				(int64_t)ctx->config.buffer_target_ms * 1000000LL;
+		}
+		if (audio_lead_ns > 0)
+			computed += (uint64_t)audio_lead_ns;
 	}
 
 	return computed;

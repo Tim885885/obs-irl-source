@@ -352,6 +352,7 @@ static void reset_stream_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_video_stream_pts_ns = 0;
+	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
@@ -365,6 +366,7 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_pll_offset_ns = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 }
 
@@ -411,6 +413,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->audio_pll_offset_ns = 0;
 		ctx->latest_audio_buffered_pts_ns = 0;
 		ctx->latest_audio_stream_pts_ns = 0;
+		ctx->latest_audio_obs_end_ts_ns = 0;
 	}
 
 	/* PTS repair */
@@ -728,6 +731,15 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			irl_speed_apply(ctx, &obs_audio);
 
 		obs_source_output_audio(ctx->source, &obs_audio);
+		if (obs_audio.samples_per_sec > 0) {
+			uint64_t audio_duration_ns =
+				(uint64_t)obs_audio.frames * 1000000000ULL /
+				(uint64_t)obs_audio.samples_per_sec;
+			ctx->latest_audio_obs_end_ts_ns =
+				obs_audio.timestamp + audio_duration_ns;
+		} else {
+			ctx->latest_audio_obs_end_ts_ns = obs_audio.timestamp;
+		}
 		ctx->total_audio_frames++;
 
 		free(out_buf);

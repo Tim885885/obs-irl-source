@@ -134,6 +134,11 @@ struct irl_source {
 	int64_t latest_audio_stream_pts_ns;
 	int64_t latest_video_stream_pts_ns;
 
+	/* Latest audio already queued to OBS, in OBS clock domain.
+	 * Used to align video to actual audio playout instead of
+	 * approximating from the plugin-side jitter-buffer fill. */
+	uint64_t latest_audio_obs_end_ts_ns;
+
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
 
@@ -190,6 +195,8 @@ void irl_source_destroy(void *data);
 void irl_source_update(void *data, obs_data_t *settings);
 void irl_source_activate(void *data);
 void irl_source_deactivate(void *data);
+void irl_source_show(void *data);
+void irl_source_hide(void *data);
 void irl_source_tick(void *data, float seconds);
 const char *irl_source_get_name(void *unused);
 
