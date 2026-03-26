@@ -9,6 +9,7 @@ IRL Source is a third-party OBS Studio plugin (C11, AGPL-3.0) for receiving live
 ## Build commands
 
 ### Linux
+
 ```bash
 sudo apt install build-essential cmake pkg-config libobs-dev \
     libavformat-dev libavcodec-dev libswresample-dev libswscale-dev libavutil-dev
@@ -17,12 +18,14 @@ cmake --build build --parallel
 ```
 
 ### Windows (MSVC)
+
 ```powershell
 cmake -B build -G "Visual Studio 17 2022" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
 cmake --build build --config RelWithDebInfo
 ```
 
 ### macOS (Apple Silicon)
+
 ```bash
 brew install cmake pkg-config ffmpeg simde uthash jansson
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOBS_SOURCE_DIR=$PWD/obs-src
@@ -86,4 +89,4 @@ The initial version of this plugin was heavily built with LLM assistance. The au
 
 ## Other files
 
-- **`irl-stats.lua`** — Example OBS Lua script that reads plugin stats via proc_handler and updates a text source overlay.
+- **`irl-stats.lua`** - Example OBS Lua script that reads plugin stats via proc_handler and updates a text source overlay.
