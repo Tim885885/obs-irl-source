@@ -116,25 +116,42 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 #define VIDEO_TS_CLAMP_NS 500000000LL   /* 500ms */
 #define VIDEO_TS_CAP_NS   200000000ULL  /* 200ms forward cap */
 
-/* Convert stream PTS to OBS nanosecond timestamp, anchored to the
- * system clock at the time of the first frame.  This preserves the
- * inter-frame timing from the stream (smooth playback) while keeping
- * timestamps in OBS's clock domain. */
+/* Convert stream PTS to OBS nanosecond timestamp.
+ *
+ * When audio is active, treat queued audio as the master playout
+ * clock: map video PTS through the same stream-PTS → OBS-clock
+ * offset used by the latest audio chunk already handed to OBS.
+ * This keeps lip sync stable even when buffered audio or adaptive
+ * audio speed changes the effective playout offset.
+ *
+ * If no audio playout mapping exists yet, fall back to the older
+ * video-only wall-clock anchor. */
 static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 {
 	AVStream *vs = ctx->fmt_ctx->streams[ctx->video_stream_idx];
 	int64_t pts_ns = (int64_t)(frame->pts * 1000000000LL *
 				   vs->time_base.num / vs->time_base.den);
+	uint64_t now = os_gettime_ns();
+
+	if (ctx->audio_stream_idx >= 0 && ctx->latest_audio_obs_end_ts_ns != 0 &&
+	    ctx->latest_audio_buffered_end_pts_ns > 0) {
+		int64_t mapped =
+			(int64_t)pts_ns +
+			((int64_t)ctx->latest_audio_obs_end_ts_ns -
+			 ctx->latest_audio_buffered_end_pts_ns);
+		if (mapped < 0)
+			mapped = 0;
+		return (uint64_t)mapped;
+	}
 
 	if (!ctx->video_ts_init) {
-		ctx->video_sys_base = os_gettime_ns();
+		ctx->video_sys_base = now;
 		ctx->video_pts_base = pts_ns;
 		ctx->video_ts_init = true;
 	}
 
 	uint64_t computed = ctx->video_sys_base +
 			    (uint64_t)(pts_ns - ctx->video_pts_base);
-	uint64_t now = os_gettime_ns();
 	int64_t drift = (int64_t)computed - (int64_t)now;
 
 	/* Clamp without re-anchoring — no visible skip, anchor
@@ -145,15 +162,10 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 		computed = now + VIDEO_TS_CAP_NS;
 	}
 
-	/* Delay video by the amount of audio already queued to OBS in
-	 * OBS's own clock domain. This aligns with actual playout better
-	 * than approximating from the plugin-side jitter-buffer fill. */
+	/* Startup fallback before the audio playout mapping exists. */
 	if (ctx->audio_stream_idx >= 0) {
 		int64_t audio_lead_ns = 0;
-		if (ctx->latest_audio_obs_end_ts_ns > now) {
-			audio_lead_ns =
-				(int64_t)(ctx->latest_audio_obs_end_ts_ns - now);
-		} else if (ctx->latest_audio_obs_end_ts_ns == 0) {
+		if (ctx->latest_audio_obs_end_ts_ns == 0) {
 			audio_lead_ns =
 				(int64_t)ctx->startup_audio_warmup_remaining_ms *
 				1000000LL;

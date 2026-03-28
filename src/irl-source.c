@@ -87,6 +87,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->current_speed = 1.0f;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_video_stream_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->audio_ts_init = false;

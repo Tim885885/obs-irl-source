@@ -351,6 +351,7 @@ static void reset_stream_timing_state(struct irl_source *ctx)
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_video_stream_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
@@ -367,6 +368,7 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_pll_offset_ns = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
+	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
@@ -425,6 +427,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->audio_ts_init = false;
 		ctx->audio_pll_offset_ns = 0;
 		ctx->latest_audio_buffered_pts_ns = 0;
+		ctx->latest_audio_buffered_end_pts_ns = 0;
 		ctx->latest_audio_stream_pts_ns = 0;
 		ctx->latest_audio_obs_end_ts_ns = 0;
 		ctx->startup_audio_warmup_remaining_ms =
@@ -608,6 +611,22 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			obs_audio.samples_per_sec =
 				(uint32_t)ctx->audio_buf.sample_rate;
 			obs_source_output_audio(ctx->source, &obs_audio);
+			if (obs_audio.samples_per_sec > 0) {
+				uint64_t audio_duration_ns =
+					(uint64_t)obs_audio.frames * 1000000000ULL /
+					(uint64_t)obs_audio.samples_per_sec;
+				ctx->latest_audio_obs_end_ts_ns =
+					obs_audio.timestamp + audio_duration_ns;
+				if (ctx->latest_audio_buffered_end_pts_ns > 0) {
+					ctx->latest_audio_buffered_pts_ns =
+						ctx->latest_audio_buffered_end_pts_ns;
+					ctx->latest_audio_buffered_end_pts_ns +=
+						(int64_t)audio_duration_ns;
+				}
+			} else {
+				ctx->latest_audio_obs_end_ts_ns =
+					obs_audio.timestamp;
+			}
 			free(silence_buf);
 		}
 		return;
@@ -755,6 +774,14 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			irl_speed_apply(ctx, &obs_audio);
 
 		obs_source_output_audio(ctx->source, &obs_audio);
+		uint64_t stream_duration_ns = 0;
+		if (out_rate > 0) {
+			stream_duration_ns =
+				(uint64_t)frames_out * 1000000000ULL /
+				(uint64_t)out_rate;
+		}
+		ctx->latest_audio_buffered_end_pts_ns =
+			chunk_pts_ns + (int64_t)stream_duration_ns;
 		if (obs_audio.samples_per_sec > 0) {
 			uint64_t audio_duration_ns =
 				(uint64_t)obs_audio.frames * 1000000000ULL /

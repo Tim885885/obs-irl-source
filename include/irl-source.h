@@ -143,6 +143,7 @@ struct irl_source {
 	 * Used to align video to actual audio playout instead of
 	 * approximating from the plugin-side jitter-buffer fill. */
 	uint64_t latest_audio_obs_end_ts_ns;
+	int64_t latest_audio_buffered_end_pts_ns;
 
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
