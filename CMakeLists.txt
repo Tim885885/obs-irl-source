@@ -7,6 +7,23 @@
 cmake_minimum_required(VERSION 3.16)
 project(obs-irl-source VERSION 0.3.0 LANGUAGES C)
 
+set(OBS_IRL_SOURCE_BUILD_VERSION "${PROJECT_VERSION}")
+find_package(Git QUIET)
+if(Git_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short=8 HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE OBS_IRL_SOURCE_GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE OBS_IRL_SOURCE_GIT_RESULT
+    )
+    if(OBS_IRL_SOURCE_GIT_RESULT EQUAL 0 AND OBS_IRL_SOURCE_GIT_HASH)
+        set(OBS_IRL_SOURCE_BUILD_VERSION
+            "${PROJECT_VERSION}+${OBS_IRL_SOURCE_GIT_HASH}")
+    endif()
+endif()
+
 if(DEFINED OBS_SOURCE_DIR AND EXISTS "${OBS_SOURCE_DIR}/cmake/finders")
     list(APPEND CMAKE_MODULE_PATH "${OBS_SOURCE_DIR}/cmake/finders")
 elseif(DEFINED ENV{OBS_SOURCE_DIR} AND EXISTS "$ENV{OBS_SOURCE_DIR}/cmake/finders")
@@ -244,6 +261,9 @@ set(PLUGIN_SOURCES
 )
 
 add_library(obs-irl-source MODULE ${PLUGIN_SOURCES})
+target_compile_definitions(obs-irl-source PRIVATE
+    OBS_IRL_SOURCE_VERSION="${OBS_IRL_SOURCE_BUILD_VERSION}"
+)
 
 # ── Include directories ──────────────────────────────────────
 target_include_directories(obs-irl-source PRIVATE
@@ -349,7 +369,7 @@ install(TARGETS obs-irl-source DESTINATION "${OBS_PLUGIN_DIR}")
 
 # ── Summary ──────────────────────────────────────────────────
 message(STATUS "")
-message(STATUS "obs-irl-source v${PROJECT_VERSION}")
+message(STATUS "obs-irl-source v${OBS_IRL_SOURCE_BUILD_VERSION}")
 message(STATUS "  OS:        ${CMAKE_SYSTEM_NAME}")
 message(STATUS "  Compiler:  ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
 if(_OBS_USE_FIND_PACKAGE)
