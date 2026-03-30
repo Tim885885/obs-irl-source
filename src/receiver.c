@@ -304,10 +304,13 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 {
 	int64_t frame_ns =
 		(int64_t)base_samples * 1000000000LL / out_rate;
+	int64_t startup_lead_ns =
+		ctx->config.low_latency_audio ? 0 : frame_ns / 2;
 	uint64_t now = os_gettime_ns();
 
 	if (!ctx->audio_ts_init) {
-		ctx->audio_sys_base = now;
+		int64_t initial_ts = (int64_t)now + startup_lead_ns;
+		ctx->audio_sys_base = (uint64_t)(initial_ts > 0 ? initial_ts : 0);
 		ctx->audio_pll_offset_ns = 0;
 		ctx->audio_ts_init = true;
 	}
@@ -333,6 +336,12 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 		ctx->audio_pll_corrections++;
 		ctx->audio_pll_offset_ns -= frame_ns;
 		audio_ts -= frame_ns;
+	} else if (drift < -120000000LL) {
+		ctx->audio_pll_corrections++;
+		int64_t target_ts = (int64_t)now + startup_lead_ns;
+		int64_t base = target_ts - ctx->audio_pll_offset_ns;
+		ctx->audio_sys_base = (uint64_t)(base > 0 ? base : 0);
+		audio_ts = (uint64_t)(target_ts > 0 ? target_ts : 0);
 	}
 
 	drift = (int64_t)audio_ts - (int64_t)now;
