@@ -14,8 +14,6 @@
  * shifting library is needed.
  */
 
-#include <math.h>
-
 #include "../include/irl-source.h"
 
 /* Speed ramp smoothing time in microseconds (500ms).
@@ -26,7 +24,7 @@
  * Prevents constant oscillation that causes OBS resampler pops. */
 #define SPEED_DEAD_ZONE_MS 15
 
-static float irl_speed_calculate(struct irl_source *ctx)
+float irl_speed_get(struct irl_source *ctx)
 {
 	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio)
 		return 1.0f;
@@ -79,17 +77,4 @@ static float irl_speed_calculate(struct irl_source *ctx)
 		ctx->current_speed + alpha * (target_speed - ctx->current_speed);
 
 	return ctx->current_speed;
-}
-
-void irl_speed_apply(struct irl_source *ctx, struct obs_source_audio *audio)
-{
-	float speed = irl_speed_calculate(ctx);
-
-	if (fabsf(speed - 1.0f) > 0.001f) {
-		/* Adjust the sample rate to change playback speed.
-		 * OBS will resample at the audio subsystem level.
-		 * e.g. 48000 * 1.03 = 49440 → OBS plays it faster. */
-		audio->samples_per_sec =
-			(uint32_t)((float)audio->samples_per_sec * speed);
-	}
 }

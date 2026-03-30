@@ -648,15 +648,12 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		if (base_samples <= 0)
 			base_samples = 960; /* fallback (Opus default) */
 
-		/* Scale by speed so that after OBS resamples (at
-		 * samples_per_sec / mixer_rate), the resampled count
-		 * equals base_samples.  This keeps the smoothed
-		 * advance = base_samples / mixer_rate = push rate,
-		 * regardless of speed.  Without scaling, the speed
-		 * controller changes the resampled count, reintroducing
-		 * the drift we eliminated by matching chunk size. */
+		/* Scale chunk size and reported sample rate from the
+		 * same controller value. If they diverge by even a
+		 * tiny amount, OBS sees discontinuous durations and
+		 * the resampler crackles when speed moves around 1.0. */
 		float speed = ctx->config.adaptive_speed
-				      ? ctx->current_speed
+				      ? irl_speed_get(ctx)
 				      : 1.0f;
 		if (speed < 0.9f)
 			speed = 0.9f;
@@ -767,11 +764,13 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_audio.speakers = (enum speaker_layout)out_channels;
 		obs_audio.timestamp = audio_ts;
 		obs_audio.samples_per_sec = (uint32_t)out_rate;
-
-		/* Adaptive speed: must run after samples_per_sec
-		 * is set so it can scale the value. */
-		if (ctx->config.adaptive_speed)
-			irl_speed_apply(ctx, &obs_audio);
+		if (ctx->config.adaptive_speed &&
+		    (speed < 0.999f || speed > 1.001f)) {
+			uint32_t scaled_rate =
+				(uint32_t)((float)out_rate * speed + 0.5f);
+			obs_audio.samples_per_sec =
+				scaled_rate > 0 ? scaled_rate : (uint32_t)out_rate;
+		}
 
 		obs_source_output_audio(ctx->source, &obs_audio);
 		uint64_t stream_duration_ns = 0;

@@ -222,7 +222,7 @@ void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Adaptive speed (audio-speed.c) ───────────────────────── */
 
-void irl_speed_apply(struct irl_source *ctx, struct obs_source_audio *audio);
+float irl_speed_get(struct irl_source *ctx);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */
 
