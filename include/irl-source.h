@@ -154,6 +154,17 @@ struct irl_source {
 	/* Adaptive speed controller */
 	float current_speed;
 	uint64_t last_speed_adjust_time;
+	uint64_t audio_pll_corrections;
+	uint64_t audio_pll_hard_resets;
+	uint64_t audio_underruns;
+	uint64_t audio_resync_skipped_chunks;
+	int64_t audio_last_ts_drift_ns;
+	int64_t audio_last_obs_lead_ns;
+	uint64_t audio_last_chunk_stream_duration_ns;
+	uint64_t audio_last_chunk_obs_duration_ns;
+	uint32_t audio_last_frames_out;
+	uint32_t audio_last_samples_per_sec;
+	uint64_t last_audio_diag_time;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.

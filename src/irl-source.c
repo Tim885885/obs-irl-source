@@ -85,6 +85,17 @@ static void reset_runtime_state(struct irl_source *ctx)
 	audio_buffer_flush(&ctx->audio_buf);
 	pts_repair_reset(&ctx->pts_state);
 	ctx->current_speed = 1.0f;
+	ctx->audio_pll_corrections = 0;
+	ctx->audio_pll_hard_resets = 0;
+	ctx->audio_underruns = 0;
+	ctx->audio_resync_skipped_chunks = 0;
+	ctx->audio_last_ts_drift_ns = 0;
+	ctx->audio_last_obs_lead_ns = 0;
+	ctx->audio_last_chunk_stream_duration_ns = 0;
+	ctx->audio_last_chunk_obs_duration_ns = 0;
+	ctx->audio_last_frames_out = 0;
+	ctx->audio_last_samples_per_sec = 0;
+	ctx->last_audio_diag_time = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;

@@ -324,30 +324,75 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 	 * async unbuffered/decoupled mode stays stable. */
 	if (ctx->config.low_latency_audio) {
 		if (drift < -10000000LL || drift > 10000000LL) {
+			ctx->audio_pll_corrections++;
 			int64_t base = (int64_t)now - ctx->audio_pll_offset_ns;
 			ctx->audio_sys_base = (uint64_t)(base > 0 ? base : 0);
 			audio_ts = now;
 		}
 	} else if (drift > 30000000LL) {
+		ctx->audio_pll_corrections++;
 		ctx->audio_pll_offset_ns -= frame_ns;
 		audio_ts -= frame_ns;
 	}
 
 	drift = (int64_t)audio_ts - (int64_t)now;
 	if (drift < -500000000LL || drift > 500000000LL) {
+		ctx->audio_pll_hard_resets++;
 		ctx->audio_sys_base = now;
 		ctx->audio_pll_offset_ns = 0;
 		audio_ts = now;
 	}
 
+	ctx->audio_last_ts_drift_ns = drift;
 	ctx->audio_pll_offset_ns += frame_ns;
 	return audio_ts;
+}
+
+static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
+{
+	uint64_t now = os_gettime_ns();
+	bool severe_lead = ctx->audio_last_obs_lead_ns > 150000000LL;
+	bool severe_drift = ctx->audio_last_ts_drift_ns < -40000000LL ||
+			    ctx->audio_last_ts_drift_ns > 40000000LL;
+
+	if (!severe_lead && !severe_drift)
+		return;
+	if (now - ctx->last_audio_diag_time < 5000000000ULL)
+		return;
+
+	ctx->last_audio_diag_time = now;
+	blog(LOG_WARNING,
+	     "[irl-source] Audio timing diag: obs_lead=%lldms ts_drift=%lldms "
+	     "fill=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
+	     "obs_chunk=%llums underruns=%llu resync_skips=%llu "
+	     "pll=%llu hard_resets=%llu repairs=%llu silence=%llu",
+	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
+	     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL), fill_ms,
+	     (double)ctx->current_speed, ctx->audio_last_frames_out,
+	     ctx->audio_last_samples_per_sec,
+	     (unsigned long long)(ctx->audio_last_chunk_stream_duration_ns /
+				  1000000ULL),
+	     (unsigned long long)(ctx->audio_last_chunk_obs_duration_ns /
+				  1000000ULL),
+	     (unsigned long long)ctx->audio_underruns,
+	     (unsigned long long)ctx->audio_resync_skipped_chunks,
+	     (unsigned long long)ctx->audio_pll_corrections,
+	     (unsigned long long)ctx->audio_pll_hard_resets,
+	     (unsigned long long)ctx->pts_repairs,
+	     (unsigned long long)ctx->silence_insertions);
 }
 
 static void reset_stream_timing_state(struct irl_source *ctx)
 {
 	ctx->audio_ts_init = false;
 	ctx->audio_pll_offset_ns = 0;
+	ctx->audio_last_ts_drift_ns = 0;
+	ctx->audio_last_obs_lead_ns = 0;
+	ctx->audio_last_chunk_stream_duration_ns = 0;
+	ctx->audio_last_chunk_obs_duration_ns = 0;
+	ctx->audio_last_frames_out = 0;
+	ctx->audio_last_samples_per_sec = 0;
+	ctx->last_audio_diag_time = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
@@ -366,6 +411,13 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 {
 	ctx->audio_ts_init = false;
 	ctx->audio_pll_offset_ns = 0;
+	ctx->audio_last_ts_drift_ns = 0;
+	ctx->audio_last_obs_lead_ns = 0;
+	ctx->audio_last_chunk_stream_duration_ns = 0;
+	ctx->audio_last_chunk_obs_duration_ns = 0;
+	ctx->audio_last_frames_out = 0;
+	ctx->audio_last_samples_per_sec = 0;
+	ctx->last_audio_diag_time = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
@@ -593,6 +645,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (!low_latency && !audio_buffer_ready_locked(&ctx->audio_buf) &&
 	    ctx->total_audio_frames > 0 &&
 	    ctx->decoded_frame_samples > 0) {
+		ctx->audio_underruns++;
 		int base_samples = ctx->decoded_frame_samples;
 		size_t silence_bytes =
 			(size_t)base_samples *
@@ -682,6 +735,8 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				int skipped = audio_buffer_skip_until_pts(
 					&ctx->audio_buf, expected);
 				if (skipped > 0) {
+					ctx->audio_resync_skipped_chunks +=
+						(uint64_t)skipped;
 					blog(LOG_INFO,
 					     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
 					     skipped,
@@ -787,9 +842,24 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				(uint64_t)obs_audio.samples_per_sec;
 			ctx->latest_audio_obs_end_ts_ns =
 				obs_audio.timestamp + audio_duration_ns;
+			ctx->audio_last_chunk_obs_duration_ns = audio_duration_ns;
 		} else {
 			ctx->latest_audio_obs_end_ts_ns = obs_audio.timestamp;
+			ctx->audio_last_chunk_obs_duration_ns = 0;
 		}
+		ctx->audio_last_chunk_stream_duration_ns = stream_duration_ns;
+		ctx->audio_last_frames_out = frames_out;
+		ctx->audio_last_samples_per_sec = obs_audio.samples_per_sec;
+		uint64_t after_output = os_gettime_ns();
+		if (ctx->latest_audio_obs_end_ts_ns > after_output) {
+			ctx->audio_last_obs_lead_ns =
+				(int64_t)(ctx->latest_audio_obs_end_ts_ns -
+					  after_output);
+		} else {
+			ctx->audio_last_obs_lead_ns = 0;
+		}
+		maybe_log_audio_timing_diag(
+			ctx, audio_buffer_fill_ms_locked(&ctx->audio_buf));
 		ctx->total_audio_frames++;
 
 		free(out_buf);
@@ -1128,13 +1198,28 @@ void *irl_receiver_thread(void *data)
 			blog(LOG_INFO,
 			     "[irl-source] Stats: video=%llu audio=%llu "
 			     "buf=%dms speed=%.3f pts_repairs=%llu "
-			     "silence=%llu res=%dx%d",
+			     "silence=%llu underruns=%llu resync_skips=%llu "
+			     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
+			     "stream_chunk=%llums obs_chunk=%llums "
+			     "pll=%llu hard_resets=%llu res=%dx%d",
 			     (unsigned long long)ctx->total_video_frames,
 			     (unsigned long long)ctx->total_audio_frames,
 			     audio_buffer_fill_ms_locked(&ctx->audio_buf),
 			     (double)ctx->current_speed,
 			     (unsigned long long)ctx->pts_repairs,
 			     (unsigned long long)ctx->silence_insertions,
+			     (unsigned long long)ctx->audio_underruns,
+			     (unsigned long long)ctx->audio_resync_skipped_chunks,
+			     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
+			     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL),
+			     ctx->audio_last_frames_out,
+			     ctx->audio_last_samples_per_sec,
+			     (unsigned long long)(ctx->audio_last_chunk_stream_duration_ns /
+						  1000000ULL),
+			     (unsigned long long)(ctx->audio_last_chunk_obs_duration_ns /
+						  1000000ULL),
+			     (unsigned long long)ctx->audio_pll_corrections,
+			     (unsigned long long)ctx->audio_pll_hard_resets,
 			     ctx->last_video_width,
 			     ctx->last_video_height);
 		}
