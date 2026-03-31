@@ -34,6 +34,13 @@
 
 #define IRL_STRETCH_META_MAX 256
 
+struct irl_stretch_meta_entry {
+	int64_t pts_ns;
+	uint64_t duration_ns;
+	int out_frames;
+	int consumed_frames;
+};
+
 /* ── Forward declarations ─────────────────────────────────── */
 
 struct irl_source;
@@ -185,13 +192,13 @@ struct irl_source {
 	int stretch_sample_rate;
 	int stretch_channels;
 	float stretch_speed;
-	struct {
-		int64_t pts_ns;
-		uint64_t duration_ns;
-	} stretch_meta[IRL_STRETCH_META_MAX];
+	struct irl_stretch_meta_entry
+		stretch_meta[IRL_STRETCH_META_MAX];
 	int stretch_meta_head;
 	int stretch_meta_tail;
 	int stretch_meta_count;
+	int64_t stretch_next_pts_ns;
+	bool stretch_next_pts_valid;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.

@@ -23,10 +23,12 @@ static void stretch_meta_reset(struct irl_source *ctx)
 	ctx->stretch_meta_head = 0;
 	ctx->stretch_meta_tail = 0;
 	ctx->stretch_meta_count = 0;
+	ctx->stretch_next_pts_ns = 0;
+	ctx->stretch_next_pts_valid = false;
 }
 
 static void stretch_meta_push(struct irl_source *ctx, int64_t pts_ns,
-			      uint64_t duration_ns)
+			      uint64_t duration_ns, int out_frames)
 {
 	if (ctx->stretch_meta_count >= IRL_STRETCH_META_MAX) {
 		ctx->stretch_meta_tail =
@@ -36,26 +38,82 @@ static void stretch_meta_push(struct irl_source *ctx, int64_t pts_ns,
 
 	ctx->stretch_meta[ctx->stretch_meta_head].pts_ns = pts_ns;
 	ctx->stretch_meta[ctx->stretch_meta_head].duration_ns = duration_ns;
+	ctx->stretch_meta[ctx->stretch_meta_head].out_frames = out_frames;
+	ctx->stretch_meta[ctx->stretch_meta_head].consumed_frames = 0;
 	ctx->stretch_meta_head =
 		(ctx->stretch_meta_head + 1) % IRL_STRETCH_META_MAX;
 	ctx->stretch_meta_count++;
 }
 
 static bool stretch_meta_pop(struct irl_source *ctx, int64_t *pts_ns,
-			     uint64_t *duration_ns)
+			     uint64_t *duration_ns, int out_frames)
 {
 	if (ctx->stretch_meta_count <= 0)
 		return false;
 
-	if (pts_ns)
-		*pts_ns = ctx->stretch_meta[ctx->stretch_meta_tail].pts_ns;
-	if (duration_ns)
-		*duration_ns =
-			ctx->stretch_meta[ctx->stretch_meta_tail].duration_ns;
+	struct {
+		int index;
+		int take;
+	} slices[IRL_STRETCH_META_MAX];
+	int slice_count = 0;
+	int remaining = out_frames;
+	uint64_t total_duration = 0;
+	bool start_set = false;
+	int idx = ctx->stretch_meta_tail;
+	int count = ctx->stretch_meta_count;
 
-	ctx->stretch_meta_tail =
-		(ctx->stretch_meta_tail + 1) % IRL_STRETCH_META_MAX;
-	ctx->stretch_meta_count--;
+	while (remaining > 0 && count > 0) {
+		struct irl_stretch_meta_entry *m = &ctx->stretch_meta[idx];
+		int available = m->out_frames - m->consumed_frames;
+		if (available <= 0) {
+			idx = (idx + 1) % IRL_STRETCH_META_MAX;
+			count--;
+			continue;
+		}
+
+		int take = remaining < available ? remaining : available;
+		if (!start_set) {
+			if (pts_ns) {
+				*pts_ns =
+					m->pts_ns +
+					(int64_t)((m->duration_ns *
+						   (uint64_t)m->consumed_frames) /
+						  (uint64_t)m->out_frames);
+			}
+			start_set = true;
+		}
+
+		total_duration +=
+			(m->duration_ns * (uint64_t)take) /
+			(uint64_t)m->out_frames;
+		slices[slice_count].index = idx;
+		slices[slice_count].take = take;
+		slice_count++;
+		remaining -= take;
+		idx = (idx + 1) % IRL_STRETCH_META_MAX;
+		count--;
+	}
+
+	if (remaining > 0)
+		return false;
+	if (duration_ns)
+		*duration_ns = total_duration;
+
+	for (int i = 0; i < slice_count; i++) {
+		struct irl_stretch_meta_entry *m =
+			&ctx->stretch_meta[slices[i].index];
+		m->consumed_frames += slices[i].take;
+	}
+
+	while (ctx->stretch_meta_count > 0) {
+		struct irl_stretch_meta_entry *m =
+			&ctx->stretch_meta[ctx->stretch_meta_tail];
+		if (m->consumed_frames < m->out_frames)
+			break;
+		ctx->stretch_meta_tail =
+			(ctx->stretch_meta_tail + 1) % IRL_STRETCH_META_MAX;
+		ctx->stretch_meta_count--;
+	}
 	return true;
 }
 
@@ -213,8 +271,13 @@ bool irl_stretch_push(struct irl_source *ctx, const float *samples, int frames,
 	if (av_buffersrc_add_frame(ctx->stretch_src_ctx, in) < 0)
 		goto fail;
 
-	stretch_meta_push(ctx, pts_ns, duration_ns);
+	if (!ctx->stretch_next_pts_valid) {
+		ctx->stretch_next_pts_ns = pts_ns;
+		ctx->stretch_next_pts_valid = true;
+	}
 	av_frame_free(&in);
+
+	UNUSED_PARAMETER(duration_ns);
 
 	for (;;) {
 		AVFrame *out = av_frame_alloc();
@@ -246,6 +309,23 @@ bool irl_stretch_push(struct irl_source *ctx, const float *samples, int frames,
 			return false;
 		}
 
+		uint64_t out_stream_duration_ns = 0;
+		if (ctx->stretch_sample_rate > 0) {
+			double obs_duration_ns =
+				(double)out->nb_samples * 1000000000.0 /
+				(double)ctx->stretch_sample_rate;
+			double stream_duration =
+				obs_duration_ns * (double)speed;
+			if (stream_duration < 0.0)
+				stream_duration = 0.0;
+			out_stream_duration_ns =
+				(uint64_t)(stream_duration + 0.5);
+		}
+		stretch_meta_push(ctx, ctx->stretch_next_pts_ns,
+				  out_stream_duration_ns, out->nb_samples);
+		ctx->stretch_next_pts_ns +=
+			(int64_t)out_stream_duration_ns;
+
 		av_frame_free(&out);
 	}
 
@@ -261,7 +341,7 @@ bool irl_stretch_pop(struct irl_source *ctx, float *out, int out_frames,
 {
 	if (!ctx->stretch_fifo || av_audio_fifo_size(ctx->stretch_fifo) < out_frames)
 		return false;
-	if (!stretch_meta_pop(ctx, pts_ns, duration_ns))
+	if (!stretch_meta_pop(ctx, pts_ns, duration_ns, out_frames))
 		return false;
 
 	void *data[1] = {out};
