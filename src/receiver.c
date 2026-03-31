@@ -336,7 +336,7 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 		ctx->audio_pll_corrections++;
 		ctx->audio_pll_offset_ns -= frame_ns;
 		audio_ts -= frame_ns;
-	} else if (drift < -120000000LL) {
+	} else if (drift < -70000000LL) {
 		ctx->audio_pll_corrections++;
 		int64_t target_ts = (int64_t)now + startup_lead_ns;
 		int64_t base = target_ts - ctx->audio_pll_offset_ns;
@@ -433,6 +433,14 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+}
+
+static void reanchor_audio_output_clock(struct irl_source *ctx)
+{
+	ctx->audio_ts_init = false;
+	ctx->audio_pll_offset_ns = 0;
+	ctx->audio_last_ts_drift_ns = 0;
+	ctx->audio_last_obs_lead_ns = 0;
 }
 
 static int64_t audio_frame_pts(const AVFrame *frame)
@@ -746,6 +754,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				if (skipped > 0) {
 					ctx->audio_resync_skipped_chunks +=
 						(uint64_t)skipped;
+					reanchor_audio_output_clock(ctx);
 					blog(LOG_INFO,
 					     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
 					     skipped,
