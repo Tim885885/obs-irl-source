@@ -542,6 +542,21 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 				      int fill_ms, int chunk_count,
 				      bool reset_stretch)
 {
+	UNUSED_PARAMETER(peek);
+	UNUSED_PARAMETER(fill_ms);
+	UNUSED_PARAMETER(chunk_count);
+	UNUSED_PARAMETER(reset_stretch);
+
+	/* The stale-chunk heuristic proved too aggressive once
+	 * buffered output moved onto the dedicated audio pump and
+	 * especially once pitch-preserving stretch was added. In
+	 * practice it kept declaring the queue stale and forcing
+	 * repeated flushes every few seconds on otherwise playable
+	 * IRL streams.  Leave recovery to PTS repair, underrun
+	 * handling, and reconnect/reset paths instead. */
+	if (!ctx->config.low_latency_audio)
+		return false;
+
 	if (ctx->latest_audio_stream_pts_ns == 0 || chunk_count <= 1)
 		return false;
 
