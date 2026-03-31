@@ -26,6 +26,7 @@
 #define SPEED_UP_DEAD_ZONE_MS 15
 #define SPEED_DOWN_DEAD_ZONE_MS 10
 #define SPEED_DOWN_RANGE_SCALE 0.35f
+#define SPEED_SNAP_TO_ONE_EPSILON 0.01f
 
 float irl_speed_get(struct irl_source *ctx)
 {
@@ -36,6 +37,9 @@ float irl_speed_get(struct irl_source *ctx)
 	int target_ms = ctx->config.buffer_target_ms;
 	int min_ms = ctx->audio_buf.min_ms;
 	float target_speed = 1.0f;
+	bool safe_fill =
+		fill_ms >= min_ms &&
+		fill_ms <= target_ms + SPEED_UP_DEAD_ZONE_MS;
 
 	if (fill_ms > target_ms + SPEED_UP_DEAD_ZONE_MS) {
 		/* Buffer above dead zone — play faster to drain.
@@ -62,6 +66,13 @@ float irl_speed_get(struct irl_source *ctx)
 					SPEED_DOWN_RANGE_SCALE;
 	}
 
+	/* Buffered-mode safe zone: once we're out of underrun risk and
+	 * not above target, lock to real-time. This avoids spending
+	 * long stretches at ~0.99x just because the buffer sits below
+	 * target but still comfortably above minimum. */
+	if (safe_fill)
+		target_speed = 1.0f;
+
 	/* Clamp to configured range */
 	if (target_speed < ctx->config.speed_min)
 		target_speed = ctx->config.speed_min;
@@ -81,6 +92,11 @@ float irl_speed_get(struct irl_source *ctx)
 
 	ctx->current_speed =
 		ctx->current_speed + alpha * (target_speed - ctx->current_speed);
+	if (target_speed == 1.0f &&
+	    ctx->current_speed > 1.0f - SPEED_SNAP_TO_ONE_EPSILON &&
+	    ctx->current_speed < 1.0f + SPEED_SNAP_TO_ONE_EPSILON) {
+		ctx->current_speed = 1.0f;
+	}
 
 	return ctx->current_speed;
 }

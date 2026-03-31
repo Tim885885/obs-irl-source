@@ -308,6 +308,34 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 		ctx->config.low_latency_audio ? 0 : frame_ns * 2;
 	uint64_t now = os_gettime_ns();
 
+	/* Buffered mode is now driven by the dedicated audio pump.
+	 * Use the actual queued OBS end timestamp as the playout
+	 * timeline, and only re-anchor to a small positive lead when
+	 * that queue has collapsed. This avoids the old oscillation
+	 * between "late" and "PLL catch-up" states. */
+	if (!ctx->config.low_latency_audio) {
+		uint64_t target_ts =
+			now + (uint64_t)(startup_lead_ns > 0 ? startup_lead_ns : 0);
+		uint64_t queued_end_ts = ctx->latest_audio_obs_end_ts_ns;
+		uint64_t audio_ts = 0;
+
+		if (!ctx->audio_ts_init || queued_end_ts == 0) {
+			audio_ts = target_ts;
+			ctx->audio_ts_init = true;
+		} else if (queued_end_ts >= target_ts) {
+			audio_ts = queued_end_ts;
+		} else {
+			ctx->audio_pll_corrections++;
+			audio_ts = target_ts;
+		}
+
+		ctx->audio_sys_base = audio_ts;
+		ctx->audio_pll_offset_ns = 0;
+		ctx->audio_last_ts_drift_ns =
+			(int64_t)audio_ts - (int64_t)now;
+		return audio_ts;
+	}
+
 	if (!ctx->audio_ts_init) {
 		int64_t initial_ts = (int64_t)now + startup_lead_ns;
 		ctx->audio_sys_base = (uint64_t)(initial_ts > 0 ? initial_ts : 0);
