@@ -541,8 +541,11 @@ static bool pump_audio_once(struct irl_source *ctx)
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 							 &fill_ms,
 							 &chunk_count);
+	int required_fill_ms = low_latency ? 0 : ctx->audio_buf.min_ms;
+	if (!low_latency && ctx->latest_audio_buffered_end_pts_ns == 0)
+		required_fill_ms = ctx->audio_buf.target_ms;
 
-	if (!(low_latency ? has_audio : (fill_ms >= ctx->audio_buf.min_ms))) {
+	if (!(low_latency ? has_audio : (fill_ms >= required_fill_ms))) {
 		if (!low_latency && !has_audio &&
 		    ctx->latest_audio_buffered_end_pts_ns > 0) {
 			ctx->audio_underruns++;
