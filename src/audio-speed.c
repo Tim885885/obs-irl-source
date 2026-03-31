@@ -16,18 +16,22 @@
  * too close to underrun.
  */
 
+#include <math.h>
+
 #include "../include/irl-source.h"
 
-/* Speed ramp smoothing time in microseconds (800ms).
- * Longer ramp = smoother speed changes = fewer resampling artifacts. */
-#define SPEED_RAMP_US 800000
+/* Speed ramp smoothing time in microseconds (250ms).
+ * Buffered mode should react quickly enough to drain burst fill
+ * before it turns into a persistent several-hundred-ms backlog. */
+#define SPEED_RAMP_US 250000
 
 /* Buffered mode should be much more reluctant to slow down than
  * to speed up.  Staying slightly below target buffer is usually
  * preferable to constant sub-1.0 resampling artifacts. */
-#define SPEED_UP_DEAD_ZONE_MS 15
+#define SPEED_UP_DEAD_ZONE_MS 10
 #define SPEED_DOWN_DEAD_ZONE_MS 10
 #define SPEED_DOWN_RANGE_SCALE 0.35f
+#define SPEED_PANIC_DRAIN_HEADROOM_MS 30
 #define SPEED_SNAP_TO_ONE_EPSILON 0.01f
 
 float irl_speed_get(struct irl_source *ctx)
@@ -38,20 +42,32 @@ float irl_speed_get(struct irl_source *ctx)
 	int fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 	int target_ms = ctx->config.buffer_target_ms;
 	int min_ms = ctx->audio_buf.min_ms;
+	int max_ms = ctx->config.buffer_max_ms;
 	float target_speed = 1.0f;
 	bool safe_fill =
 		fill_ms >= min_ms &&
 		fill_ms <= target_ms + SPEED_UP_DEAD_ZONE_MS;
 
-	if (fill_ms > target_ms + SPEED_UP_DEAD_ZONE_MS) {
+	if (fill_ms >= max_ms - SPEED_PANIC_DRAIN_HEADROOM_MS) {
+		/* If we are close to the configured ceiling, stop being
+		 * polite and drain at the configured maximum tempo. */
+		target_speed = ctx->config.speed_max;
+	} else if (fill_ms > target_ms + SPEED_UP_DEAD_ZONE_MS) {
 		/* Buffer above dead zone — play faster to drain.
-		 * Scale proportionally: at max_ms, use full speed_max. */
+		 * Use a front-loaded curve so buffered mode reacts
+		 * decisively once it drifts above target, instead of
+		 * spending too long at ~1.01x while the queue grows. */
+		int range_ms = max_ms - target_ms - SPEED_UP_DEAD_ZONE_MS;
+		if (range_ms < 1)
+			range_ms = 1;
 		float excess = (float)(fill_ms - target_ms -
 				       SPEED_UP_DEAD_ZONE_MS) /
-			       (float)(ctx->config.buffer_max_ms - target_ms -
-				       SPEED_UP_DEAD_ZONE_MS);
+			       (float)range_ms;
 		if (excess > 1.0f)
 			excess = 1.0f;
+		if (excess < 0.0f)
+			excess = 0.0f;
+		excess = sqrtf(excess);
 		target_speed =
 			1.0f + excess * (ctx->config.speed_max - 1.0f);
 	} else if (fill_ms < min_ms - SPEED_DOWN_DEAD_ZONE_MS) {
