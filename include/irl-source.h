@@ -95,6 +95,7 @@ struct irl_source {
 
 	/* Receiver / demux thread */
 	pthread_t receiver_thread;
+	pthread_t audio_thread;
 	volatile bool thread_active;
 	volatile bool reconnecting;
 
@@ -228,6 +229,7 @@ void irl_source_get_defaults(obs_data_t *settings);
 /* ── Receiver thread (receiver.c) ─────────────────────────── */
 
 void *irl_receiver_thread(void *data);
+void *irl_audio_thread(void *data);
 void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Audio buffer (audio-buffer.c) ────────────────────────── */

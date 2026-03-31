@@ -136,6 +136,7 @@ static void start_receiver(struct irl_source *ctx)
 
 	reset_runtime_state(ctx);
 	ctx->thread_active = true;
+	pthread_create(&ctx->audio_thread, NULL, irl_audio_thread, ctx);
 	pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread, ctx);
 }
 
