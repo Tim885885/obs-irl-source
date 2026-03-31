@@ -16,13 +16,16 @@
 
 #include "../include/irl-source.h"
 
-/* Speed ramp smoothing time in microseconds (500ms).
+/* Speed ramp smoothing time in microseconds (800ms).
  * Longer ramp = smoother speed changes = fewer resampling artifacts. */
-#define SPEED_RAMP_US 500000
+#define SPEED_RAMP_US 800000
 
-/* Dead zone around target (±ms) where speed stays at 1.0.
- * Prevents constant oscillation that causes OBS resampler pops. */
-#define SPEED_DEAD_ZONE_MS 15
+/* Buffered mode should be much more reluctant to slow down than
+ * to speed up.  Staying slightly below target buffer is usually
+ * preferable to constant sub-1.0 resampling artifacts. */
+#define SPEED_UP_DEAD_ZONE_MS 15
+#define SPEED_DOWN_DEAD_ZONE_MS 10
+#define SPEED_DOWN_RANGE_SCALE 0.35f
 
 float irl_speed_get(struct irl_source *ctx)
 {
@@ -31,29 +34,32 @@ float irl_speed_get(struct irl_source *ctx)
 
 	int fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 	int target_ms = ctx->config.buffer_target_ms;
+	int min_ms = ctx->audio_buf.min_ms;
 	float target_speed = 1.0f;
 
-	if (fill_ms > target_ms + SPEED_DEAD_ZONE_MS) {
+	if (fill_ms > target_ms + SPEED_UP_DEAD_ZONE_MS) {
 		/* Buffer above dead zone — play faster to drain.
 		 * Scale proportionally: at max_ms, use full speed_max. */
 		float excess = (float)(fill_ms - target_ms -
-				       SPEED_DEAD_ZONE_MS) /
+				       SPEED_UP_DEAD_ZONE_MS) /
 			       (float)(ctx->config.buffer_max_ms - target_ms -
-				       SPEED_DEAD_ZONE_MS);
+				       SPEED_UP_DEAD_ZONE_MS);
 		if (excess > 1.0f)
 			excess = 1.0f;
 		target_speed =
 			1.0f + excess * (ctx->config.speed_max - 1.0f);
-	} else if (fill_ms < target_ms - SPEED_DEAD_ZONE_MS) {
-		/* Buffer below dead zone — play slower to let it fill.
-		 * Scale proportionally: at 0ms, use full speed_min. */
-		float deficit = (float)(target_ms - SPEED_DEAD_ZONE_MS -
+	} else if (fill_ms < min_ms - SPEED_DOWN_DEAD_ZONE_MS) {
+		/* Only slow down when the buffer falls near underrun
+		 * territory.  Use only a fraction of the configured
+		 * slowdown range to keep buffered mode sounding clean. */
+		float deficit = (float)(min_ms - SPEED_DOWN_DEAD_ZONE_MS -
 					fill_ms) /
-				(float)(target_ms - SPEED_DEAD_ZONE_MS);
+				(float)(min_ms - SPEED_DOWN_DEAD_ZONE_MS);
 		if (deficit > 1.0f)
 			deficit = 1.0f;
 		target_speed =
-			1.0f - deficit * (1.0f - ctx->config.speed_min);
+			1.0f - deficit * (1.0f - ctx->config.speed_min) *
+					SPEED_DOWN_RANGE_SCALE;
 	}
 
 	/* Clamp to configured range */
