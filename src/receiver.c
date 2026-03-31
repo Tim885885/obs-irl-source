@@ -305,7 +305,7 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 	int64_t frame_ns =
 		(int64_t)base_samples * 1000000000LL / out_rate;
 	int64_t startup_lead_ns =
-		ctx->config.low_latency_audio ? 0 : frame_ns / 2;
+		ctx->config.low_latency_audio ? 0 : frame_ns;
 	uint64_t now = os_gettime_ns();
 
 	if (!ctx->audio_ts_init) {
