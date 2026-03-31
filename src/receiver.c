@@ -315,7 +315,7 @@ static uint64_t next_audio_timestamp(struct irl_source *ctx, int base_samples,
 	int64_t frame_ns =
 		(int64_t)base_samples * 1000000000LL / out_rate;
 	int64_t startup_lead_ns =
-		ctx->config.low_latency_audio ? 0 : frame_ns;
+		ctx->config.low_latency_audio ? 0 : frame_ns * 2;
 	uint64_t now = os_gettime_ns();
 
 	/* Buffered mode is now driven by the dedicated audio pump.
@@ -640,7 +640,8 @@ static bool pump_audio_once(struct irl_source *ctx)
 	uint64_t desired_lead_ns =
 		low_latency ? 0
 			    : ((uint64_t)base_samples * 1000000000ULL /
-			       (uint64_t)out_rate);
+			       (uint64_t)out_rate) *
+				      2ULL;
 	uint64_t now = os_gettime_ns();
 	if (ctx->latest_audio_obs_end_ts_ns != 0 &&
 	    ctx->latest_audio_obs_end_ts_ns > now + desired_lead_ns) {
