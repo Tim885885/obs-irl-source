@@ -538,6 +538,33 @@ static void finalize_audio_output(struct irl_source *ctx,
 	ctx->total_audio_frames++;
 }
 
+static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
+				      int fill_ms, int chunk_count,
+				      bool reset_stretch)
+{
+	if (ctx->latest_audio_stream_pts_ns == 0 || chunk_count <= 1)
+		return false;
+
+	int64_t expected = ctx->latest_audio_stream_pts_ns -
+			   (int64_t)fill_ms * 1000000LL;
+	int64_t gap_ns = peek - expected;
+	if (gap_ns >= -50000000LL)
+		return false;
+
+	int skipped = audio_buffer_skip_until_pts(&ctx->audio_buf, expected);
+	if (skipped <= 0)
+		return false;
+
+	ctx->audio_resync_skipped_chunks += (uint64_t)skipped;
+	if (reset_stretch)
+		irl_stretch_reset(ctx);
+	reanchor_audio_output_clock(ctx);
+	blog(LOG_INFO,
+	     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
+	     skipped, (long long)(gap_ns / 1000000));
+	return true;
+}
+
 static bool pump_audio_once(struct irl_source *ctx)
 {
 	bool low_latency = ctx->config.low_latency_audio;
@@ -569,6 +596,7 @@ static bool pump_audio_once(struct irl_source *ctx)
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 							 &fill_ms,
 							 &chunk_count);
+	bool use_stretch = ctx->config.adaptive_speed && !low_latency;
 	int required_fill_ms = low_latency ? 0 : ctx->audio_buf.min_ms;
 	if (!low_latency && ctx->latest_audio_buffered_end_pts_ns == 0)
 		required_fill_ms = ctx->audio_buf.target_ms;
@@ -608,22 +636,10 @@ static bool pump_audio_once(struct irl_source *ctx)
 		return false;
 	}
 
-	if (ctx->latest_audio_stream_pts_ns != 0 && has_audio && chunk_count > 1) {
-		int64_t expected = ctx->latest_audio_stream_pts_ns -
-				   (int64_t)fill_ms * 1000000LL;
-		if (peek - expected < -50000000LL) {
-			int skipped = audio_buffer_skip_until_pts(
-				&ctx->audio_buf, expected);
-			if (skipped > 0) {
-				ctx->audio_resync_skipped_chunks +=
-					(uint64_t)skipped;
-				reanchor_audio_output_clock(ctx);
-				blog(LOG_INFO,
-				     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
-				     skipped,
-				     (long long)((peek - expected) / 1000000));
-			}
-		}
+	if (has_audio &&
+	    maybe_resync_audio_buffer(ctx, peek, fill_ms, chunk_count,
+				      use_stretch)) {
+		return false;
 	}
 
 	float speed =
@@ -632,7 +648,6 @@ static bool pump_audio_once(struct irl_source *ctx)
 		speed = 0.9f;
 	if (speed > 1.1f)
 		speed = 1.1f;
-	bool use_stretch = ctx->config.adaptive_speed && !low_latency;
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
@@ -655,25 +670,12 @@ static bool pump_audio_once(struct irl_source *ctx)
 					  : (stretch_fill_ms >= required_fill_ms))) {
 				break;
 			}
-			if (ctx->latest_audio_stream_pts_ns != 0 &&
-			    stretch_has_audio && stretch_chunk_count > 1) {
-				int64_t expected =
-					ctx->latest_audio_stream_pts_ns -
-					(int64_t)stretch_fill_ms * 1000000LL;
-				if (stretch_peek - expected < -50000000LL) {
-					int skipped = audio_buffer_skip_until_pts(
-						&ctx->audio_buf, expected);
-					if (skipped > 0) {
-						ctx->audio_resync_skipped_chunks +=
-							(uint64_t)skipped;
-						reanchor_audio_output_clock(ctx);
-						blog(LOG_INFO,
-						     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
-						     skipped,
-						     (long long)((stretch_peek - expected) /
-								 1000000));
-					}
-				}
+			if (stretch_has_audio &&
+			    maybe_resync_audio_buffer(ctx, stretch_peek,
+						      stretch_fill_ms,
+						      stretch_chunk_count,
+						      true)) {
+				return false;
 			}
 
 			int in_chunk_samples =
