@@ -1091,19 +1091,19 @@ void *irl_audio_thread(void *data)
 
 	while (ctx->thread_active) {
 		if (ctx->reconnecting) {
-			os_sleep_ms(2);
+			os_sleep_ms(1);
 			continue;
 		}
 
 		bool pumped = false;
-		for (int i = 0; i < 4 && ctx->thread_active; i++) {
+		for (int i = 0; i < 16 && ctx->thread_active; i++) {
 			if (!pump_audio_once(ctx))
 				break;
 			pumped = true;
 		}
 
 		if (!pumped)
-			os_sleep_ms(2);
+			os_sleep_ms(1);
 	}
 
 	return NULL;
