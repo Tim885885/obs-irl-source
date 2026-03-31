@@ -360,7 +360,7 @@ int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns)
 	pthread_mutex_lock(&buf->lock);
 
 	int skipped = 0;
-	while (buf->chunk_count > 1) {
+	while (buf->chunk_count > 0) {
 		const struct audio_pts_chunk *c =
 			&buf->chunks[buf->chunk_tail];
 		int64_t pts_ns = c->pts_ns;

@@ -142,7 +142,7 @@ bool audio_buffer_peek_state(struct audio_buffer *buf, int64_t *out_pts_ns,
 void audio_buffer_skip_chunk(struct audio_buffer *buf);
 
 /**
- * Drop stale PTS chunks older than min_pts_ns, keeping at least one chunk.
+ * Drop stale PTS chunks older than min_pts_ns.
  * Returns the number of chunks skipped.
  */
 int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns);

@@ -559,6 +559,8 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	if (reset_stretch)
 		irl_stretch_reset(ctx);
 	reanchor_audio_output_clock(ctx);
+	ctx->current_speed = 1.0f;
+	ctx->last_speed_adjust_time = 0;
 	blog(LOG_INFO,
 	     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
 	     skipped, (long long)(gap_ns / 1000000));
