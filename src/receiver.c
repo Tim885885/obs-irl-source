@@ -551,19 +551,16 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	if (gap_ns >= -50000000LL)
 		return false;
 
-	int skipped = audio_buffer_skip_until_pts(&ctx->audio_buf, expected);
-	if (skipped <= 0)
-		return false;
-
-	ctx->audio_resync_skipped_chunks += (uint64_t)skipped;
+	ctx->audio_resync_skipped_chunks += (uint64_t)chunk_count;
+	audio_buffer_flush(&ctx->audio_buf);
 	if (reset_stretch)
 		irl_stretch_reset(ctx);
-	reanchor_audio_output_clock(ctx);
+	reset_audio_timing_state(ctx);
 	ctx->current_speed = 1.0f;
 	ctx->last_speed_adjust_time = 0;
 	blog(LOG_INFO,
-	     "[irl-source] Audio re-sync: skipped %d stale chunks (gap=%lldms)",
-	     skipped, (long long)(gap_ns / 1000000));
+	     "[irl-source] Audio re-sync: flushed %d stale chunks (gap=%lldms)",
+	     chunk_count, (long long)(gap_ns / 1000000));
 	return true;
 }
 
