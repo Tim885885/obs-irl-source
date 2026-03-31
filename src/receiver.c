@@ -660,7 +660,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * timeline before video starts, causing A/V desync. */
 	bool low_latency = ctx->config.low_latency_audio;
 	if (!low_latency && !audio_buffer_ready_locked(&ctx->audio_buf) &&
-	    ctx->total_audio_frames > 0 &&
+	    ctx->latest_audio_buffered_end_pts_ns > 0 &&
 	    ctx->decoded_frame_samples > 0) {
 		ctx->audio_underruns++;
 		int base_samples = ctx->decoded_frame_samples;
