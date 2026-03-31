@@ -12,6 +12,7 @@
  */
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #ifdef _MSC_VER
@@ -26,11 +27,12 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 				  const char *extra, int network_buffer_mb)
 {
 	/* Live-stream tuned defaults.
-	 * HEVC/H.265 over SRT needs enough probe data to capture a keyframe
-	 * with SPS/PPS — 500KB/0.5s is too small for typical 2-4s GOPs. */
-	av_dict_set(opts, "probesize", "5000000", 0);   /* 5 MB */
-	av_dict_set(opts, "analyzeduration", "5000000", 0); /* 5 s */
-	av_dict_set(opts, "fflags", "+genpts", 0);
+	 * Keep probing large enough for HEVC parameter sets, but not so large
+	 * that live startup burns several seconds before decode begins. */
+	av_dict_set(opts, "probesize", "2000000", 0);       /* 2 MB */
+	av_dict_set(opts, "analyzeduration", "2000000", 0); /* 2 s */
+	av_dict_set(opts, "fflags", "+genpts+discardcorrupt", 0);
+	av_dict_set(opts, "flush_packets", "1", 0);
 	av_dict_set(opts, "thread_queue_size", "1024", 0);
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
@@ -46,7 +48,7 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 
 	/* SRT-specific: set receive buffer and latency */
 	if (url && strstr(url, "srt://")) {
-		av_dict_set(opts, "latency", "300000", 0); /* 300ms default */
+		av_dict_set(opts, "latency", "200000", 0); /* 200ms default */
 		if (network_buffer_mb > 0) {
 			char recv_buf[32];
 			snprintf(recv_buf, sizeof(recv_buf), "%d",
@@ -105,7 +107,15 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		return NULL;
 	}
 
-	ctx->thread_count = 0; /* auto */
+	ctx->pkt_timebase = stream->time_base;
+	if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+		/* Audio decoders are cheap; single-threaded decode avoids
+		 * reordering/latency overhead from FFmpeg's auto threading. */
+		ctx->thread_count = 1;
+		ctx->thread_type = 0;
+	} else {
+		ctx->thread_count = 0; /* auto */
+	}
 
 	/* Try hardware decoding for video streams */
 	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -498,6 +508,38 @@ static int audio_frame_duration_ms(int samples, int sample_rate)
 	if (ms <= 0)
 		ms = 1;
 	return (int)ms;
+}
+
+static int audio_expected_samples(const struct irl_source *ctx,
+				  int64_t duration, int out_rate,
+				  int fallback_samples)
+{
+	if (duration <= 0 || out_rate <= 0 || ctx->pts_state.tb_den <= 0)
+		return fallback_samples;
+
+	int64_t expected = av_rescale_q(duration,
+					(AVRational){ctx->pts_state.tb_num,
+						     ctx->pts_state.tb_den},
+					(AVRational){1, out_rate});
+	if (expected <= 0 || expected > INT_MAX)
+		return fallback_samples;
+	return (int)expected;
+}
+
+static int audio_soft_compensation_samples(const struct irl_source *ctx,
+					   int64_t duration, int out_rate,
+					   int actual_samples)
+{
+	int expected = audio_expected_samples(ctx, duration, out_rate,
+					     actual_samples);
+	int delta = expected - actual_samples;
+
+	/* Let PTS repair handle real discontinuities. This is only for
+	 * tiny per-frame drift, similar in spirit to a bounded aresample
+	 * async correction. */
+	if (delta < -8 || delta > 8)
+		return 0;
+	return delta;
 }
 
 static void finalize_audio_output(struct irl_source *ctx,
@@ -962,8 +1004,18 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			ctx->swr_in_format = frame->format;
 		}
 
+		int soft_comp_samples = audio_soft_compensation_samples(
+			ctx, duration, out_rate, frame->nb_samples);
+		if (soft_comp_samples != 0) {
+			swr_set_compensation(ctx->swr_ctx, soft_comp_samples,
+					     frame->nb_samples);
+		}
+
 		int max_out = swr_get_out_samples(ctx->swr_ctx,
 						  frame->nb_samples);
+		if (soft_comp_samples < 0)
+			soft_comp_samples = -soft_comp_samples;
+		max_out += soft_comp_samples + 32;
 		interleaved =
 			malloc((size_t)max_out * out_channels * bytes_per_sample);
 		if (!interleaved)
@@ -1016,7 +1068,7 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	 * equals our push interval (decoded_frame / sample_rate),
 	 * there's zero drift → no smoothing threshold breach →
 	 * push_back is always used → audio_ts is never reset. */
-	ctx->decoded_frame_samples = frame->nb_samples;
+	ctx->decoded_frame_samples = out_samples;
 }
 
 static void handle_video_frame(struct irl_source *ctx, AVFrame *frame)

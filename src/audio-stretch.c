@@ -9,6 +9,7 @@
  */
 
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +26,20 @@ static void stretch_meta_reset(struct irl_source *ctx)
 	ctx->stretch_meta_count = 0;
 	ctx->stretch_next_pts_ns = 0;
 	ctx->stretch_next_pts_valid = false;
+}
+
+static int stretch_max_frames(const struct irl_source *ctx)
+{
+	if (ctx->stretch_sample_rate <= 0 || ctx->audio_buf.max_ms <= 0)
+		return 0;
+
+	int64_t frames = (int64_t)ctx->stretch_sample_rate *
+			 (int64_t)ctx->audio_buf.max_ms / 1000LL;
+	if (frames <= 0)
+		frames = ctx->stretch_sample_rate;
+	if (frames > INT_MAX)
+		frames = INT_MAX;
+	return (int)frames;
 }
 
 static void stretch_meta_push(struct irl_source *ctx, int64_t pts_ns,
@@ -114,6 +129,43 @@ static bool stretch_meta_pop(struct irl_source *ctx, int64_t *pts_ns,
 			(ctx->stretch_meta_tail + 1) % IRL_STRETCH_META_MAX;
 		ctx->stretch_meta_count--;
 	}
+	return true;
+}
+
+static bool stretch_trim_fifo(struct irl_source *ctx)
+{
+	int max_frames = stretch_max_frames(ctx);
+	if (!ctx->stretch_fifo || max_frames <= 0)
+		return true;
+
+	int queued = av_audio_fifo_size(ctx->stretch_fifo);
+	if (queued <= max_frames)
+		return true;
+
+	int trim_frames = queued - max_frames;
+	int chunk_frames = trim_frames;
+	if (chunk_frames > 4096)
+		chunk_frames = 4096;
+
+	float *discard = malloc((size_t)chunk_frames *
+				(size_t)ctx->stretch_channels *
+				sizeof(float));
+	if (!discard)
+		return false;
+
+	while (trim_frames > 0) {
+		int take = trim_frames < chunk_frames ? trim_frames : chunk_frames;
+		void *data[1] = {discard};
+
+		if (!stretch_meta_pop(ctx, NULL, NULL, take) ||
+		    av_audio_fifo_read(ctx->stretch_fifo, data, take) != take) {
+			free(discard);
+			return false;
+		}
+		trim_frames -= take;
+	}
+
+	free(discard);
 	return true;
 }
 
@@ -328,6 +380,9 @@ bool irl_stretch_push(struct irl_source *ctx, const float *samples, int frames,
 
 		av_frame_free(&out);
 	}
+
+	if (!stretch_trim_fifo(ctx))
+		return false;
 
 	return true;
 
