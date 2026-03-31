@@ -36,6 +36,14 @@ static int fill_ms_unlocked(const struct audio_buffer *buf)
 	return (int)(samples * 1000 / buf->sample_rate);
 }
 
+static size_t max_fill_bytes_unlocked(const struct audio_buffer *buf)
+{
+	size_t max_fill = ms_to_bytes(buf, buf->max_ms);
+	if (max_fill == 0 || max_fill > buf->capacity)
+		max_fill = buf->capacity;
+	return max_fill;
+}
+
 /* Write raw bytes to the ring buffer (no PTS tracking). */
 static size_t ring_write(struct audio_buffer *buf, const uint8_t *samples,
 			 size_t bytes)
@@ -98,6 +106,53 @@ static void skip_oldest_chunk_locked(struct audio_buffer *buf)
 
 	buf->chunk_tail = (buf->chunk_tail + 1) % AUDIO_PTS_MAX_CHUNKS;
 	buf->chunk_count--;
+}
+
+static void drop_oldest_bytes_locked(struct audio_buffer *buf, size_t bytes)
+{
+	if (!buf->data || bytes == 0 || buf->fill == 0)
+		return;
+
+	if (bytes > buf->fill)
+		bytes = buf->fill;
+
+	buf->tail = (buf->tail + bytes) % buf->capacity;
+	buf->fill -= bytes;
+}
+
+static size_t trim_incoming_to_max_fill_locked(struct audio_buffer *buf,
+					       const uint8_t **samples,
+					       size_t bytes,
+					       int64_t *pts_ns)
+{
+	size_t max_fill = max_fill_bytes_unlocked(buf);
+	if (max_fill == 0)
+		return bytes;
+
+	/* If a single decoded chunk is larger than the configured max,
+	 * keep only the newest tail so buffered mode does not start
+	 * several hundred milliseconds behind by construction. */
+	if (bytes > max_fill) {
+		size_t skip_bytes = bytes - max_fill;
+		if (pts_ns && buf->sample_rate > 0 && buf->frame_size > 0) {
+			int64_t skipped_frames =
+				(int64_t)(skip_bytes / buf->frame_size);
+			*pts_ns += skipped_frames * 1000000000LL /
+				   buf->sample_rate;
+		}
+		*samples += skip_bytes;
+		bytes = max_fill;
+	}
+
+	while (buf->fill + bytes > max_fill && buf->chunk_count > 0)
+		skip_oldest_chunk_locked(buf);
+
+	if (buf->fill + bytes > max_fill) {
+		size_t excess = buf->fill + bytes - max_fill;
+		drop_oldest_bytes_locked(buf, excess);
+	}
+
+	return bytes;
 }
 
 /* Retire PTS chunks as data is consumed. */
@@ -228,6 +283,13 @@ size_t audio_buffer_write_pts(struct audio_buffer *buf, const uint8_t *samples,
 	while (buf->chunk_count >= AUDIO_PTS_MAX_CHUNKS)
 		skip_oldest_chunk_locked(buf);
 
+	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes,
+						 &pts_ns);
+	if (bytes == 0) {
+		pthread_mutex_unlock(&buf->lock);
+		return 0;
+	}
+
 	size_t written = ring_write(buf, samples, bytes);
 
 	/* Record PTS chunk metadata for every successful write. */
@@ -253,6 +315,11 @@ size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
 		return 0;
 
 	pthread_mutex_lock(&buf->lock);
+	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes, NULL);
+	if (bytes == 0) {
+		pthread_mutex_unlock(&buf->lock);
+		return 0;
+	}
 	size_t written = ring_write(buf, samples, bytes);
 	pthread_mutex_unlock(&buf->lock);
 	return written;
