@@ -610,7 +610,6 @@ static bool pump_audio_once(struct irl_source *ctx)
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 							 &fill_ms,
 							 &chunk_count);
-	bool use_stretch = ctx->config.adaptive_speed && !low_latency;
 	int required_fill_ms = low_latency ? 0 : ctx->audio_buf.min_ms;
 	if (!low_latency && ctx->latest_audio_buffered_end_pts_ns == 0)
 		required_fill_ms = ctx->audio_buf.target_ms;
@@ -652,7 +651,7 @@ static bool pump_audio_once(struct irl_source *ctx)
 
 	if (has_audio &&
 	    maybe_resync_audio_buffer(ctx, peek, fill_ms, chunk_count,
-				      use_stretch)) {
+				      false)) {
 		return false;
 	}
 
@@ -662,6 +661,14 @@ static bool pump_audio_once(struct irl_source *ctx)
 		speed = 0.9f;
 	if (speed > 1.1f)
 		speed = 1.1f;
+	bool stretch_requested = ctx->config.adaptive_speed && !low_latency &&
+				 (speed < 0.995f || speed > 1.005f);
+	bool stretch_has_pending = ctx->stretch_graph &&
+				   (irl_stretch_available_frames(ctx) > 0 ||
+				    ctx->stretch_meta_count > 0);
+	bool use_stretch = stretch_requested || stretch_has_pending;
+	if (!use_stretch && ctx->stretch_graph)
+		irl_stretch_reset(ctx);
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
@@ -688,7 +695,7 @@ static bool pump_audio_once(struct irl_source *ctx)
 			    maybe_resync_audio_buffer(ctx, stretch_peek,
 						      stretch_fill_ms,
 						      stretch_chunk_count,
-						      true)) {
+						      use_stretch)) {
 				return false;
 			}
 
