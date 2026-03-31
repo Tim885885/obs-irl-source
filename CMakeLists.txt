@@ -168,6 +168,7 @@ if(PkgConfig_FOUND)
     pkg_check_modules(LIBAV QUIET IMPORTED_TARGET
         libavformat
         libavcodec
+        libavfilter
         libswresample
         libswscale
         libavutil
@@ -204,6 +205,10 @@ if(NOT _FFMPEG_FOUND)
         PATHS ${_FFMPEG_SEARCH_PATHS}
         PATH_SUFFIXES include
     )
+    find_path(AVFILTER_INCLUDE_DIR libavfilter/avfilter.h
+        PATHS ${_FFMPEG_SEARCH_PATHS}
+        PATH_SUFFIXES include
+    )
     find_path(SWSCALE_INCLUDE_DIR libswscale/swscale.h
         PATHS ${_FFMPEG_SEARCH_PATHS}
         PATH_SUFFIXES include
@@ -216,15 +221,17 @@ if(NOT _FFMPEG_FOUND)
     find_library(AVFORMAT_LIB NAMES avformat PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(AVCODEC_LIB  NAMES avcodec  PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(SWRESAMPLE_LIB NAMES swresample PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
+    find_library(AVFILTER_LIB NAMES avfilter PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(SWSCALE_LIB  NAMES swscale  PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(AVUTIL_LIB   NAMES avutil   PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
 
-    if(AVFORMAT_LIB AND AVCODEC_LIB AND SWRESAMPLE_LIB AND SWSCALE_LIB AND AVUTIL_LIB)
+    if(AVFORMAT_LIB AND AVCODEC_LIB AND SWRESAMPLE_LIB AND AVFILTER_LIB AND SWSCALE_LIB AND AVUTIL_LIB)
         set(_FFMPEG_FOUND ON)
         set(_FFMPEG_MANUAL_INCLUDE_DIRS
             ${AVFORMAT_INCLUDE_DIR}
             ${AVCODEC_INCLUDE_DIR}
             ${SWRESAMPLE_INCLUDE_DIR}
+            ${AVFILTER_INCLUDE_DIR}
             ${SWSCALE_INCLUDE_DIR}
             ${AVUTIL_INCLUDE_DIR}
         )
@@ -233,6 +240,7 @@ if(NOT _FFMPEG_FOUND)
             ${AVFORMAT_LIB}
             ${AVCODEC_LIB}
             ${SWRESAMPLE_LIB}
+            ${AVFILTER_LIB}
             ${SWSCALE_LIB}
             ${AVUTIL_LIB}
         )
@@ -242,7 +250,7 @@ endif()
 if(NOT _FFMPEG_FOUND)
     message(FATAL_ERROR
         "FFmpeg not found.  Either:\n"
-        "  - Install FFmpeg dev packages (apt install libavformat-dev ...)\n"
+        "  - Install FFmpeg dev packages (apt install libavformat-dev libavfilter-dev ...)\n"
         "  - Install via MSYS2 (pacman -S mingw-w64-ucrt-x86_64-ffmpeg)\n"
         "  - Pass -DFFMPEG_DIR=C:/path/to/ffmpeg (pre-built Windows SDK)\n"
     )
@@ -255,6 +263,7 @@ set(PLUGIN_SOURCES
     src/receiver.c
     src/audio-buffer.c
     src/audio-speed.c
+    src/audio-stretch.c
     src/video-handler.c
     src/pts-repair.c
     src/settings.c

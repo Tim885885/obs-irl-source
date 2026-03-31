@@ -18,7 +18,7 @@ jobs:
             build-essential cmake pkg-config \
             libobs-dev \
             libavformat-dev libavcodec-dev libswresample-dev \
-            libswscale-dev libavutil-dev
+            libavfilter-dev libswscale-dev libavutil-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo

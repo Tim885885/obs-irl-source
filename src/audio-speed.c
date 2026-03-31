@@ -7,11 +7,13 @@
  *
  * audio-speed.c — Adaptive playback speed controller
  *
- * Adjusts the effective sample rate reported to OBS to speed up
- * or slow down audio playback based on jitter buffer fill level.
+ * Computes the desired playback tempo based on jitter buffer fill.
+ * The buffered adaptive-speed path applies this with a pitch-
+ * preserving time-stretch backend; low-latency mode stays at 1.0.
  *
- * For changes of <5%, simple resampling is inaudible.  No pitch-
- * shifting library is needed.
+ * The controller should spend most of its time at 1.0 and only make
+ * gentle corrections when the buffer gets meaningfully too full or
+ * too close to underrun.
  */
 
 #include "../include/irl-source.h"

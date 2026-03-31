@@ -110,6 +110,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+	irl_stretch_reset(ctx);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->pts_repairs = 0;
@@ -242,6 +243,7 @@ void irl_source_destroy(void *data)
 
 	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
+	irl_stretch_reset(ctx);
 
 	if (ctx->swr_ctx)
 		swr_free(&ctx->swr_ctx);

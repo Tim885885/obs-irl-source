@@ -112,7 +112,8 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 
 ```bash
 sudo apt install build-essential cmake pkg-config libobs-dev \
-    libavformat-dev libavcodec-dev libswresample-dev libswscale-dev libavutil-dev
+    libavformat-dev libavcodec-dev libswresample-dev libavfilter-dev \
+    libswscale-dev libavutil-dev
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
 ```

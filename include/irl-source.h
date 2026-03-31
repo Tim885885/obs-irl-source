@@ -24,9 +24,15 @@
 #include <libswscale/swscale.h>
 #include <libavutil/time.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/audio_fifo.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 
 #include "audio-buffer.h"
 #include "pts-repair.h"
+
+#define IRL_STRETCH_META_MAX 256
 
 /* ── Forward declarations ─────────────────────────────────── */
 
@@ -169,6 +175,24 @@ struct irl_source {
 	uint32_t audio_last_samples_per_sec;
 	uint64_t last_audio_diag_time;
 
+	/* Pitch-preserving time stretch (buffered adaptive-speed mode) */
+	AVFilterGraph *stretch_graph;
+	AVFilterContext *stretch_src_ctx;
+	AVFilterContext *stretch_tempo_ctx;
+	AVFilterContext *stretch_sink_ctx;
+	AVAudioFifo *stretch_fifo;
+	AVChannelLayout stretch_layout;
+	int stretch_sample_rate;
+	int stretch_channels;
+	float stretch_speed;
+	struct {
+		int64_t pts_ns;
+		uint64_t duration_ns;
+	} stretch_meta[IRL_STRETCH_META_MAX];
+	int stretch_meta_head;
+	int stretch_meta_tail;
+	int stretch_meta_count;
+
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.
 	 * AAC = 1024, Opus = 960.  If mismatched, smoothing drifts
@@ -238,6 +262,17 @@ void irl_receiver_stop(struct irl_source *ctx);
 /* ── Adaptive speed (audio-speed.c) ───────────────────────── */
 
 float irl_speed_get(struct irl_source *ctx);
+
+/* ── Pitch-Preserving Time Stretch (audio-stretch.c) ─────── */
+
+void irl_stretch_reset(struct irl_source *ctx);
+bool irl_stretch_configure(struct irl_source *ctx, int sample_rate,
+			   int channels);
+bool irl_stretch_push(struct irl_source *ctx, const float *samples, int frames,
+		      float speed, int64_t pts_ns, uint64_t duration_ns);
+bool irl_stretch_pop(struct irl_source *ctx, float *out, int out_frames,
+		     int64_t *pts_ns, uint64_t *duration_ns);
+int irl_stretch_available_frames(struct irl_source *ctx);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */
 
