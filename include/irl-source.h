@@ -109,6 +109,7 @@ struct irl_source {
 	/* Receiver / demux thread */
 	pthread_t receiver_thread;
 	pthread_t audio_thread;
+	pthread_mutex_t audio_state_lock;
 	volatile bool thread_active;
 	volatile bool reconnecting;
 

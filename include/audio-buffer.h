@@ -77,6 +77,16 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 		       int bytes_per_sample, int target_ms, int min_ms,
 		       int max_ms);
 
+/**
+ * Reconfigure buffer storage/format without destroying the mutex.
+ * Safe to use while other threads may still reference the same
+ * audio_buffer object, as long as the caller serialises higher-level
+ * access around the transition.
+ */
+bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
+			      int channels, int bytes_per_sample,
+			      int target_ms, int min_ms, int max_ms);
+
 /** Release all resources. */
 void audio_buffer_free(struct audio_buffer *buf);
 

@@ -149,6 +149,49 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	pthread_mutex_init(&buf->lock, NULL);
 }
 
+bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
+			      int channels, int bytes_per_sample,
+			      int target_ms, int min_ms, int max_ms)
+{
+	if (!buf)
+		return false;
+
+	struct audio_buffer next = {0};
+	next.sample_rate = sample_rate;
+	next.channels = channels;
+	next.bytes_per_sample = bytes_per_sample;
+	next.frame_size = bytes_per_sample * channels;
+	next.target_ms = target_ms;
+	next.min_ms = min_ms;
+	next.max_ms = max_ms;
+	next.capacity = ms_to_bytes(&next, max_ms * 2);
+	if (next.capacity == 0)
+		next.capacity = 65536;
+	next.data = calloc(1, next.capacity);
+	if (!next.data)
+		return false;
+
+	pthread_mutex_lock(&buf->lock);
+	free(buf->data);
+	buf->data = next.data;
+	buf->capacity = next.capacity;
+	buf->head = 0;
+	buf->tail = 0;
+	buf->fill = 0;
+	buf->chunk_head = 0;
+	buf->chunk_tail = 0;
+	buf->chunk_count = 0;
+	buf->sample_rate = next.sample_rate;
+	buf->channels = next.channels;
+	buf->bytes_per_sample = next.bytes_per_sample;
+	buf->frame_size = next.frame_size;
+	buf->target_ms = next.target_ms;
+	buf->min_ms = next.min_ms;
+	buf->max_ms = next.max_ms;
+	pthread_mutex_unlock(&buf->lock);
+	return true;
+}
+
 void audio_buffer_free(struct audio_buffer *buf)
 {
 	if (!buf->data)

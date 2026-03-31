@@ -834,12 +834,23 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	/* Init or reinit audio buffer on format change */
 	if (ctx->audio_buf.sample_rate != out_rate ||
 	    ctx->audio_buf.channels != out_channels) {
-		audio_buffer_free(&ctx->audio_buf);
+		pthread_mutex_lock(&ctx->audio_state_lock);
+		bool reconfigured = true;
+		if (ctx->audio_buf.data) {
+			reconfigured = audio_buffer_reconfigure(
+				&ctx->audio_buf, out_rate, out_channels,
+				bytes_per_sample,
+				ctx->config.buffer_target_ms,
+				ctx->config.buffer_min_ms,
+				ctx->config.buffer_max_ms);
+		} else {
+			audio_buffer_init(&ctx->audio_buf, out_rate,
+					  out_channels, bytes_per_sample,
+					  ctx->config.buffer_target_ms,
+					  ctx->config.buffer_min_ms,
+					  ctx->config.buffer_max_ms);
+		}
 		irl_stretch_reset(ctx);
-		audio_buffer_init(&ctx->audio_buf, out_rate, out_channels,
-				  bytes_per_sample, ctx->config.buffer_target_ms,
-				  ctx->config.buffer_min_ms,
-				  ctx->config.buffer_max_ms);
 		ctx->audio_ts_init = false;
 		ctx->audio_pll_offset_ns = 0;
 		ctx->latest_audio_buffered_pts_ns = 0;
@@ -848,6 +859,9 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->latest_audio_obs_end_ts_ns = 0;
 		ctx->startup_audio_warmup_remaining_ms =
 			IRL_STARTUP_AUDIO_WARMUP_MS;
+		pthread_mutex_unlock(&ctx->audio_state_lock);
+		if (!reconfigured)
+			return;
 	}
 
 	/* PTS repair */
@@ -908,9 +922,11 @@ static void handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			ctx->silence_insertions++;
 		}
 	} else if (action == PTS_ACTION_RESET) {
+		pthread_mutex_lock(&ctx->audio_state_lock);
 		audio_buffer_flush(&ctx->audio_buf);
 		irl_stretch_reset(ctx);
 		reset_stream_timing_state(ctx);
+		pthread_mutex_unlock(&ctx->audio_state_lock);
 	}
 
 	if (action != PTS_ACTION_PASS)
@@ -1097,7 +1113,10 @@ void *irl_audio_thread(void *data)
 
 		bool pumped = false;
 		for (int i = 0; i < 16 && ctx->thread_active; i++) {
-			if (!pump_audio_once(ctx))
+			pthread_mutex_lock(&ctx->audio_state_lock);
+			bool ok = pump_audio_once(ctx);
+			pthread_mutex_unlock(&ctx->audio_state_lock);
+			if (!ok)
 				break;
 			pumped = true;
 		}
@@ -1215,9 +1234,11 @@ void *irl_receiver_thread(void *data)
 
 			close_ffmpeg(ctx);
 			pts_repair_reset(&ctx->pts_state);
+			pthread_mutex_lock(&ctx->audio_state_lock);
 			audio_buffer_flush(&ctx->audio_buf);
 			irl_stretch_reset(ctx);
 			reset_stream_timing_state(ctx);
+			pthread_mutex_unlock(&ctx->audio_state_lock);
 			ctx->current_speed = 1.0f;
 			ctx->last_speed_adjust_time = 0;
 			ctx->audio_pll_corrections = 0;
@@ -1276,11 +1297,15 @@ void *irl_receiver_thread(void *data)
 						     ctx->audio_decode_errors);
 						avcodec_flush_buffers(
 							ctx->audio_dec_ctx);
+						pthread_mutex_lock(
+							&ctx->audio_state_lock);
 						audio_buffer_flush(
 							&ctx->audio_buf);
 						irl_stretch_reset(ctx);
 						reset_audio_timing_state(
 							ctx);
+						pthread_mutex_unlock(
+							&ctx->audio_state_lock);
 						pts_repair_reset(
 							&ctx->pts_state);
 						if (ctx->fmt_ctx &&

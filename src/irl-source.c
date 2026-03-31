@@ -82,6 +82,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->reconnecting = false;
 	ctx->video_corrupted = false;
 	ctx->video_skip_logged = false;
+	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	pts_repair_reset(&ctx->pts_state);
 	ctx->current_speed = 1.0f;
@@ -111,6 +112,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	irl_stretch_reset(ctx);
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->pts_repairs = 0;
@@ -207,6 +209,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	struct irl_source *ctx = bzalloc(sizeof(*ctx));
 	ctx->source = source;
 	ctx->current_speed = 1.0f;
+	pthread_mutex_init(&ctx->audio_state_lock, NULL);
 
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
@@ -244,6 +247,7 @@ void irl_source_destroy(void *data)
 	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
 	irl_stretch_reset(ctx);
+	pthread_mutex_destroy(&ctx->audio_state_lock);
 
 	if (ctx->swr_ctx)
 		swr_free(&ctx->swr_ctx);
