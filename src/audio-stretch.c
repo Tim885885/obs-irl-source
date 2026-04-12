@@ -27,6 +27,7 @@ static void stretch_meta_reset(struct irl_source *ctx)
 	ctx->stretch_next_pts_ns = 0;
 	ctx->stretch_next_pts_valid = false;
 	ctx->stretch_last_active_time_us = 0;
+	ctx->stretch_last_retune_time_us = 0;
 }
 
 static int stretch_max_frames(const struct irl_source *ctx)
@@ -172,10 +173,21 @@ static bool stretch_trim_fifo(struct irl_source *ctx)
 
 static bool stretch_set_speed(struct irl_source *ctx, float speed)
 {
+	#define STRETCH_RETUNE_MIN_INTERVAL_US 150000
+	#define STRETCH_RETUNE_BYPASS_DELTA 0.015f
+
 	if (!ctx->stretch_graph || !ctx->stretch_tempo_ctx)
 		return false;
 	if (fabsf(speed - ctx->stretch_speed) < 0.0005f)
 		return true;
+
+	uint64_t now = (uint64_t)av_gettime();
+	if (ctx->stretch_last_retune_time_us != 0 &&
+	    now - ctx->stretch_last_retune_time_us <
+		    STRETCH_RETUNE_MIN_INTERVAL_US &&
+	    fabsf(speed - ctx->stretch_speed) < STRETCH_RETUNE_BYPASS_DELTA) {
+		return true;
+	}
 
 	char arg[32];
 	snprintf(arg, sizeof(arg), "%.5f", (double)speed);
@@ -189,6 +201,7 @@ static bool stretch_set_speed(struct irl_source *ctx, float speed)
 	}
 
 	ctx->stretch_speed = speed;
+	ctx->stretch_last_retune_time_us = now;
 	return true;
 }
 
