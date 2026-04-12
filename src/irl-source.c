@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 #include "../include/irl-source.h"
+#include "receiver-internal.h"
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -80,34 +81,15 @@ static void reset_runtime_state(struct irl_source *ctx)
 {
 	ctx->first_keyframe_received = false;
 	ctx->reconnecting = false;
-	ctx->video_corrupted = false;
-	ctx->video_skip_logged = false;
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	pts_repair_reset(&ctx->pts_state);
+	irl_reset_stream_timing_state(ctx);
 	ctx->current_speed = 1.0f;
 	ctx->audio_pll_corrections = 0;
 	ctx->audio_pll_hard_resets = 0;
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
-	ctx->audio_last_ts_drift_ns = 0;
-	ctx->audio_last_obs_lead_ns = 0;
-	ctx->audio_last_chunk_stream_duration_ns = 0;
-	ctx->audio_last_chunk_obs_duration_ns = 0;
-	ctx->audio_last_frames_out = 0;
-	ctx->audio_last_samples_per_sec = 0;
-	ctx->last_audio_diag_time = 0;
-	ctx->latest_audio_stream_pts_ns = 0;
-	ctx->latest_audio_buffered_pts_ns = 0;
-	ctx->latest_audio_buffered_end_pts_ns = 0;
-	ctx->latest_video_stream_pts_ns = 0;
-	ctx->latest_audio_obs_end_ts_ns = 0;
-	ctx->audio_ts_init = false;
-	ctx->audio_pll_offset_ns = 0;
-	ctx->video_ts_init = false;
-	ctx->decoded_frame_samples = 0;
-	ctx->audio_decode_errors = 0;
-	ctx->video_decode_errors = 0;
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;

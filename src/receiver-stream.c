@@ -331,7 +331,7 @@ static void fade_out_buffered_audio(struct irl_source *ctx)
 	free(fade_buf);
 }
 
-bool irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
+void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 {
 	char errbuf[AV_ERROR_MAX_STRING_SIZE];
 	ctx->reconnecting = true;
@@ -362,7 +362,6 @@ bool irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	ctx->total_video_frames = 0;
 	ctx->last_stats_time = 0;
 	ctx->fade_in_pending = true;
-	return true;
 }
 
 void irl_log_receiver_stats(struct irl_source *ctx)

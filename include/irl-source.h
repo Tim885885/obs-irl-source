@@ -144,7 +144,6 @@ struct irl_source {
 	 * PTS comes from the PTS-aware jitter buffer, not estimated. */
 	bool audio_ts_init;
 	uint64_t audio_sys_base;  /* os_gettime_ns() at first audio output */
-	int64_t audio_pts_base;   /* stream PTS at first audio output (ns) */
 
 	/* Gentle PLL: Moblin-style ±1 frame correction when the
 	 * computed audio PTS drifts >30ms from wall clock.  Each
@@ -243,7 +242,6 @@ struct irl_source {
 	uint64_t pts_repairs;
 	uint64_t silence_insertions;
 	uint64_t reconnect_count;
-	int64_t latest_audio_buffered_pts_ns;
 	uint64_t last_stats_time;
 };
 

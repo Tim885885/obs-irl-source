@@ -59,7 +59,6 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->last_audio_diag_time = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
-	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_video_stream_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
@@ -87,7 +86,6 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
-	ctx->latest_audio_buffered_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
@@ -234,7 +232,6 @@ static void finalize_audio_output(struct irl_source *ctx,
 				  int64_t chunk_pts_ns,
 				  uint64_t stream_duration_ns)
 {
-	ctx->latest_audio_buffered_pts_ns = chunk_pts_ns;
 	ctx->latest_audio_buffered_end_pts_ns =
 		chunk_pts_ns + (int64_t)stream_duration_ns;
 
@@ -601,7 +598,6 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		irl_stretch_reset(ctx);
 		ctx->audio_ts_init = false;
 		ctx->audio_pll_offset_ns = 0;
-		ctx->latest_audio_buffered_pts_ns = 0;
 		ctx->latest_audio_buffered_end_pts_ns = 0;
 		ctx->latest_audio_stream_pts_ns = 0;
 		ctx->latest_audio_obs_end_ts_ns = 0;
