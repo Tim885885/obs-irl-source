@@ -261,6 +261,8 @@ set(PLUGIN_SOURCES
     src/plugin.c
     src/irl-source.c
     src/receiver.c
+    src/receiver-audio.c
+    src/receiver-video.c
     src/audio-buffer.c
     src/audio-speed.c
     src/audio-stretch.c
