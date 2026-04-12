@@ -13,6 +13,7 @@
 
 #include <stdlib.h>
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
 #ifdef _MSC_VER
@@ -623,6 +624,10 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	return true;
 }
 
+#define STRETCH_ENTER_EPSILON 0.010f
+#define STRETCH_EXIT_EPSILON 0.003f
+#define STRETCH_SPEED_STEP 0.005f
+
 static bool pump_audio_once(struct irl_source *ctx)
 {
 	bool low_latency = ctx->config.low_latency_audio;
@@ -705,14 +710,33 @@ static bool pump_audio_once(struct irl_source *ctx)
 		speed = 0.9f;
 	if (speed > 1.1f)
 		speed = 1.1f;
+
+	float stretch_speed = speed;
+	if (ctx->config.adaptive_speed && !low_latency &&
+	    fabsf(stretch_speed - 1.0f) >= STRETCH_ENTER_EPSILON) {
+		float offset = stretch_speed - 1.0f;
+		offset = roundf(offset / STRETCH_SPEED_STEP) *
+			 STRETCH_SPEED_STEP;
+		stretch_speed = 1.0f + offset;
+		if (stretch_speed < ctx->config.speed_min)
+			stretch_speed = ctx->config.speed_min;
+		if (stretch_speed > ctx->config.speed_max)
+			stretch_speed = ctx->config.speed_max;
+	} else {
+		stretch_speed = 1.0f;
+	}
+
+	bool stretch_engaged = ctx->stretch_graph != NULL;
 	bool stretch_requested = ctx->config.adaptive_speed && !low_latency &&
-				 (speed < 0.995f || speed > 1.005f);
+				 (fabsf(stretch_speed - 1.0f) >=
+					  (stretch_engaged ? STRETCH_EXIT_EPSILON
+							   : STRETCH_ENTER_EPSILON));
 	bool stretch_has_pending = ctx->stretch_graph &&
 				   (irl_stretch_available_frames(ctx) > 0 ||
 				    ctx->stretch_meta_count > 0);
 	bool use_stretch = stretch_requested || stretch_has_pending;
-	if (!use_stretch && ctx->stretch_graph)
-		irl_stretch_reset(ctx);
+	if (use_stretch)
+		ctx->stretch_last_active_time_us = (uint64_t)av_gettime();
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
@@ -744,7 +768,7 @@ static bool pump_audio_once(struct irl_source *ctx)
 			}
 
 			int in_chunk_samples =
-				(int)((float)base_samples * speed + 0.5f);
+				(int)((float)base_samples * stretch_speed + 0.5f);
 			size_t in_frame_bytes =
 				(size_t)in_chunk_samples * ctx->audio_buf.frame_size;
 			float *stretch_in = malloc(in_frame_bytes);
@@ -769,7 +793,8 @@ static bool pump_audio_once(struct irl_source *ctx)
 					(uint64_t)out_rate;
 			}
 
-			if (!irl_stretch_push(ctx, stretch_in, in_frames, speed,
+			if (!irl_stretch_push(ctx, stretch_in, in_frames,
+					      stretch_speed,
 					      in_chunk_pts_ns,
 					      in_stream_duration_ns)) {
 				free(stretch_in);

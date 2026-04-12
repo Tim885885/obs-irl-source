@@ -200,6 +200,7 @@ struct irl_source {
 	int stretch_meta_count;
 	int64_t stretch_next_pts_ns;
 	bool stretch_next_pts_valid;
+	uint64_t stretch_last_active_time_us;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.

@@ -26,6 +26,7 @@ static void stretch_meta_reset(struct irl_source *ctx)
 	ctx->stretch_meta_count = 0;
 	ctx->stretch_next_pts_ns = 0;
 	ctx->stretch_next_pts_valid = false;
+	ctx->stretch_last_active_time_us = 0;
 }
 
 static int stretch_max_frames(const struct irl_source *ctx)
