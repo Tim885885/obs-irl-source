@@ -627,6 +627,7 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 #define STRETCH_ENTER_EPSILON 0.010f
 #define STRETCH_EXIT_EPSILON 0.003f
 #define STRETCH_SPEED_STEP 0.005f
+#define STRETCH_IDLE_RESET_US 500000
 
 static bool pump_audio_once(struct irl_source *ctx)
 {
@@ -735,8 +736,15 @@ static bool pump_audio_once(struct irl_source *ctx)
 				   (irl_stretch_available_frames(ctx) > 0 ||
 				    ctx->stretch_meta_count > 0);
 	bool use_stretch = stretch_requested || stretch_has_pending;
-	if (use_stretch)
-		ctx->stretch_last_active_time_us = (uint64_t)av_gettime();
+	uint64_t stretch_now_us = (uint64_t)av_gettime();
+	if (use_stretch) {
+		ctx->stretch_last_active_time_us = stretch_now_us;
+	} else if (ctx->stretch_graph && !stretch_has_pending &&
+		   ctx->stretch_last_active_time_us != 0 &&
+		   stretch_now_us - ctx->stretch_last_active_time_us >=
+			   STRETCH_IDLE_RESET_US) {
+		irl_stretch_reset(ctx);
+	}
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
