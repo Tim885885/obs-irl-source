@@ -28,10 +28,11 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 				  const char *extra, int network_buffer_mb)
 {
 	/* Live-stream tuned defaults.
-	 * Keep probing large enough for HEVC parameter sets, but not so large
-	 * that live startup burns several seconds before decode begins. */
-	av_dict_set(opts, "probesize", "2000000", 0);       /* 2 MB */
-	av_dict_set(opts, "analyzeduration", "2000000", 0); /* 2 s */
+	 * HEVC transport streams can need a fairly generous probe window
+	 * before FFmpeg sees enough codec parameter data to identify the
+	 * video stream reliably. Bias toward correct video detection. */
+	av_dict_set(opts, "probesize", "5000000", 0);       /* 5 MB */
+	av_dict_set(opts, "analyzeduration", "5000000", 0); /* 5 s */
 	av_dict_set(opts, "fflags", "+genpts+discardcorrupt", 0);
 	av_dict_set(opts, "flush_packets", "1", 0);
 	av_dict_set(opts, "thread_queue_size", "1024", 0);
