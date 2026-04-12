@@ -32,7 +32,9 @@
 #define SPEED_DOWN_DEAD_ZONE_MS 10
 #define SPEED_DOWN_RANGE_SCALE 0.35f
 #define SPEED_PANIC_DRAIN_HEADROOM_MS 30
-#define SPEED_SNAP_TO_ONE_EPSILON 0.01f
+#define SPEED_MILD_DRAIN_RANGE_MS 60
+#define SPEED_MILD_DRAIN_MAX 1.020f
+#define SPEED_SNAP_TO_ONE_EPSILON 0.012f
 
 float irl_speed_get(struct irl_source *ctx)
 {
@@ -46,22 +48,37 @@ float irl_speed_get(struct irl_source *ctx)
 	float target_speed = 1.0f;
 	bool safe_fill =
 		fill_ms >= min_ms &&
-		fill_ms <= target_ms + SPEED_UP_DEAD_ZONE_MS;
+		fill_ms <= target_ms + SPEED_UP_DEAD_ZONE_MS + 10;
 
 	if (fill_ms >= max_ms - SPEED_PANIC_DRAIN_HEADROOM_MS) {
 		/* If we are close to the configured ceiling, stop being
 		 * polite and drain at the configured maximum tempo. */
 		target_speed = ctx->config.speed_max;
+	} else if (fill_ms <=
+		   target_ms + SPEED_UP_DEAD_ZONE_MS + SPEED_MILD_DRAIN_RANGE_MS) {
+		/* Mildly above target: prefer hovering close to 1.0x rather
+		 * than audibly living in stretch mode for long periods. */
+		float excess = (float)(fill_ms - target_ms -
+				       SPEED_UP_DEAD_ZONE_MS) /
+			       (float)SPEED_MILD_DRAIN_RANGE_MS;
+		if (excess < 0.0f)
+			excess = 0.0f;
+		if (excess > 1.0f)
+			excess = 1.0f;
+		target_speed =
+			1.0f + excess * (SPEED_MILD_DRAIN_MAX - 1.0f);
 	} else if (fill_ms > target_ms + SPEED_UP_DEAD_ZONE_MS) {
 		/* Buffer above dead zone — play faster to drain.
 		 * Use a front-loaded curve so buffered mode reacts
 		 * decisively once it drifts above target, instead of
 		 * spending too long at ~1.01x while the queue grows. */
-		int range_ms = max_ms - target_ms - SPEED_UP_DEAD_ZONE_MS;
+		int range_ms = max_ms - target_ms - SPEED_UP_DEAD_ZONE_MS -
+			       SPEED_MILD_DRAIN_RANGE_MS;
 		if (range_ms < 1)
 			range_ms = 1;
 		float excess = (float)(fill_ms - target_ms -
-				       SPEED_UP_DEAD_ZONE_MS) /
+				       SPEED_UP_DEAD_ZONE_MS -
+				       SPEED_MILD_DRAIN_RANGE_MS) /
 			       (float)range_ms;
 		if (excess > 1.0f)
 			excess = 1.0f;
@@ -69,7 +86,8 @@ float irl_speed_get(struct irl_source *ctx)
 			excess = 0.0f;
 		excess = sqrtf(excess);
 		target_speed =
-			1.0f + excess * (ctx->config.speed_max - 1.0f);
+			SPEED_MILD_DRAIN_MAX +
+			excess * (ctx->config.speed_max - SPEED_MILD_DRAIN_MAX);
 	} else if (fill_ms < min_ms - SPEED_DOWN_DEAD_ZONE_MS) {
 		/* Only slow down when the buffer falls near underrun
 		 * territory.  Use only a fraction of the configured
