@@ -214,6 +214,10 @@ struct irl_source {
 	 * not reset the decoder state (losing reference frames). */
 	int audio_decode_errors;
 	int video_decode_errors;
+	uint64_t audio_last_decoder_flush_time_us;
+	uint64_t video_last_decoder_flush_time_us;
+	uint64_t audio_last_decoder_warning_time_us;
+	uint64_t video_last_decoder_warning_time_us;
 
 	/* Video corruption tracking.  Set when send_packet fails
 	 * (HW decoders may not set decode_error_flags reliably).

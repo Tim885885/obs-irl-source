@@ -453,6 +453,10 @@ static void reset_stream_timing_state(struct irl_source *ctx)
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
+	ctx->audio_last_decoder_flush_time_us = 0;
+	ctx->video_last_decoder_flush_time_us = 0;
+	ctx->audio_last_decoder_warning_time_us = 0;
+	ctx->video_last_decoder_warning_time_us = 0;
 	ctx->video_corrupted = false;
 	ctx->video_skip_logged = false;
 }
@@ -474,6 +478,9 @@ static void reset_audio_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+	ctx->audio_decode_errors = 0;
+	ctx->audio_last_decoder_flush_time_us = 0;
+	ctx->audio_last_decoder_warning_time_us = 0;
 }
 
 static void reanchor_audio_output_clock(struct irl_source *ctx)
@@ -482,6 +489,30 @@ static void reanchor_audio_output_clock(struct irl_source *ctx)
 	ctx->audio_pll_offset_ns = 0;
 	ctx->audio_last_ts_drift_ns = 0;
 	ctx->audio_last_obs_lead_ns = 0;
+}
+
+#define DECODER_FLUSH_COOLDOWN_US 350000
+#define DECODER_WARNING_INTERVAL_US 1000000
+
+static bool should_log_decoder_warning(uint64_t *last_warning_time_us,
+				       uint64_t now_us)
+{
+	if (*last_warning_time_us != 0 &&
+	    now_us - *last_warning_time_us < DECODER_WARNING_INTERVAL_US) {
+		return false;
+	}
+	*last_warning_time_us = now_us;
+	return true;
+}
+
+static bool should_flush_decoder(uint64_t *last_flush_time_us, uint64_t now_us)
+{
+	if (*last_flush_time_us != 0 &&
+	    now_us - *last_flush_time_us < DECODER_FLUSH_COOLDOWN_US) {
+		return false;
+	}
+	*last_flush_time_us = now_us;
+	return true;
 }
 
 static int64_t audio_frame_pts(const AVFrame *frame)
@@ -1354,11 +1385,25 @@ void *irl_receiver_thread(void *data)
 				 * frames) and requires a new keyframe. */
 				ctx->audio_decode_errors++;
 				if (ctx->audio_decode_errors >= 3) {
-					blog(LOG_WARNING,
-					     "[irl-source] Audio decoder: %d consecutive errors, flushing",
-					     ctx->audio_decode_errors);
-					avcodec_flush_buffers(
-						ctx->audio_dec_ctx);
+					uint64_t now_us =
+						(uint64_t)av_gettime();
+					bool do_flush = should_flush_decoder(
+						&ctx->audio_last_decoder_flush_time_us,
+						now_us);
+					if (should_log_decoder_warning(
+						    &ctx->audio_last_decoder_warning_time_us,
+						    now_us)) {
+						blog(LOG_WARNING,
+						     "[irl-source] Audio decoder: corruption burst (%d consecutive errors)%s",
+						     ctx->audio_decode_errors,
+						     do_flush
+							     ? ", flushing"
+							     : ", suppressing repeated flush");
+					}
+					if (do_flush) {
+						avcodec_flush_buffers(
+							ctx->audio_dec_ctx);
+					}
 					ctx->audio_decode_errors = 0;
 				}
 			} else {
@@ -1379,34 +1424,47 @@ void *irl_receiver_thread(void *data)
 				if (ret < 0) {
 					ctx->audio_decode_errors++;
 					if (ctx->audio_decode_errors >= 3) {
-						blog(LOG_WARNING,
-						     "[irl-source] Audio decoder receive: %d consecutive errors, resetting audio state",
-						     ctx->audio_decode_errors);
-						avcodec_flush_buffers(
-							ctx->audio_dec_ctx);
-						pthread_mutex_lock(
-							&ctx->audio_state_lock);
-						audio_buffer_flush(
-							&ctx->audio_buf);
-						irl_stretch_reset(ctx);
-						reset_audio_timing_state(
-							ctx);
-						pthread_mutex_unlock(
-							&ctx->audio_state_lock);
-						pts_repair_reset(
-							&ctx->pts_state);
-						if (ctx->fmt_ctx &&
-						    ctx->audio_stream_idx >=
-							    0) {
-							AVStream *as =
-								ctx->fmt_ctx->streams
-									[ctx->audio_stream_idx];
-							pts_repair_init(
-								&ctx->pts_state,
-								ctx->config.small_gap_ms,
-								ctx->config.large_gap_ms,
-								as->time_base.num,
-								as->time_base.den);
+						uint64_t now_us =
+							(uint64_t)av_gettime();
+						bool do_flush = should_flush_decoder(
+							&ctx->audio_last_decoder_flush_time_us,
+							now_us);
+						if (should_log_decoder_warning(
+							    &ctx->audio_last_decoder_warning_time_us,
+							    now_us)) {
+							blog(LOG_WARNING,
+							     "[irl-source] Audio decoder receive: corruption burst (%d consecutive errors)%s",
+							     ctx->audio_decode_errors,
+							     do_flush
+								     ? ", resetting audio state"
+								     : ", reset cooldown active");
+						}
+						if (do_flush) {
+							avcodec_flush_buffers(
+								ctx->audio_dec_ctx);
+							pthread_mutex_lock(
+								&ctx->audio_state_lock);
+							audio_buffer_flush(
+								&ctx->audio_buf);
+							irl_stretch_reset(ctx);
+							reset_audio_timing_state(
+								ctx);
+							pthread_mutex_unlock(
+								&ctx->audio_state_lock);
+							pts_repair_reset(
+								&ctx->pts_state);
+							if (ctx->fmt_ctx &&
+							    ctx->audio_stream_idx >= 0) {
+								AVStream *as =
+									ctx->fmt_ctx->streams
+										[ctx->audio_stream_idx];
+								pts_repair_init(
+									&ctx->pts_state,
+									ctx->config.small_gap_ms,
+									ctx->config.large_gap_ms,
+									as->time_base.num,
+									as->time_base.den);
+							}
 						}
 						ctx->audio_decode_errors = 0;
 					}
@@ -1424,11 +1482,24 @@ void *irl_receiver_thread(void *data)
 				ctx->video_decode_errors++;
 				ctx->video_corrupted = true;
 				if (ctx->video_decode_errors >= 3) {
-					blog(LOG_WARNING,
-					     "[irl-source] Video decoder: %d consecutive errors, flushing",
-					     ctx->video_decode_errors);
-					avcodec_flush_buffers(
-						ctx->video_dec_ctx);
+					uint64_t now_us =
+						(uint64_t)av_gettime();
+					bool do_flush = should_flush_decoder(
+						&ctx->video_last_decoder_flush_time_us,
+						now_us);
+					if (should_log_decoder_warning(
+						    &ctx->video_last_decoder_warning_time_us,
+						    now_us)) {
+						blog(LOG_WARNING,
+						     "[irl-source] Video decoder: corruption burst (%d consecutive errors)%s",
+						     ctx->video_decode_errors,
+						     do_flush
+							     ? ", flushing"
+							     : ", flush cooldown active");
+					}
+					if (do_flush)
+						avcodec_flush_buffers(
+							ctx->video_dec_ctx);
 					ctx->video_decode_errors = 0;
 				}
 			} else {
@@ -1444,11 +1515,24 @@ void *irl_receiver_thread(void *data)
 					ctx->video_decode_errors++;
 					ctx->video_corrupted = true;
 					if (ctx->video_decode_errors >= 3) {
-						blog(LOG_WARNING,
-						     "[irl-source] Video decoder receive: %d consecutive errors, flushing",
-						     ctx->video_decode_errors);
-						avcodec_flush_buffers(
-							ctx->video_dec_ctx);
+						uint64_t now_us =
+							(uint64_t)av_gettime();
+						bool do_flush = should_flush_decoder(
+							&ctx->video_last_decoder_flush_time_us,
+							now_us);
+						if (should_log_decoder_warning(
+							    &ctx->video_last_decoder_warning_time_us,
+							    now_us)) {
+							blog(LOG_WARNING,
+							     "[irl-source] Video decoder receive: corruption burst (%d consecutive errors)%s",
+							     ctx->video_decode_errors,
+							     do_flush
+								     ? ", flushing"
+								     : ", flush cooldown active");
+						}
+						if (do_flush)
+							avcodec_flush_buffers(
+								ctx->video_dec_ctx);
 						ctx->video_decode_errors = 0;
 					}
 					break;
