@@ -13,7 +13,6 @@
 #include "receiver-internal.h"
 
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
-#define AUDIO_TRIM_COOLDOWN_US 750000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
 
 static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
@@ -62,7 +61,6 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
-	ctx->audio_last_trim_time_us = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
@@ -92,7 +90,6 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
-	ctx->audio_last_trim_time_us = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
@@ -317,35 +314,50 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	return true;
 }
 
-static bool maybe_trim_audio_buffer(struct irl_source *ctx, int fill_ms,
-				    int chunk_count)
+static bool should_hide_audio_backlog(const struct irl_source *ctx)
 {
-	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio)
+	return !ctx->config.low_latency_audio &&
+	       (!ctx->audio_ts_init || ctx->fade_in_pending ||
+		irl_audio_recovery_active(ctx));
+}
+
+static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
+					    int chunk_count)
+{
+	if (!ctx->config.adaptive_speed)
 		return false;
-	if (irl_audio_recovery_active(ctx))
+	if (!should_hide_audio_backlog(ctx))
 		return false;
 	if (chunk_count <= 1)
 		return false;
 
-	int trim_threshold_ms =
-		ctx->config.buffer_target_ms + AUDIO_TRIM_TRIGGER_MS;
-	if (fill_ms < trim_threshold_ms)
-		return false;
-
-	uint64_t now_us = (uint64_t)av_gettime();
-	if (ctx->audio_last_trim_time_us != 0 &&
-	    now_us - ctx->audio_last_trim_time_us < AUDIO_TRIM_COOLDOWN_US) {
-		return false;
+	int chunk_ms = 0;
+	if (ctx->audio_buf.sample_rate > 0 && ctx->decoded_frame_samples > 0) {
+		chunk_ms = (int)((int64_t)ctx->decoded_frame_samples * 1000LL /
+				 ctx->audio_buf.sample_rate);
 	}
+	if (chunk_ms <= 0)
+		chunk_ms = 21;
 
-	audio_buffer_skip_chunk(&ctx->audio_buf);
-	ctx->audio_last_trim_time_us = now_us;
-	ctx->audio_resync_skipped_chunks++;
-	ctx->fade_in_pending = true;
-	ctx->fade_in_frames_remaining = 0;
+	int keep_ms = ctx->config.buffer_target_ms + chunk_ms;
+	if (fill_ms <= keep_ms + AUDIO_TRIM_TRIGGER_MS)
+		return false;
+
+	int trimmed = 0;
+	while (chunk_count > 1 && fill_ms > keep_ms) {
+		audio_buffer_skip_chunk(&ctx->audio_buf);
+		trimmed++;
+		chunk_count--;
+		fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
+	}
+	if (trimmed <= 0)
+		return false;
+
+	ctx->audio_resync_skipped_chunks += (uint64_t)trimmed;
 	blog(LOG_INFO,
-	     "[irl-source] Audio trim: dropped one buffered chunk (fill=%dms target=%dms)",
-	     fill_ms, ctx->config.buffer_target_ms);
+	     "[irl-source] Audio trim: dropped %d hidden buffered chunk%s before playback (fill=%dms target=%dms)",
+	     trimmed, trimmed == 1 ? "" : "s", fill_ms,
+	     ctx->config.buffer_target_ms);
 	return true;
 }
 
@@ -380,6 +392,11 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 							 &fill_ms,
 							 &chunk_count);
+	if (has_audio &&
+	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count)) {
+		return true;
+	}
+
 	int required_fill_ms = low_latency ? 0 : ctx->audio_buf.min_ms;
 	if (!low_latency && ctx->latest_audio_buffered_end_pts_ns == 0)
 		required_fill_ms = ctx->audio_buf.target_ms;
@@ -424,9 +441,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	    maybe_resync_audio_buffer(ctx, peek, fill_ms, chunk_count)) {
 		return false;
 	}
-
-	if (has_audio && maybe_trim_audio_buffer(ctx, fill_ms, chunk_count))
-		return false;
 
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;

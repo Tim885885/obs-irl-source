@@ -163,7 +163,6 @@ struct irl_source {
 	uint32_t audio_last_samples_per_sec;
 	uint64_t last_audio_diag_time;
 	uint64_t audio_recovery_until_us;
-	uint64_t audio_last_trim_time_us;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.
