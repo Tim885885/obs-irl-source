@@ -105,6 +105,7 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 				&src->hw_device_ctx, hw_device_types[i], NULL,
 				NULL, 0);
 			if (err == 0) {
+				src->hw_device_type = hw_device_types[i];
 				blog(LOG_INFO,
 				     "[irl-source] Using hardware device: %s",
 				     av_hwdevice_get_type_name(
@@ -164,6 +165,7 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 	ctx->audio_stream_idx = -1;
 	ctx->video_stream_idx = -1;
 	ctx->using_hw_decode = false;
+	ctx->hw_device_type = AV_HWDEVICE_TYPE_NONE;
 }
 
 static int interrupt_cb(void *opaque)
@@ -210,6 +212,7 @@ bool irl_open_stream(struct irl_source *ctx)
 
 	ctx->audio_stream_idx = -1;
 	ctx->video_stream_idx = -1;
+	ctx->hw_device_type = AV_HWDEVICE_TYPE_NONE;
 
 	for (unsigned i = 0; i < ctx->fmt_ctx->nb_streams; i++) {
 		AVStream *s = ctx->fmt_ctx->streams[i];
@@ -220,10 +223,17 @@ bool irl_open_stream(struct irl_source *ctx)
 			if (ctx->video_dec_ctx) {
 				ctx->video_stream_idx = (int)i;
 				blog(LOG_INFO,
-				     "[irl-source] Video stream %u: %s %dx%d%s",
+				     "[irl-source] Video stream %u: %s %dx%d%s%s%s",
 				     i, avcodec_get_name(s->codecpar->codec_id),
 				     s->codecpar->width, s->codecpar->height,
-				     ctx->using_hw_decode ? " (NVDEC)" : " (SW)");
+				     ctx->using_hw_decode ? " (" : " (",
+				     ctx->using_hw_decode &&
+						     ctx->hw_device_type !=
+							     AV_HWDEVICE_TYPE_NONE
+					     ? av_hwdevice_get_type_name(
+						       ctx->hw_device_type)
+					     : "SW",
+				     ")");
 			} else {
 				blog(LOG_WARNING,
 				     "[irl-source] Failed to open video decoder for stream %u (%s)",
@@ -372,7 +382,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	ctx->last_stats_time = now;
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
-	     "buf=%dms speed=%.3f pts_repairs=%llu "
+	     "buf=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
 	     "silence=%llu underruns=%llu resync_skips=%llu "
 	     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
@@ -381,6 +391,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
 	     (double)ctx->current_speed,
+	     ctx->config.adaptive_speed ? "on" : "off",
 	     (unsigned long long)ctx->pts_repairs,
 	     (unsigned long long)ctx->silence_insertions,
 	     (unsigned long long)ctx->audio_underruns,

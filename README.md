@@ -142,6 +142,7 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 |---|---|---|
 | `buffer_fill_ms` | int | Current audio jitter buffer fill level (ms) |
 | `current_speed` | float | Current audio correction factor (normally 1.0) |
+| `adaptive_latency_control` | bool | Whether buffered steady-state latency correction is enabled |
 | `reconnecting` | bool | Whether the source is currently reconnecting |
 | `total_audio_frames` | int | Total audio frames decoded since connection |
 | `total_video_frames` | int | Total video frames decoded since connection |
@@ -176,6 +177,7 @@ function script_tick(seconds)
 
     local buf_ms = obs.calldata_int(cd, "buffer_fill_ms")
     local speed = obs.calldata_float(cd, "current_speed")
+    local ctrl = obs.calldata_bool(cd, "adaptive_latency_control")
     local reconnecting = obs.calldata_bool(cd, "reconnecting")
     local video = obs.calldata_int(cd, "total_video_frames")
     local audio = obs.calldata_int(cd, "total_audio_frames")
@@ -187,8 +189,8 @@ function script_tick(seconds)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nDelay: %dms\nBuffer: %dms\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
-        status, delay, buf_ms, speed, video, audio, repairs
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nControl: %s\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
+        status, delay, buf_ms, ctrl and "on" or "off", speed, video, audio, repairs
     )
 
     local text_source = obs.obs_get_source_by_name("IRL Stats")
@@ -207,7 +209,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 pts_repairs=0 silence=0 underruns=0 resync_skips=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 silence=0 underruns=0 resync_skips=0 res=1920x1080
 ```
 
 ## Hardware decoding
@@ -225,7 +227,7 @@ Falls back to software decoding if no hardware decoder is available. Turn it off
 The OBS log shows which decoder is active:
 
 ```
-[irl-source] Video stream 0: hevc 1920x1080 (NVDEC)
+[irl-source] Video stream 0: hevc 1920x1080 (d3d11va)
 ```
 
 ## AI usage

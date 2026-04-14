@@ -100,6 +100,7 @@ struct irl_source {
 	AVCodecContext *audio_dec_ctx;
 	AVCodecContext *video_dec_ctx;
 	AVBufferRef *hw_device_ctx;
+	enum AVHWDeviceType hw_device_type;
 	int audio_stream_idx;
 	int video_stream_idx;
 	bool using_hw_decode;

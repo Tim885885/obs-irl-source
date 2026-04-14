@@ -137,6 +137,8 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 audio_buffer_fill_ms_locked(&ctx->audio_buf));
 	calldata_set_float(cd, "current_speed",
 			   (double)ctx->current_speed);
+	calldata_set_bool(cd, "adaptive_latency_control",
+			  ctx->config.adaptive_speed);
 	calldata_set_bool(cd, "reconnecting", ctx->reconnecting);
 	calldata_set_int(cd, "total_audio_frames",
 			 (long long)ctx->total_audio_frames);
@@ -196,7 +198,8 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	proc_handler_add(
 		ph,
 		"void get_stats(out int buffer_fill_ms, "
-		"out float current_speed, out bool reconnecting, "
+		"out float current_speed, out bool adaptive_latency_control, "
+		"out bool reconnecting, "
 		"out int total_audio_frames, out int total_video_frames, "
 		"out int pts_repairs, out int silence_insertions, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
