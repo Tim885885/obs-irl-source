@@ -32,8 +32,10 @@
 #define SPEED_DOWN_DEAD_ZONE_MS 10
 #define SPEED_DOWN_RANGE_SCALE 0.35f
 #define SPEED_PANIC_DRAIN_HEADROOM_MS 30
-#define SPEED_MILD_DRAIN_RANGE_MS 60
-#define SPEED_MILD_DRAIN_MAX 1.020f
+#define SPEED_STABLE_UP_DEAD_ZONE_MS 45
+#define SPEED_STABLE_RECENTER_RANGE_MS 35
+#define SPEED_MILD_DRAIN_RANGE_MS 80
+#define SPEED_MILD_DRAIN_MAX 1.012f
 #define SPEED_SNAP_TO_ONE_EPSILON 0.012f
 
 float irl_speed_get(struct irl_source *ctx)
@@ -46,20 +48,28 @@ float irl_speed_get(struct irl_source *ctx)
 	int min_ms = ctx->audio_buf.min_ms;
 	int max_ms = ctx->config.buffer_max_ms;
 	float target_speed = 1.0f;
+	bool recovery_active = irl_audio_recovery_active(ctx);
+	int stable_up_dead_zone_ms =
+		recovery_active ? SPEED_UP_DEAD_ZONE_MS :
+				    SPEED_STABLE_UP_DEAD_ZONE_MS;
+	int stable_ceiling_ms =
+		target_ms + stable_up_dead_zone_ms + SPEED_STABLE_RECENTER_RANGE_MS;
 	bool safe_fill =
 		fill_ms >= min_ms &&
-		fill_ms <= target_ms + SPEED_UP_DEAD_ZONE_MS + 10;
+		fill_ms <= stable_ceiling_ms;
 
 	if (fill_ms >= max_ms - SPEED_PANIC_DRAIN_HEADROOM_MS) {
 		/* If we are close to the configured ceiling, stop being
 		 * polite and drain at the configured maximum tempo. */
 		target_speed = ctx->config.speed_max;
+	} else if (!recovery_active && fill_ms <= stable_ceiling_ms) {
+		target_speed = 1.0f;
 	} else if (fill_ms <=
-		   target_ms + SPEED_UP_DEAD_ZONE_MS + SPEED_MILD_DRAIN_RANGE_MS) {
+		   target_ms + stable_up_dead_zone_ms + SPEED_MILD_DRAIN_RANGE_MS) {
 		/* Mildly above target: prefer hovering close to 1.0x rather
 		 * than audibly living in stretch mode for long periods. */
 		float excess = (float)(fill_ms - target_ms -
-				       SPEED_UP_DEAD_ZONE_MS) /
+				       stable_up_dead_zone_ms) /
 			       (float)SPEED_MILD_DRAIN_RANGE_MS;
 		if (excess < 0.0f)
 			excess = 0.0f;
@@ -72,12 +82,12 @@ float irl_speed_get(struct irl_source *ctx)
 		 * Use a front-loaded curve so buffered mode reacts
 		 * decisively once it drifts above target, instead of
 		 * spending too long at ~1.01x while the queue grows. */
-		int range_ms = max_ms - target_ms - SPEED_UP_DEAD_ZONE_MS -
+		int range_ms = max_ms - target_ms - stable_up_dead_zone_ms -
 			       SPEED_MILD_DRAIN_RANGE_MS;
 		if (range_ms < 1)
 			range_ms = 1;
 		float excess = (float)(fill_ms - target_ms -
-				       SPEED_UP_DEAD_ZONE_MS -
+				       stable_up_dead_zone_ms -
 				       SPEED_MILD_DRAIN_RANGE_MS) /
 			       (float)range_ms;
 		if (excess > 1.0f)

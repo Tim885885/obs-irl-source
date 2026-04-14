@@ -181,6 +181,7 @@ struct irl_source {
 	uint32_t audio_last_frames_out;
 	uint32_t audio_last_samples_per_sec;
 	uint64_t last_audio_diag_time;
+	uint64_t audio_recovery_until_us;
 
 	/* Pitch-preserving time stretch (buffered adaptive-speed mode) */
 	AVFilterGraph *stretch_graph;

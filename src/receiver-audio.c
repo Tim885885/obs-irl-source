@@ -12,6 +12,8 @@
 
 #include "receiver-internal.h"
 
+#define AUDIO_RECOVERY_HOLD_US 1500000ULL
+
 static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
 {
 	uint64_t now = os_gettime_ns();
@@ -57,6 +59,7 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->audio_last_frames_out = 0;
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
+	ctx->audio_recovery_until_us = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
@@ -85,6 +88,7 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_last_frames_out = 0;
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
+	ctx->audio_recovery_until_us = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
@@ -93,6 +97,22 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
 	ctx->audio_last_decoder_warning_time_us = 0;
+}
+
+void irl_mark_audio_recovery(struct irl_source *ctx, uint64_t duration_us)
+{
+	uint64_t now_us = (uint64_t)av_gettime();
+	uint64_t until_us = now_us + duration_us;
+
+	if (until_us > ctx->audio_recovery_until_us)
+		ctx->audio_recovery_until_us = until_us;
+}
+
+bool irl_audio_recovery_active(const struct irl_source *ctx)
+{
+	uint64_t now_us = (uint64_t)av_gettime();
+	return ctx->audio_recovery_until_us != 0 &&
+	       now_us < ctx->audio_recovery_until_us;
 }
 
 static int64_t audio_frame_pts(const AVFrame *frame)
@@ -289,6 +309,7 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	if (reset_stretch)
 		irl_stretch_reset(ctx);
 	irl_reset_audio_timing_state(ctx);
+	irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 	ctx->current_speed = 1.0f;
 	ctx->last_speed_adjust_time = 0;
 	blog(LOG_INFO,
@@ -296,11 +317,6 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 	     chunk_count, (long long)(gap_ns / 1000000));
 	return true;
 }
-
-#define STRETCH_ENTER_EPSILON 0.010f
-#define STRETCH_EXIT_EPSILON 0.003f
-#define STRETCH_SPEED_STEP 0.005f
-#define STRETCH_IDLE_RESET_US 500000
 
 bool irl_pump_audio_once(struct irl_source *ctx)
 {
@@ -341,6 +357,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 		if (!low_latency && !has_audio &&
 		    ctx->latest_audio_buffered_end_pts_ns > 0) {
 			ctx->audio_underruns++;
+			irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 			size_t silence_bytes =
 				(size_t)base_samples * ctx->audio_buf.frame_size;
 			uint8_t *silence_buf = calloc(1, silence_bytes);
@@ -385,141 +402,34 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	if (speed > 1.1f)
 		speed = 1.1f;
 
-	float stretch_speed = speed;
-	if (ctx->config.adaptive_speed && !low_latency &&
-	    fabsf(stretch_speed - 1.0f) >= STRETCH_ENTER_EPSILON) {
-		float offset = stretch_speed - 1.0f;
-		offset = roundf(offset / STRETCH_SPEED_STEP) *
-			 STRETCH_SPEED_STEP;
-		stretch_speed = 1.0f + offset;
-		if (stretch_speed < ctx->config.speed_min)
-			stretch_speed = ctx->config.speed_min;
-		if (stretch_speed > ctx->config.speed_max)
-			stretch_speed = ctx->config.speed_max;
-	} else {
-		stretch_speed = 1.0f;
-	}
-
-	bool stretch_engaged = ctx->stretch_graph != NULL;
-	bool stretch_requested = ctx->config.adaptive_speed && !low_latency &&
-				 (fabsf(stretch_speed - 1.0f) >=
-					  (stretch_engaged ? STRETCH_EXIT_EPSILON
-							   : STRETCH_ENTER_EPSILON));
-	bool stretch_has_pending = ctx->stretch_graph &&
-				   (irl_stretch_available_frames(ctx) > 0 ||
-				    ctx->stretch_meta_count > 0);
-	bool use_stretch = stretch_requested || stretch_has_pending;
-	uint64_t stretch_now_us = (uint64_t)av_gettime();
-	if (use_stretch) {
-		ctx->stretch_last_active_time_us = stretch_now_us;
-	} else if (ctx->stretch_graph && !stretch_has_pending &&
-		   ctx->stretch_last_active_time_us != 0 &&
-		   stretch_now_us - ctx->stretch_last_active_time_us >=
-			   STRETCH_IDLE_RESET_US) {
-		irl_stretch_reset(ctx);
-	}
-
 	uint8_t *out_buf = NULL;
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
 	uint32_t frames_out = 0;
 
-	if (use_stretch) {
-		for (int attempt = 0;
-		     attempt < 4 &&
-		     irl_stretch_available_frames(ctx) < base_samples;
-		     attempt++) {
-			int64_t stretch_peek = 0;
-			int stretch_fill_ms = 0;
-			int stretch_chunk_count = 0;
-			bool stretch_has_audio =
-				audio_buffer_peek_state(&ctx->audio_buf,
-							&stretch_peek,
-							&stretch_fill_ms,
-							&stretch_chunk_count);
-			if (!(low_latency ? stretch_has_audio
-					  : (stretch_fill_ms >= required_fill_ms))) {
-				break;
-			}
-			if (stretch_has_audio &&
-			    maybe_resync_audio_buffer(ctx, stretch_peek,
-						      stretch_fill_ms,
-						      stretch_chunk_count,
-						      use_stretch)) {
-				return false;
-			}
+	if (ctx->stretch_graph)
+		irl_stretch_reset(ctx);
 
-			int in_chunk_samples =
-				(int)((float)base_samples * stretch_speed + 0.5f);
-			size_t in_frame_bytes =
-				(size_t)in_chunk_samples * ctx->audio_buf.frame_size;
-			float *stretch_in = malloc(in_frame_bytes);
-			if (!stretch_in)
-				return false;
+	int chunk_samples = (int)((float)base_samples * speed + 0.5f);
+	size_t frame_bytes =
+		(size_t)chunk_samples * ctx->audio_buf.frame_size;
+	out_buf = malloc(frame_bytes);
+	if (!out_buf)
+		return false;
 
-			int64_t in_chunk_pts_ns = 0;
-			size_t got_in = audio_buffer_read_pts(
-				&ctx->audio_buf, (uint8_t *)stretch_in,
-				in_frame_bytes, &in_chunk_pts_ns);
-			if (got_in == 0) {
-				free(stretch_in);
-				break;
-			}
+	size_t got = audio_buffer_read_pts(&ctx->audio_buf, out_buf,
+					   frame_bytes, &chunk_pts_ns);
+	if (got == 0) {
+		free(out_buf);
+		return false;
+	}
 
-			int in_frames = (int)(got_in /
-					      (out_channels * bytes_per_sample));
-			uint64_t in_stream_duration_ns = 0;
-			if (out_rate > 0) {
-				in_stream_duration_ns =
-					(uint64_t)in_frames * 1000000000ULL /
-					(uint64_t)out_rate;
-			}
-
-			if (!irl_stretch_push(ctx, stretch_in, in_frames,
-					      stretch_speed, in_chunk_pts_ns,
-					      in_stream_duration_ns)) {
-				free(stretch_in);
-				return false;
-			}
-			free(stretch_in);
-		}
-
-		if (irl_stretch_available_frames(ctx) < base_samples)
-			return false;
-
-		size_t out_frame_bytes =
-			(size_t)base_samples * ctx->audio_buf.frame_size;
-		out_buf = malloc(out_frame_bytes);
-		if (!out_buf)
-			return false;
-		if (!irl_stretch_pop(ctx, (float *)out_buf, base_samples,
-				     &chunk_pts_ns, &stream_duration_ns)) {
-			free(out_buf);
-			return false;
-		}
-		frames_out = (uint32_t)base_samples;
-	} else {
-		int chunk_samples = (int)((float)base_samples * speed + 0.5f);
-		size_t frame_bytes =
-			(size_t)chunk_samples * ctx->audio_buf.frame_size;
-		out_buf = malloc(frame_bytes);
-		if (!out_buf)
-			return false;
-
-		size_t got = audio_buffer_read_pts(&ctx->audio_buf, out_buf,
-						   frame_bytes, &chunk_pts_ns);
-		if (got == 0) {
-			free(out_buf);
-			return false;
-		}
-
-		frames_out = (uint32_t)(got /
-					(out_channels * bytes_per_sample));
-		if (out_rate > 0) {
-			stream_duration_ns =
-				(uint64_t)frames_out * 1000000000ULL /
-				(uint64_t)out_rate;
-		}
+	frames_out = (uint32_t)(got /
+				(out_channels * bytes_per_sample));
+	if (out_rate > 0) {
+		stream_duration_ns =
+			(uint64_t)frames_out * 1000000000ULL /
+			(uint64_t)out_rate;
 	}
 
 	if (ctx->fade_in_pending) {
@@ -553,7 +463,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	obs_audio.timestamp = irl_next_audio_timestamp(ctx, ts_samples,
 							 out_rate);
 	obs_audio.samples_per_sec = (uint32_t)out_rate;
-	if (!use_stretch && ctx->config.adaptive_speed &&
+	if (ctx->config.adaptive_speed &&
 	    (speed < 0.999f || speed > 1.001f)) {
 		uint32_t scaled_rate =
 			(uint32_t)((float)out_rate * speed + 0.5f);
@@ -667,10 +577,13 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		irl_stretch_reset(ctx);
 		irl_reset_stream_timing_state(ctx);
 		pthread_mutex_unlock(&ctx->audio_state_lock);
+		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 	}
 
-	if (action != PTS_ACTION_PASS)
+	if (action != PTS_ACTION_PASS) {
 		ctx->pts_repairs++;
+		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+	}
 
 	uint8_t *interleaved = NULL;
 	int out_samples = frame->nb_samples;

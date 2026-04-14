@@ -6,6 +6,8 @@ uint64_t irl_next_audio_timestamp(struct irl_source *ctx, int base_samples,
 				  int out_rate);
 void irl_reset_stream_timing_state(struct irl_source *ctx);
 void irl_reset_audio_timing_state(struct irl_source *ctx);
+void irl_mark_audio_recovery(struct irl_source *ctx, uint64_t duration_us);
+bool irl_audio_recovery_active(const struct irl_source *ctx);
 bool irl_open_stream(struct irl_source *ctx);
 void irl_close_ffmpeg(struct irl_source *ctx);
 void irl_prepare_new_connection(struct irl_source *ctx);

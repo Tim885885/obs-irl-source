@@ -349,6 +349,7 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	irl_stretch_reset(ctx);
 	irl_reset_stream_timing_state(ctx);
 	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mark_audio_recovery(ctx, 2500000ULL);
 
 	ctx->current_speed = 1.0f;
 	ctx->last_speed_adjust_time = 0;
