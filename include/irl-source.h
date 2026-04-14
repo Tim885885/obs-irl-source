@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Codec/protocol/bitrate-agnostic live source with jitter buffering,
- * PTS repair, adaptive playback speed, and first-keyframe gating.
+ * PTS repair, adaptive latency control, and first-keyframe gating.
  */
 
 #pragma once
@@ -24,22 +24,8 @@
 #include <libswscale/swscale.h>
 #include <libavutil/time.h>
 #include <libavutil/hwcontext.h>
-#include <libavutil/audio_fifo.h>
-#include <libavfilter/avfilter.h>
-#include <libavfilter/buffersink.h>
-#include <libavfilter/buffersrc.h>
-
 #include "audio-buffer.h"
 #include "pts-repair.h"
-
-#define IRL_STRETCH_META_MAX 256
-
-struct irl_stretch_meta_entry {
-	int64_t pts_ns;
-	uint64_t duration_ns;
-	int out_frames;
-	int consumed_frames;
-};
 
 /* ── Forward declarations ─────────────────────────────────── */
 
@@ -53,8 +39,6 @@ struct irl_source;
 #define IRL_DEFAULT_BUFFER_MIN_MS 60
 #define IRL_DEFAULT_BUFFER_MAX_MS 300
 #define IRL_DEFAULT_ADAPTIVE_SPEED true
-#define IRL_DEFAULT_SPEED_MIN 0.95f
-#define IRL_DEFAULT_SPEED_MAX 1.05f
 #define IRL_DEFAULT_SMALL_GAP_MS 70
 #define IRL_DEFAULT_LARGE_GAP_MS 2000
 #define IRL_DEFAULT_HW_DECODE 0 /* 0 = auto, 1 = off */
@@ -84,8 +68,6 @@ struct irl_config {
 	int buffer_min_ms;
 	int buffer_max_ms;
 	bool adaptive_speed;
-	float speed_min;
-	float speed_max;
 
 	/* PTS repair */
 	int small_gap_ms;
@@ -167,9 +149,8 @@ struct irl_source {
 	/* PTS repair state */
 	struct pts_repair pts_state;
 
-	/* Adaptive speed controller */
+	/* Buffered audio correction state */
 	float current_speed;
-	uint64_t last_speed_adjust_time;
 	uint64_t audio_pll_corrections;
 	uint64_t audio_pll_hard_resets;
 	uint64_t audio_underruns;
@@ -182,26 +163,7 @@ struct irl_source {
 	uint32_t audio_last_samples_per_sec;
 	uint64_t last_audio_diag_time;
 	uint64_t audio_recovery_until_us;
-
-	/* Pitch-preserving time stretch (buffered adaptive-speed mode) */
-	AVFilterGraph *stretch_graph;
-	AVFilterContext *stretch_src_ctx;
-	AVFilterContext *stretch_tempo_ctx;
-	AVFilterContext *stretch_sink_ctx;
-	AVAudioFifo *stretch_fifo;
-	AVChannelLayout stretch_layout;
-	int stretch_sample_rate;
-	int stretch_channels;
-	float stretch_speed;
-	struct irl_stretch_meta_entry
-		stretch_meta[IRL_STRETCH_META_MAX];
-	int stretch_meta_head;
-	int stretch_meta_tail;
-	int stretch_meta_count;
-	int64_t stretch_next_pts_ns;
-	bool stretch_next_pts_valid;
-	uint64_t stretch_last_active_time_us;
-	uint64_t stretch_last_retune_time_us;
+	uint64_t audio_last_trim_time_us;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.
@@ -271,21 +233,6 @@ void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Audio buffer (audio-buffer.c) ────────────────────────── */
 /* See audio-buffer.h */
-
-/* ── Adaptive speed (audio-speed.c) ───────────────────────── */
-
-float irl_speed_get(struct irl_source *ctx);
-
-/* ── Pitch-Preserving Time Stretch (audio-stretch.c) ─────── */
-
-void irl_stretch_reset(struct irl_source *ctx);
-bool irl_stretch_configure(struct irl_source *ctx, int sample_rate,
-			   int channels);
-bool irl_stretch_push(struct irl_source *ctx, const float *samples, int frames,
-		      float speed, int64_t pts_ns, uint64_t duration_ns);
-bool irl_stretch_pop(struct irl_source *ctx, float *out, int out_frames,
-		     int64_t *pts_ns, uint64_t *duration_ns);
-int irl_stretch_available_frames(struct irl_source *ctx);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */
 

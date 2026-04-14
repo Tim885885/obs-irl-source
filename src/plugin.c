@@ -41,7 +41,7 @@ bool obs_module_load(void)
 const char *obs_module_description(void)
 {
 	return "IRL Source by irlserver.com — live streaming source with "
-	       "jitter buffering, PTS repair, and adaptive playback speed";
+	       "jitter buffering, PTS repair, and adaptive latency control";
 }
 
 const char *obs_module_author(void)

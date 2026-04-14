@@ -28,10 +28,6 @@ void irl_source_get_defaults(obs_data_t *settings)
 				 IRL_DEFAULT_BUFFER_MAX_MS);
 	obs_data_set_default_bool(settings, "adaptive_speed",
 				  IRL_DEFAULT_ADAPTIVE_SPEED);
-	obs_data_set_default_double(settings, "speed_min",
-				    IRL_DEFAULT_SPEED_MIN);
-	obs_data_set_default_double(settings, "speed_max",
-				    IRL_DEFAULT_SPEED_MAX);
 
 	obs_data_set_default_int(settings, "small_gap_ms",
 				 IRL_DEFAULT_SMALL_GAP_MS);
@@ -89,20 +85,15 @@ obs_properties_t *irl_source_get_properties(void *data)
 			       obs_module_text("Max Buffer (ms)"), 50, 1000,
 			       10);
 	obs_properties_add_bool(props, "adaptive_speed",
-				obs_module_text("Adaptive Speed"));
-	obs_properties_add_float_slider(props, "speed_min",
-					obs_module_text("Speed Min"), 0.90,
-					1.0, 0.01);
-	obs_properties_add_float_slider(props, "speed_max",
-					obs_module_text("Speed Max"), 1.0,
-					1.10, 0.01);
+				obs_module_text("Adaptive Latency Control"));
 	obs_properties_add_text(
 		props, "audio_buffer_help",
 		obs_module_text(
 			"Buffered mode is the normal IRL path: Target/Min/Max "
-			"Buffer and Adaptive Speed work together to smooth short "
-			"network wobble. Lower values reduce delay but make random "
-			"hitches more likely."),
+			"Buffer absorb short jitter. Adaptive Latency Control "
+			"holds the buffer near target by occasionally trimming old "
+			"buffered audio when latency drifts too high. Lower values "
+			"reduce delay but make random hitches more likely."),
 		OBS_TEXT_INFO);
 
 	/* ── PTS Repair ────────────────────────────────────── */
@@ -167,8 +158,8 @@ obs_properties_t *irl_source_get_properties(void *data)
 			" by Thomas Lekanger\n"
 			"https://irlserver.com\n\n"
 			"Codec/protocol-agnostic live source with audio jitter "
-			"buffering, PTS discontinuity repair, adaptive playback "
-			"speed, and first-keyframe gating.\n\n"
+			"buffering, PTS discontinuity repair, adaptive latency "
+			"control, and first-keyframe gating.\n\n"
 			"Licensed under AGPL-3.0-or-later"),
 		OBS_TEXT_INFO);
 

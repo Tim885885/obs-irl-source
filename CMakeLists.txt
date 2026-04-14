@@ -266,8 +266,6 @@ set(PLUGIN_SOURCES
     src/receiver-stream.c
     src/receiver-video.c
     src/audio-buffer.c
-    src/audio-speed.c
-    src/audio-stretch.c
     src/video-handler.c
     src/pts-repair.c
     src/settings.c

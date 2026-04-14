@@ -19,7 +19,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | | Media Source | IRL Source |
 |---|---|---|
 | **Audio jitter buffer** | None. Plays audio as fast as it arrives, so unstable connections give you stuttering or speedups | Configurable ring buffer (default 120ms) that absorbs network jitter, or a low-latency mode if you prefer |
-| **Adaptive playback speed** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Adjusts speed between 0.95x and 1.05x in buffered mode to keep the buffer near target |
+| **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps normal playback at 1x and trims old buffered audio when latency drifts too high |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt cutoff, loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
 | **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Drops pre-keyframe audio so the decoder does not warm up with garbage |
@@ -30,14 +30,14 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **Network buffer** | Configurable but not optimized for live | 2MB default transport buffer tuned for SRT live streaming |
 | **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, silence insertions, stream delay, reconnect count, and low-latency mode flag via `proc_handler` |
 
-For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and timestamp handling work together, see [Audio pipeline](docs/audio-pipeline.md).
+For a deeper look at how the jitter buffer, adaptive latency control, PTS repair, and timestamp handling work together, see [Audio pipeline](docs/audio-pipeline.md).
 
 ## Features
 
 - Protocol agnostic: SRT, RTMP, RIST, UDP, TCP, HTTP, or anything FFmpeg can open.
 - Codec agnostic: H.264, HEVC (8-bit and 10-bit), AV1, VP9, AAC, Opus, etc.
 - Audio jitter buffer, sized in milliseconds, adapts to any sample rate or channel count.
-- Adaptive playback speed that keeps buffered mode near target by micro-adjusting inside an inaudible 0.95x to 1.05x range.
+- Adaptive latency control that keeps buffered mode near target without continuously warping audio during normal playback.
 - Low Latency Audio mode that uses OBS async unbuffered semantics and drains immediately instead of building a 60-120ms startup cushion.
 - PTS discontinuity repair for the timestamp jumps that happen during cell tower handoffs and packet loss.
 - Keyframe gating, so you do not get corrupted frames on stream join or reconnect.
@@ -50,7 +50,7 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 - FFmpeg option passthrough, so you can override any demuxer option (latency, probesize, etc.) from the UI.
 - Zero-copy video for supported pixel formats, planes go straight to OBS.
 - Holds the last good video frame while the decoder is damaged, instead of showing gray/corrupt output.
-- Periodic stats logging every 30 seconds: frame counts, buffer level, speed, PTS repairs.
+- Periodic stats logging every 30 seconds: frame counts, buffer level, correction state, PTS repairs.
 
 ## Installation
 
@@ -88,8 +88,7 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 | Target Buffer | 120ms | Audio jitter buffer target fill level |
 | Min Buffer | 60ms | Minimum buffer before playback starts |
 | Max Buffer | 300ms | Maximum buffer size (excess is trimmed) |
-| Adaptive Speed | On | Auto-adjust playback speed to maintain buffer level |
-| Speed Min/Max | 0.95/1.05 | Playback speed range for adaptive mode |
+| Adaptive Latency Control | On | Keeps the buffer near target by trimming stale buffered audio when latency grows too high |
 | Small Gap | 70ms | PTS gaps below this are interpolated silently |
 | Large Gap | 2000ms | PTS gaps above this trigger a full reset |
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
@@ -102,8 +101,8 @@ For a deeper look at how the jitter buffer, adaptive speed, PTS repair, and time
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values and adaptive speed to stay stable on rough mobile links.
-- Low-latency mode drains audio as soon as chunks are available and turns off plugin-side adaptive speed. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at 1.0x, inserts silence on underruns, and can occasionally trim old buffered audio if latency drifts too high.
+- Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
 - `Decoupled Audio` only applies when low-latency mode is enabled.
 
 ## Building from source
@@ -142,7 +141,7 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | Field | Type | Description |
 |---|---|---|
 | `buffer_fill_ms` | int | Current audio jitter buffer fill level (ms) |
-| `current_speed` | float | Current adaptive playback speed (1.0 = normal) |
+| `current_speed` | float | Current audio correction factor (normally 1.0) |
 | `reconnecting` | bool | Whether the source is currently reconnecting |
 | `total_audio_frames` | int | Total audio frames decoded since connection |
 | `total_video_frames` | int | Total video frames decoded since connection |
@@ -188,7 +187,7 @@ function script_tick(seconds)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nDelay: %dms\nBuffer: %dms\nSpeed: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
         status, delay, buf_ms, speed, video, audio, repairs
     )
 
@@ -208,7 +207,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 pts_repairs=0 silence=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 pts_repairs=0 silence=0 underruns=0 resync_skips=0 res=1920x1080
 ```
 
 ## Hardware decoding

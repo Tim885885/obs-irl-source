@@ -94,7 +94,6 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 					avcodec_flush_buffers(ctx->audio_dec_ctx);
 					pthread_mutex_lock(&ctx->audio_state_lock);
 					audio_buffer_flush(&ctx->audio_buf);
-					irl_stretch_reset(ctx);
 					irl_reset_audio_timing_state(ctx);
 					pthread_mutex_unlock(&ctx->audio_state_lock);
 					irl_mark_audio_recovery(

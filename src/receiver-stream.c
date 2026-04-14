@@ -346,13 +346,11 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	pts_repair_reset(&ctx->pts_state);
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
-	irl_stretch_reset(ctx);
 	irl_reset_stream_timing_state(ctx);
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 	irl_mark_audio_recovery(ctx, 2500000ULL);
 
 	ctx->current_speed = 1.0f;
-	ctx->last_speed_adjust_time = 0;
 	ctx->audio_pll_corrections = 0;
 	ctx->audio_pll_hard_resets = 0;
 	ctx->audio_underruns = 0;

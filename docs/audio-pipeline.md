@@ -13,7 +13,7 @@ The plugin takes the opposite approach: keep the buffer as small as possible and
 The normal buffered audio pipeline has four layers that work together:
 
 ```
-decode -> PTS repair -> jitter buffer -> adaptive speed -> OBS output
+decode -> PTS repair -> jitter buffer -> adaptive latency control -> OBS output
 ```
 
 Low-latency mode uses a shorter path:
@@ -22,7 +22,7 @@ Low-latency mode uses a shorter path:
 decode -> PTS repair -> minimal buffer -> OBS output
 ```
 
-In that mode the plugin still repairs discontinuities and keeps monotonic OBS-facing timestamps, but it does not wait for the normal `min_ms` fill level and it does not use adaptive speed.
+In that mode the plugin still repairs discontinuities and keeps monotonic OBS-facing timestamps, but it does not wait for the normal `min_ms` fill level and it does not use buffered latency correction.
 
 ### 1. Jitter buffer (absorbs short-term network jitter)
 
@@ -38,17 +38,17 @@ The buffer holds decoded audio (interleaved float PCM) regardless of the input c
 
 Audio is output in chunks matching the decoded frame size (AAC = 1024 samples, Opus = 960). Matching the output chunk size to the codec frame size eliminates drift between OBS's internal smoothed timestamp advance and our push rate. The output loop drains multiple chunks per decoded frame if needed, keeping the buffer near its target.
 
-### 2. Adaptive playback speed (prevents buffer drift)
+### 2. Adaptive latency control (prevents latency creep)
 
-Even with the drain loop, the buffer level drifts over time due to clock differences between the sender and receiver, network throughput variation, and codec timing. The adaptive speed controller corrects this by micro-adjusting the playback rate.
+Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin no longer tries to hide that by continuously warping audio rate during normal playback.
 
-When the buffer is above target, the plugin reports a slightly higher `samples_per_sec` to OBS (e.g., 50400 instead of 48000). OBS's audio subsystem resamples accordingly, effectively playing audio ~5% faster. When the buffer drops below target, it reports a lower rate to slow down.
+Instead, buffered mode keeps normal playback at 1.0x and uses discrete correction:
 
-A ±15ms dead zone around the target prevents oscillation. If the buffer is between 105ms and 135ms (with the default 120ms target), speed stays at 1.0 — no resampling, no artifacts. Speed correction only kicks in outside this range, scaling proportionally toward the configured min/max (0.95x/1.05x).
+- If buffered latency drifts clearly above target, the plugin can drop one old buffered chunk and fade back in.
+- If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
+- If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
-The adjustment range is 0.95x to 1.05x. Changes below 5% are inaudible — no pitch-shifting library is needed. An exponential moving average (500ms ramp) smooths the transitions so the rate doesn't jump between chunks.
-
-The result: in buffered mode the buffer stays near 120ms indefinitely, even if the sender's clock drifts or the network throughput fluctuates. Media Source has no equivalent — its buffer either grows unbounded (increasing latency) or drains (causing stuttering).
+The result is that stable links stay transparent, while unstable links still have bounded latency and explicit recovery tools.
 
 ### 3. PTS repair (handles timestamp discontinuities)
 
@@ -80,7 +80,7 @@ Three properties keep this stable:
 
 1. **Chunk size matches codec frame size** — output chunks are exactly one codec frame (AAC = 1024, Opus = 960 samples). OBS's internal smoothing advances `next_audio_ts_min` by `chunk_samples / mixer_rate` per push. When our PTS advance matches this exactly, there's zero drift and OBS always uses the fast `push_back` path (which doesn't reset `audio_ts`).
 
-2. **Speed-compensated chunk size in buffered mode** — when the adaptive speed controller is active, the output chunk is scaled by the speed factor (`chunk_samples = base * speed`), but timestamps still advance by the constant base duration. After OBS resamples (dividing by the adjusted `samples_per_sec`), the smoothed advance equals the base frame duration regardless of speed.
+2. **Buffered mode still tracks real playout** — audio timestamps advance from the actual chunk cadence handed to OBS, while the plugin separately tracks the source-side end PTS for the same audio. Video sync uses that mapping instead of assuming a fixed buffer delay.
 
 3. **Small wall-clock guardrails** — the running counter is periodically pulled back toward wall clock if it drifts too far ahead or too far away from real time. This is intentionally limited: buffered mode favors continuity, while low-latency mode is stricter about staying near wall clock.
 
@@ -101,7 +101,7 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 | Stable connection | Works fine, but adds seconds of latency | Buffered mode adds ~120ms, low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift | Buffer grows forever, latency increases | Buffered mode speed-adjusts, low-latency mode stays pinned close to OBS wall clock |
+| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode stays at 1.0x and occasionally trims stale buffered audio to bring latency back down |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
 | Decoder corruption | Gray/corrupt flicker until manual restart | Last good frame is held, bad frames are skipped, decoder state is flushed on repeated errors |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |

@@ -44,10 +44,6 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 	cfg->buffer_min_ms = (int)obs_data_get_int(settings, "buffer_min_ms");
 	cfg->buffer_max_ms = (int)obs_data_get_int(settings, "buffer_max_ms");
 	cfg->adaptive_speed = obs_data_get_bool(settings, "adaptive_speed");
-	cfg->speed_min =
-		(float)obs_data_get_double(settings, "speed_min");
-	cfg->speed_max =
-		(float)obs_data_get_double(settings, "speed_max");
 
 	cfg->small_gap_ms = (int)obs_data_get_int(settings, "small_gap_ms");
 	cfg->large_gap_ms = (int)obs_data_get_int(settings, "large_gap_ms");
@@ -93,7 +89,6 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
-	irl_stretch_reset(ctx);
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
@@ -228,7 +223,6 @@ void irl_source_destroy(void *data)
 
 	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
-	irl_stretch_reset(ctx);
 	pthread_mutex_destroy(&ctx->audio_state_lock);
 
 	if (ctx->swr_ctx)
