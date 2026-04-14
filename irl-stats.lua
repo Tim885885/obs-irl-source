@@ -28,7 +28,7 @@ function script_tick(seconds)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nDelay: %dms\nBuffer: %dms\nSpeed: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
         status, delay, buf_ms, speed, video, audio, repairs
     )
 
