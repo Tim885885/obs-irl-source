@@ -9,11 +9,32 @@
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "receiver-internal.h"
 
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
+
+/* Grow a per-thread scratch buffer to at least `need` bytes. Returns
+ * the buffer or NULL on OOM. The buffer is owned by the caller's
+ * thread; no synchronisation here. */
+static uint8_t *ensure_scratch(uint8_t **buf, size_t *cap, size_t need)
+{
+	if (need == 0)
+		return *buf;
+	if (need > *cap) {
+		size_t new_cap = *cap ? *cap : 4096;
+		while (new_cap < need)
+			new_cap *= 2;
+		uint8_t *next = realloc(*buf, new_cap);
+		if (!next)
+			return NULL;
+		*buf = next;
+		*cap = new_cap;
+	}
+	return *buf;
+}
 
 static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
 {
@@ -438,9 +459,13 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 			irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 			size_t silence_bytes =
 				(size_t)base_samples * ctx->audio_buf.frame_size;
-			uint8_t *silence_buf = calloc(1, silence_bytes);
+			uint8_t *silence_buf = ensure_scratch(
+				&ctx->audio_pump_scratch,
+				&ctx->audio_pump_scratch_capacity,
+				silence_bytes);
 			if (!silence_buf)
 				return false;
+			memset(silence_buf, 0, silence_bytes);
 
 			struct obs_source_audio obs_audio = {0};
 			obs_audio.data[0] = silence_buf;
@@ -461,7 +486,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 				ctx->latest_audio_buffered_end_pts_ns;
 			finalize_audio_output(ctx, &obs_audio, chunk_pts_ns,
 					      stream_duration_ns);
-			free(silence_buf);
 			return true;
 		}
 		return false;
@@ -484,16 +508,15 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int chunk_samples = base_samples;
 	size_t frame_bytes =
 		(size_t)chunk_samples * ctx->audio_buf.frame_size;
-	out_buf = malloc(frame_bytes);
+	out_buf = ensure_scratch(&ctx->audio_pump_scratch,
+				 &ctx->audio_pump_scratch_capacity, frame_bytes);
 	if (!out_buf)
 		return false;
 
 	size_t got = audio_buffer_read_pts(&ctx->audio_buf, out_buf,
 					   frame_bytes, &chunk_pts_ns);
-	if (got == 0) {
-		free(out_buf);
+	if (got == 0)
 		return false;
-	}
 
 	frames_out = (uint32_t)(got /
 				(out_channels * bytes_per_sample));
@@ -537,7 +560,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 
 	obs_source_output_audio(ctx->source, &obs_audio);
 	finalize_audio_output(ctx, &obs_audio, chunk_pts_ns, stream_duration_ns);
-	free(out_buf);
 	return true;
 }
 
@@ -619,8 +641,11 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (action == PTS_ACTION_SILENCE && silence_ms > 0) {
 		size_t silence_bytes =
 			audio_buffer_ms_to_bytes(&ctx->audio_buf, silence_ms);
-		uint8_t *silence = calloc(1, silence_bytes);
+		uint8_t *silence = ensure_scratch(
+			&ctx->audio_resample_scratch,
+			&ctx->audio_resample_scratch_capacity, silence_bytes);
 		if (silence) {
+			memset(silence, 0, silence_bytes);
 			int64_t silence_pts_ns =
 				av_rescale_q(corrected_pts,
 					     (AVRational){ctx->pts_state.tb_num,
@@ -630,9 +655,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			if (silence_pts_ns < 0)
 				silence_pts_ns = 0;
 			audio_buffer_write_pts(&ctx->audio_buf, silence,
-					       silence_bytes,
-					       silence_pts_ns);
-			free(silence);
+					       silence_bytes, silence_pts_ns);
 			ctx->silence_insertions++;
 		}
 	} else if (action == PTS_ACTION_RESET) {
@@ -696,18 +719,18 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		if (soft_comp_samples < 0)
 			soft_comp_samples = -soft_comp_samples;
 		max_out += soft_comp_samples + 32;
-		interleaved =
-			malloc((size_t)max_out * out_channels * bytes_per_sample);
+		size_t need = (size_t)max_out * out_channels * bytes_per_sample;
+		interleaved = ensure_scratch(&ctx->audio_resample_scratch,
+					     &ctx->audio_resample_scratch_capacity,
+					     need);
 		if (!interleaved)
 			return;
 
 		out_samples = swr_convert(ctx->swr_ctx, &interleaved, max_out,
 					  (const uint8_t **)frame->extended_data,
 					  frame->nb_samples);
-		if (out_samples <= 0) {
-			free(interleaved);
+		if (out_samples <= 0)
 			return;
-		}
 	} else {
 		interleaved = frame->data[0];
 	}
@@ -716,8 +739,6 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		(size_t)out_samples * out_channels * bytes_per_sample;
 	if (ctx->config.wait_for_keyframe && ctx->video_stream_idx >= 0 &&
 	    !ctx->first_keyframe_received) {
-		if (interleaved != frame->data[0])
-			free(interleaved);
 		return;
 	}
 
@@ -727,8 +748,6 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		(AVRational){1, 1000000000});
 	audio_buffer_write_pts(&ctx->audio_buf, interleaved, data_bytes,
 			       frame_pts_ns);
-	if (interleaved != frame->data[0])
-		free(interleaved);
 
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->latest_audio_stream_pts_ns = frame_pts_ns;

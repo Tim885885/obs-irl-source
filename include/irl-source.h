@@ -147,6 +147,15 @@ struct irl_source {
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
 
+	/* Per-thread scratch buffers (no lock needed; each is owned by
+	 * exactly one thread).  Grown on demand to avoid per-frame
+	 * malloc, which is a real latency source on lossy IRL streams
+	 * where decode/output bursts coincide with allocator pressure. */
+	uint8_t *audio_pump_scratch;       /* audio thread */
+	size_t audio_pump_scratch_capacity;
+	uint8_t *audio_resample_scratch;   /* receiver thread */
+	size_t audio_resample_scratch_capacity;
+
 	/* PTS repair state */
 	struct pts_repair pts_state;
 

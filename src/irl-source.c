@@ -254,6 +254,9 @@ void irl_source_destroy(void *data)
 	audio_buffer_free(&ctx->audio_buf);
 	pthread_mutex_destroy(&ctx->audio_state_lock);
 
+	free(ctx->audio_pump_scratch);
+	free(ctx->audio_resample_scratch);
+
 	if (ctx->swr_ctx)
 		swr_free(&ctx->swr_ctx);
 	if (ctx->sws_ctx)
