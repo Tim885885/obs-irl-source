@@ -116,6 +116,8 @@ struct irl_source {
 	int sws_src_w;
 	int sws_src_h;
 	enum AVPixelFormat sws_src_fmt;
+	uint8_t *sws_nv12_buf;       /* receiver-thread-owned NV12 scratch */
+	size_t sws_nv12_buf_capacity;
 
 	/* Video timestamp sync (anchors stream PTS to system clock) */
 	bool video_ts_init;
@@ -146,6 +148,15 @@ struct irl_source {
 
 	/* Audio jitter buffer */
 	struct audio_buffer audio_buf;
+
+	/* Per-thread scratch buffers (no lock needed; each is owned by
+	 * exactly one thread).  Grown on demand to avoid per-frame
+	 * malloc, which is a real latency source on lossy IRL streams
+	 * where decode/output bursts coincide with allocator pressure. */
+	uint8_t *audio_pump_scratch;       /* audio thread */
+	size_t audio_pump_scratch_capacity;
+	uint8_t *audio_resample_scratch;   /* receiver thread */
+	size_t audio_resample_scratch_capacity;
 
 	/* PTS repair state */
 	struct pts_repair pts_state;

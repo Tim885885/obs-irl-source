@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <util/bmem.h>
+
 #include "../include/audio-buffer.h"
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -195,13 +197,18 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	buf->min_ms = min_ms;
 	buf->max_ms = max_ms;
 
+	/* Initialise the lock before publishing buf->data: stats readers
+	 * (e.g. proc_handler) gate locking on buf->data != NULL, so the
+	 * mutex must already be live when data becomes visible. */
+	pthread_mutex_init(&buf->lock, NULL);
+
 	/* Allocate for max_ms plus some headroom */
 	buf->capacity = ms_to_bytes(buf, max_ms * 2);
 	if (buf->capacity == 0)
 		buf->capacity = 65536; /* fallback */
-	buf->data = calloc(1, buf->capacity);
-
-	pthread_mutex_init(&buf->lock, NULL);
+	buf->data = bzalloc(buf->capacity);
+	if (!buf->data)
+		buf->capacity = 0;
 }
 
 bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
@@ -222,12 +229,12 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 	next.capacity = ms_to_bytes(&next, max_ms * 2);
 	if (next.capacity == 0)
 		next.capacity = 65536;
-	next.data = calloc(1, next.capacity);
+	next.data = bzalloc(next.capacity);
 	if (!next.data)
 		return false;
 
 	pthread_mutex_lock(&buf->lock);
-	free(buf->data);
+	bfree(buf->data);
 	buf->data = next.data;
 	buf->capacity = next.capacity;
 	buf->head = 0;
@@ -249,11 +256,14 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 
 void audio_buffer_free(struct audio_buffer *buf)
 {
-	if (!buf->data)
+	/* sample_rate is the canonical "init was called" marker. capacity
+	 * may legitimately be 0 if bzalloc failed, but the mutex is still
+	 * live and must be destroyed. */
+	if (buf->sample_rate == 0)
 		return;
 
 	pthread_mutex_destroy(&buf->lock);
-	free(buf->data);
+	bfree(buf->data);
 	memset(buf, 0, sizeof(*buf));
 }
 
@@ -315,12 +325,43 @@ size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
 		return 0;
 
 	pthread_mutex_lock(&buf->lock);
-	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes, NULL);
+
+	/* Continuation marker: derive the new chunk's PTS from the prior
+	 * chunk's end so reads stay PTS-consistent. Without this, downstream
+	 * read_pts would return 0 for these bytes while pts_consume drained
+	 * unrelated chunk metadata, slowly poisoning the PTS queue. */
+	int64_t pts_ns = 0;
+	if (buf->chunk_count > 0 && buf->sample_rate > 0 &&
+	    buf->frame_size > 0) {
+		int last_idx = (buf->chunk_head - 1 + AUDIO_PTS_MAX_CHUNKS) %
+			       AUDIO_PTS_MAX_CHUNKS;
+		const struct audio_pts_chunk *last = &buf->chunks[last_idx];
+		int64_t samples_in_chunk =
+			(int64_t)last->size / buf->frame_size;
+		pts_ns = last->pts_ns + samples_in_chunk * 1000000000LL /
+						 buf->sample_rate;
+	}
+
+	while (buf->chunk_count >= AUDIO_PTS_MAX_CHUNKS)
+		skip_oldest_chunk_locked(buf);
+
+	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes,
+						 &pts_ns);
 	if (bytes == 0) {
 		pthread_mutex_unlock(&buf->lock);
 		return 0;
 	}
+
 	size_t written = ring_write(buf, samples, bytes);
+	if (written > 0) {
+		struct audio_pts_chunk *c = &buf->chunks[buf->chunk_head];
+		c->pts_ns = pts_ns;
+		c->size = written;
+		c->consumed = 0;
+		buf->chunk_head =
+			(buf->chunk_head + 1) % AUDIO_PTS_MAX_CHUNKS;
+		buf->chunk_count++;
+	}
 	pthread_mutex_unlock(&buf->lock);
 	return written;
 }
@@ -460,6 +501,36 @@ void audio_buffer_skip_chunk(struct audio_buffer *buf)
 	pthread_mutex_lock(&buf->lock);
 	skip_oldest_chunk_locked(buf);
 	pthread_mutex_unlock(&buf->lock);
+}
+
+int audio_buffer_trim_to_keep_ms(struct audio_buffer *buf, int keep_ms,
+				 int min_chunks_to_keep, int *out_fill_ms,
+				 int *out_chunk_count)
+{
+	if (!buf->data) {
+		if (out_fill_ms)
+			*out_fill_ms = 0;
+		if (out_chunk_count)
+			*out_chunk_count = 0;
+		return 0;
+	}
+
+	pthread_mutex_lock(&buf->lock);
+
+	int trimmed = 0;
+	while (buf->chunk_count > min_chunks_to_keep &&
+	       fill_ms_unlocked(buf) > keep_ms) {
+		skip_oldest_chunk_locked(buf);
+		trimmed++;
+	}
+
+	if (out_fill_ms)
+		*out_fill_ms = fill_ms_unlocked(buf);
+	if (out_chunk_count)
+		*out_chunk_count = buf->chunk_count;
+
+	pthread_mutex_unlock(&buf->lock);
+	return trimmed;
 }
 
 int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns)

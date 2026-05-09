@@ -13,6 +13,11 @@
  *   large  (>= large_gap_ms): full timestamp reset
  */
 
+#include <limits.h>
+
+#include <libavutil/mathematics.h>
+#include <libavutil/rational.h>
+
 #include "../include/pts-repair.h"
 
 #define PTS_SMALL_GAP_RELOCK_COUNT 8
@@ -23,9 +28,15 @@
 
 static int ts_to_ms(const struct pts_repair *r, int64_t ts)
 {
-	if (r->tb_den == 0)
+	if (r->tb_den <= 0 || r->tb_num <= 0)
 		return 0;
-	return (int)(ts * 1000 * r->tb_num / r->tb_den);
+	int64_t ms = av_rescale_q(ts, (AVRational){r->tb_num, r->tb_den},
+				  (AVRational){1, 1000});
+	if (ms > INT_MAX)
+		return INT_MAX;
+	if (ms < INT_MIN)
+		return INT_MIN;
+	return (int)ms;
 }
 
 static int64_t ms_to_ts_ceil(const struct pts_repair *r, int ms)
@@ -33,9 +44,9 @@ static int64_t ms_to_ts_ceil(const struct pts_repair *r, int ms)
 	if (r->tb_num <= 0 || r->tb_den <= 0 || ms <= 0)
 		return 1;
 
-	int64_t num = (int64_t)ms * r->tb_den;
-	int64_t den = 1000LL * r->tb_num;
-	int64_t ts = (num + den - 1) / den;
+	int64_t ts = av_rescale_q_rnd(ms, (AVRational){1, 1000},
+				      (AVRational){r->tb_num, r->tb_den},
+				      AV_ROUND_UP);
 	return ts > 0 ? ts : 1;
 }
 
@@ -93,8 +104,33 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	int gap_ms = ts_to_ms(r, gap >= 0 ? gap : -gap);
 	bool is_backward = gap < 0;
 
-	/* Backward jump or tiny gap — likely reorder, pass through */
-	if (is_backward || gap_ms < 1) {
+	if (is_backward) {
+		/* Small backward jumps look like B-frame reorder or
+		 * decoder ts wobble. Pass through without updating
+		 * last_pts so the baseline keeps tracking the leading
+		 * edge of the stream — otherwise the next forward
+		 * frame would compute a huge "gap" against the older,
+		 * smaller baseline and trigger a needless silence /
+		 * reset. */
+		if (gap_ms < r->small_gap_ms) {
+			*corrected_pts = pts;
+			return PTS_ACTION_PASS;
+		}
+		/* Large backward jump — timeline reset (new segment,
+		 * sender pts wrap, or remap). Treat exactly like a
+		 * large forward gap: reanchor from the new pts. */
+		r->last_pts = pts;
+		r->last_duration =
+			duration > 0 ? duration : r->last_duration;
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
+		r->relocking = false;
+		*corrected_pts = pts;
+		return PTS_ACTION_RESET;
+	}
+
+	/* Tiny forward gap (< 1 ms): essentially-aligned, pass through. */
+	if (gap_ms < 1) {
 		r->last_pts = pts;
 		r->last_duration = duration > 0 ? duration : r->last_duration;
 		r->last_gap_ms = 0;

@@ -129,16 +129,25 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 {
 	AVStream *vs = ctx->fmt_ctx->streams[ctx->video_stream_idx];
-	int64_t pts_ns = (int64_t)(frame->pts * 1000000000LL *
-				   vs->time_base.num / vs->time_base.den);
+	int64_t pts_ns = av_rescale_q(frame->pts, vs->time_base,
+				      (AVRational){1, 1000000000});
 	uint64_t now = os_gettime_ns();
 
-	if (ctx->audio_stream_idx >= 0 && ctx->latest_audio_obs_end_ts_ns != 0 &&
-	    ctx->latest_audio_buffered_end_pts_ns > 0) {
-		int64_t mapped =
-			(int64_t)pts_ns +
-			((int64_t)ctx->latest_audio_obs_end_ts_ns -
-			 ctx->latest_audio_buffered_end_pts_ns);
+	/* Snapshot audio-thread-owned fields under the lock. */
+	uint64_t audio_obs_end_ts_ns;
+	int64_t audio_buffered_end_pts_ns;
+	int startup_warmup_ms;
+	pthread_mutex_lock(&ctx->audio_state_lock);
+	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
+	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
+	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
+
+	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
+	    audio_buffered_end_pts_ns > 0) {
+		int64_t mapped = (int64_t)pts_ns +
+				 ((int64_t)audio_obs_end_ts_ns -
+				  audio_buffered_end_pts_ns);
 		if (mapped < 0)
 			mapped = 0;
 		return (uint64_t)mapped;
@@ -165,10 +174,8 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	/* Startup fallback before the audio playout mapping exists. */
 	if (ctx->audio_stream_idx >= 0) {
 		int64_t audio_lead_ns = 0;
-		if (ctx->latest_audio_obs_end_ts_ns == 0) {
-			audio_lead_ns =
-				(int64_t)ctx->startup_audio_warmup_remaining_ms *
-				1000000LL;
+		if (audio_obs_end_ts_ns == 0) {
+			audio_lead_ns = (int64_t)startup_warmup_ms * 1000000LL;
 			if (!ctx->config.low_latency_audio) {
 				audio_lead_ns +=
 					(int64_t)ctx->config.buffer_target_ms *
@@ -207,6 +214,21 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	enum video_format obs_fmt = avpixfmt_to_obs(frame->format);
 
+	/* Negative linesize means the frame is laid out bottom-up. OBS's
+	 * async path expects positive strides, so taking abs() would
+	 * silently flip the image vertically. Route through swscale
+	 * instead. Real-world FFmpeg decoders almost never produce this,
+	 * but cheap to be defensive. */
+	bool negative_stride = false;
+	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
+		if (frame->data[i] && frame->linesize[i] < 0) {
+			negative_stride = true;
+			break;
+		}
+	}
+	if (negative_stride)
+		obs_fmt = VIDEO_FORMAT_NONE;
+
 	/* If format not directly supported, convert to NV12 via swscale */
 	if (obs_fmt == VIDEO_FORMAT_NONE) {
 		if (!ctx->sws_ctx || ctx->sws_src_w != frame->width ||
@@ -231,13 +253,22 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		if (!ctx->sws_ctx)
 			return;
 
-		int y_size = frame->width * frame->height;
-		int uv_size = y_size / 2;
-		uint8_t *nv12_data = malloc(y_size + uv_size);
-		if (!nv12_data)
-			return;
+		size_t y_size = (size_t)frame->width * frame->height;
+		size_t uv_size = y_size / 2;
+		size_t need = y_size + uv_size;
+		if (need > ctx->sws_nv12_buf_capacity) {
+			uint8_t *next = realloc(ctx->sws_nv12_buf, need);
+			if (!next) {
+				if (sw_frame)
+					av_frame_free(&sw_frame);
+				return;
+			}
+			ctx->sws_nv12_buf = next;
+			ctx->sws_nv12_buf_capacity = need;
+		}
 
-		uint8_t *dst_planes[2] = {nv12_data, nv12_data + y_size};
+		uint8_t *dst_planes[2] = {ctx->sws_nv12_buf,
+					  ctx->sws_nv12_buf + y_size};
 		int dst_strides[2] = {frame->width, frame->width};
 
 		sws_scale(ctx->sws_ctx, (const uint8_t *const *)frame->data,
@@ -256,7 +287,6 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		setup_color_params(&obs_frame, frame, VIDEO_FORMAT_NV12);
 
 		obs_source_output_video(ctx->source, &obs_frame);
-		free(nv12_data);
 		if (sw_frame)
 			av_frame_free(&sw_frame);
 		return;
@@ -272,7 +302,10 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
 		obs_frame.data[i] = frame->data[i];
-		obs_frame.linesize[i] = abs(frame->linesize[i]);
+		/* Linesize is non-negative here: negative_stride above
+		 * routes to the swscale path. */
+		obs_frame.linesize[i] =
+			frame->linesize[i] > 0 ? frame->linesize[i] : 0;
 	}
 
 	obs_source_output_video(ctx->source, &obs_frame);

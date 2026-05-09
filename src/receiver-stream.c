@@ -45,6 +45,8 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 
 	if (extra && *extra) {
 		char *dup = av_strdup(extra);
+		if (!dup)
+			return;
 		char *saveptr = NULL;
 		char *token = strtok_r(dup, " ", &saveptr);
 		while (token) {
@@ -171,7 +173,7 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 static int interrupt_cb(void *opaque)
 {
 	struct irl_source *ctx = opaque;
-	return !ctx->thread_active;
+	return !os_atomic_load_bool(&ctx->thread_active);
 }
 
 bool irl_open_stream(struct irl_source *ctx)
@@ -279,27 +281,30 @@ bool irl_open_stream(struct irl_source *ctx)
 
 void irl_prepare_new_connection(struct irl_source *ctx)
 {
-	ctx->reconnecting = false;
+	os_atomic_store_bool(&ctx->reconnecting, false);
 	ctx->first_keyframe_received = false;
 	ctx->video_ts_init = false;
+	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->fade_in_pending = true;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = IRL_STARTUP_AUDIO_WARMUP_MS;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 }
 
 bool irl_wait_for_reconnect(struct irl_source *ctx)
 {
-	ctx->reconnecting = true;
+	os_atomic_store_bool(&ctx->reconnecting, true);
 	ctx->reconnect_count++;
 	blog(LOG_INFO, "[irl-source] Reconnecting in %ds...",
 	     ctx->config.reconnect_delay);
-	for (int i = 0; i < ctx->config.reconnect_delay * 10 &&
-			ctx->thread_active;
+	for (int i = 0;
+	     i < ctx->config.reconnect_delay * 10 &&
+	     os_atomic_load_bool(&ctx->thread_active);
 	     i++) {
 		av_usleep(100000);
 	}
-	ctx->reconnecting = false;
-	return ctx->thread_active;
+	os_atomic_store_bool(&ctx->reconnecting, false);
+	return os_atomic_load_bool(&ctx->thread_active);
 }
 
 static void fade_out_buffered_audio(struct irl_source *ctx)
@@ -344,7 +349,7 @@ static void fade_out_buffered_audio(struct irl_source *ctx)
 void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 {
 	char errbuf[AV_ERROR_MAX_STRING_SIZE];
-	ctx->reconnecting = true;
+	os_atomic_store_bool(&ctx->reconnecting, true);
 	av_strerror(read_ret, errbuf, sizeof(errbuf));
 	blog(LOG_WARNING,
 	     "[irl-source] Stream read error: %s (video_frames=%llu, audio_frames=%llu)",
@@ -357,8 +362,9 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	irl_reset_stream_timing_state(ctx);
-	pthread_mutex_unlock(&ctx->audio_state_lock);
 	irl_mark_audio_recovery(ctx, 2500000ULL);
+	ctx->fade_in_pending = true;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->current_speed = 1.0f;
 	ctx->audio_pll_corrections = 0;
@@ -370,7 +376,6 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->last_stats_time = 0;
-	ctx->fade_in_pending = true;
 }
 
 void irl_log_receiver_stats(struct irl_source *ctx)
