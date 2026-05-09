@@ -116,8 +116,20 @@ static void start_receiver(struct irl_source *ctx)
 
 	reset_runtime_state(ctx);
 	ctx->thread_active = true;
-	pthread_create(&ctx->audio_thread, NULL, irl_audio_thread, ctx);
-	pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread, ctx);
+	if (pthread_create(&ctx->audio_thread, NULL, irl_audio_thread, ctx) !=
+	    0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create audio thread");
+		ctx->thread_active = false;
+		return;
+	}
+	if (pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread,
+			   ctx) != 0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create receiver thread");
+		ctx->thread_active = false;
+		pthread_join(ctx->audio_thread, NULL);
+	}
 }
 
 static void stop_receiver(struct irl_source *ctx, bool clear_video)
