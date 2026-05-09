@@ -157,6 +157,16 @@ void audio_buffer_skip_chunk(struct audio_buffer *buf);
  */
 int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns);
 
+/**
+ * Drop oldest chunks under a single lock until fill <= keep_ms or
+ * the chunk count reaches `min_chunks_to_keep`.  Out-params report
+ * the post-trim state.  Used by the hidden-backlog trim path so we
+ * don't reacquire the lock per dropped chunk.
+ */
+int audio_buffer_trim_to_keep_ms(struct audio_buffer *buf, int keep_ms,
+				 int min_chunks_to_keep, int *out_fill_ms,
+				 int *out_chunk_count);
+
 /** Current fill level in milliseconds. */
 int audio_buffer_fill_ms(const struct audio_buffer *buf);
 

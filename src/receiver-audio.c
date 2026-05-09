@@ -36,7 +36,7 @@ static uint8_t *ensure_scratch(uint8_t **buf, size_t *cap, size_t need)
 	return *buf;
 }
 
-static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
+static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 {
 	uint64_t now = os_gettime_ns();
 	bool severe_lead = ctx->audio_last_obs_lead_ns > 150000000LL;
@@ -47,6 +47,11 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx, int fill_ms)
 		return;
 	if (now - ctx->last_audio_diag_time < 5000000000ULL)
 		return;
+
+	/* Throttle gates passed; only now do we acquire the buffer lock
+	 * to read fill_ms. Avoids a per-pump lock acquire that almost
+	 * always returns immediately because we don't actually log. */
+	int fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 
 	ctx->last_audio_diag_time = now;
 	blog(LOG_WARNING,
@@ -331,8 +336,7 @@ static void finalize_audio_output(struct irl_source *ctx,
 		ctx->audio_last_obs_lead_ns = 0;
 	}
 
-	maybe_log_audio_timing_diag(ctx,
-				    audio_buffer_fill_ms_locked(&ctx->audio_buf));
+	maybe_log_audio_timing_diag(ctx);
 	ctx->total_audio_frames++;
 }
 
@@ -394,20 +398,18 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	if (fill_ms <= keep_ms + AUDIO_TRIM_TRIGGER_MS)
 		return false;
 
-	int trimmed = 0;
-	while (chunk_count > 1 && fill_ms > keep_ms) {
-		audio_buffer_skip_chunk(&ctx->audio_buf);
-		trimmed++;
-		chunk_count--;
-		fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
-	}
+	int post_fill_ms = fill_ms;
+	int post_chunks = chunk_count;
+	int trimmed = audio_buffer_trim_to_keep_ms(&ctx->audio_buf, keep_ms,
+						   1, &post_fill_ms,
+						   &post_chunks);
 	if (trimmed <= 0)
 		return false;
 
 	ctx->audio_resync_skipped_chunks += (uint64_t)trimmed;
 	blog(LOG_INFO,
 	     "[irl-source] Audio trim: dropped %d hidden buffered chunk%s before playback (fill=%dms target=%dms)",
-	     trimmed, trimmed == 1 ? "" : "s", fill_ms,
+	     trimmed, trimmed == 1 ? "" : "s", post_fill_ms,
 	     ctx->config.buffer_target_ms);
 	return true;
 }

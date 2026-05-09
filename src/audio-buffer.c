@@ -470,6 +470,36 @@ void audio_buffer_skip_chunk(struct audio_buffer *buf)
 	pthread_mutex_unlock(&buf->lock);
 }
 
+int audio_buffer_trim_to_keep_ms(struct audio_buffer *buf, int keep_ms,
+				 int min_chunks_to_keep, int *out_fill_ms,
+				 int *out_chunk_count)
+{
+	if (!buf->data) {
+		if (out_fill_ms)
+			*out_fill_ms = 0;
+		if (out_chunk_count)
+			*out_chunk_count = 0;
+		return 0;
+	}
+
+	pthread_mutex_lock(&buf->lock);
+
+	int trimmed = 0;
+	while (buf->chunk_count > min_chunks_to_keep &&
+	       fill_ms_unlocked(buf) > keep_ms) {
+		skip_oldest_chunk_locked(buf);
+		trimmed++;
+	}
+
+	if (out_fill_ms)
+		*out_fill_ms = fill_ms_unlocked(buf);
+	if (out_chunk_count)
+		*out_chunk_count = buf->chunk_count;
+
+	pthread_mutex_unlock(&buf->lock);
+	return trimmed;
+}
+
 int audio_buffer_skip_until_pts(struct audio_buffer *buf, int64_t min_pts_ns)
 {
 	if (!buf->data)
