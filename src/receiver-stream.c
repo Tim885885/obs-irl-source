@@ -45,6 +45,8 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 
 	if (extra && *extra) {
 		char *dup = av_strdup(extra);
+		if (!dup)
+			return;
 		char *saveptr = NULL;
 		char *token = strtok_r(dup, " ", &saveptr);
 		while (token) {

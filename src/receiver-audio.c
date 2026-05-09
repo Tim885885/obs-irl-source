@@ -657,14 +657,18 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		    ctx->swr_in_format != frame->format) {
 			if (ctx->swr_ctx)
 				swr_free(&ctx->swr_ctx);
-			ctx->swr_ctx = swr_alloc();
 			AVChannelLayout out_layout;
 			av_channel_layout_default(&out_layout, out_channels);
-			swr_alloc_set_opts2(&ctx->swr_ctx, &out_layout,
-					    AV_SAMPLE_FMT_FLT, out_rate,
-					    &frame->ch_layout,
-					    frame->format, frame->sample_rate,
-					    0, NULL);
+			if (swr_alloc_set_opts2(&ctx->swr_ctx, &out_layout,
+						AV_SAMPLE_FMT_FLT, out_rate,
+						&frame->ch_layout,
+						frame->format,
+						frame->sample_rate, 0,
+						NULL) < 0 ||
+			    !ctx->swr_ctx) {
+				av_channel_layout_uninit(&out_layout);
+				return;
+			}
 			if (swr_init(ctx->swr_ctx) < 0) {
 				swr_free(&ctx->swr_ctx);
 				av_channel_layout_uninit(&out_layout);

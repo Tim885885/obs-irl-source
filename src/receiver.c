@@ -48,6 +48,14 @@ void *irl_receiver_thread(void *data)
 	struct irl_source *ctx = data;
 	AVPacket *pkt = av_packet_alloc();
 	AVFrame *frame = av_frame_alloc();
+	if (!pkt || !frame) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to allocate packet/frame, receiver exiting");
+		av_packet_free(&pkt);
+		av_frame_free(&frame);
+		ctx->thread_active = false;
+		return NULL;
+	}
 
 	blog(LOG_INFO, "[irl-source] Receiver thread started for: %s",
 	     ctx->config.url ? ctx->config.url : "(null)");
