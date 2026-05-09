@@ -193,16 +193,55 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 
 void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 {
-	/* Hardware-decoded frames (NVDEC/D3D11VA/VAAPI) need to be transferred to CPU */
+	/* Hardware-decoded frames (NVDEC/D3D11VA/VAAPI/VideoToolbox) come
+	 * out on the GPU; we have to expose them to OBS as system memory.
+	 *
+	 * Try av_hwframe_map(AV_HWFRAME_MAP_READ) first: on backends that
+	 * can produce a CPU-readable view without a full download (VAAPI
+	 * vaDeriveImage, VideoToolbox IOSurface), this skips the
+	 * gpu->cpu copy entirely. On D3D11VA / CUDA the map call falls
+	 * back to a copy internally or fails, so we fall back to
+	 * av_hwframe_transfer_data which is the historical path.
+	 *
+	 * hw_map_ok caches the outcome so we don't keep paying for a
+	 * doomed map attempt every frame on platforms that can't map. */
 	AVFrame *sw_frame = NULL;
 	if (frame->hw_frames_ctx) {
 		sw_frame = av_frame_alloc();
 		if (!sw_frame)
 			return;
-		if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
-			av_frame_free(&sw_frame);
-			return;
+
+		bool used_map = false;
+		if (ctx->hw_map_ok != 0) {
+			int ret = av_hwframe_map(sw_frame, frame,
+						 AV_HWFRAME_MAP_READ);
+			if (ret == 0) {
+				used_map = true;
+				if (ctx->hw_map_ok != 1) {
+					ctx->hw_map_ok = 1;
+					blog(LOG_INFO,
+					     "[irl-source] HW frame path: av_hwframe_map (zero-copy)");
+				}
+			} else {
+				av_frame_unref(sw_frame);
+				if (ctx->hw_map_ok != 0) {
+					ctx->hw_map_ok = 0;
+					char errbuf[AV_ERROR_MAX_STRING_SIZE];
+					av_strerror(ret, errbuf, sizeof(errbuf));
+					blog(LOG_INFO,
+					     "[irl-source] HW frame path: av_hwframe_transfer_data (map unsupported: %s)",
+					     errbuf);
+				}
+			}
 		}
+
+		if (!used_map) {
+			if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
+				av_frame_free(&sw_frame);
+				return;
+			}
+		}
+
 		sw_frame->pts = frame->pts;
 		sw_frame->colorspace = frame->colorspace;
 		sw_frame->color_range = frame->color_range;
