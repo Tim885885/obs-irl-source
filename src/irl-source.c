@@ -76,7 +76,7 @@ static void apply_async_audio_mode(struct irl_source *ctx)
 static void reset_runtime_state(struct irl_source *ctx)
 {
 	ctx->first_keyframe_received = false;
-	ctx->reconnecting = false;
+	os_atomic_store_bool(&ctx->reconnecting, false);
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	pts_repair_reset(&ctx->pts_state);
@@ -111,23 +111,24 @@ static void clear_async_video(struct irl_source *ctx)
 
 static void start_receiver(struct irl_source *ctx)
 {
-	if (ctx->thread_active || !should_run_receiver(ctx))
+	if (os_atomic_load_bool(&ctx->thread_active) ||
+	    !should_run_receiver(ctx))
 		return;
 
 	reset_runtime_state(ctx);
-	ctx->thread_active = true;
+	os_atomic_store_bool(&ctx->thread_active, true);
 	if (pthread_create(&ctx->audio_thread, NULL, irl_audio_thread, ctx) !=
 	    0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create audio thread");
-		ctx->thread_active = false;
+		os_atomic_store_bool(&ctx->thread_active, false);
 		return;
 	}
 	if (pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread,
 			   ctx) != 0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create receiver thread");
-		ctx->thread_active = false;
+		os_atomic_store_bool(&ctx->thread_active, false);
 		pthread_join(ctx->audio_thread, NULL);
 	}
 }
@@ -151,7 +152,8 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			   (double)ctx->current_speed);
 	calldata_set_bool(cd, "adaptive_latency_control",
 			  ctx->config.adaptive_speed);
-	calldata_set_bool(cd, "reconnecting", ctx->reconnecting);
+	calldata_set_bool(cd, "reconnecting",
+			  os_atomic_load_bool(&ctx->reconnecting));
 	calldata_set_int(cd, "total_audio_frames",
 			 (long long)ctx->total_audio_frames);
 	calldata_set_int(cd, "total_video_frames",

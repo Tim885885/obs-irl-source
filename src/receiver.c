@@ -20,14 +20,15 @@ void *irl_audio_thread(void *data)
 {
 	struct irl_source *ctx = data;
 
-	while (ctx->thread_active) {
-		if (ctx->reconnecting) {
+	while (os_atomic_load_bool(&ctx->thread_active)) {
+		if (os_atomic_load_bool(&ctx->reconnecting)) {
 			os_sleep_ms(1);
 			continue;
 		}
 
 		bool pumped = false;
-		for (int i = 0; i < 16 && ctx->thread_active; i++) {
+		for (int i = 0; i < 16 && os_atomic_load_bool(&ctx->thread_active);
+		     i++) {
 			pthread_mutex_lock(&ctx->audio_state_lock);
 			bool ok = irl_pump_audio_once(ctx);
 			pthread_mutex_unlock(&ctx->audio_state_lock);
@@ -53,14 +54,14 @@ void *irl_receiver_thread(void *data)
 		     "[irl-source] Failed to allocate packet/frame, receiver exiting");
 		av_packet_free(&pkt);
 		av_frame_free(&frame);
-		ctx->thread_active = false;
+		os_atomic_store_bool(&ctx->thread_active, false);
 		return NULL;
 	}
 
 	blog(LOG_INFO, "[irl-source] Receiver thread started for: %s",
 	     ctx->config.url ? ctx->config.url : "(null)");
 
-	while (ctx->thread_active) {
+	while (os_atomic_load_bool(&ctx->thread_active)) {
 		if (!ctx->fmt_ctx) {
 			if (!irl_open_stream(ctx)) {
 				if (!irl_wait_for_reconnect(ctx))
@@ -96,10 +97,10 @@ void *irl_receiver_thread(void *data)
 
 void irl_receiver_stop(struct irl_source *ctx)
 {
-	if (!ctx->thread_active)
+	if (!os_atomic_load_bool(&ctx->thread_active))
 		return;
 
-	ctx->thread_active = false;
+	os_atomic_store_bool(&ctx->thread_active, false);
 	pthread_join(ctx->audio_thread, NULL);
 	pthread_join(ctx->receiver_thread, NULL);
 }

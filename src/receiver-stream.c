@@ -173,7 +173,7 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 static int interrupt_cb(void *opaque)
 {
 	struct irl_source *ctx = opaque;
-	return !ctx->thread_active;
+	return !os_atomic_load_bool(&ctx->thread_active);
 }
 
 bool irl_open_stream(struct irl_source *ctx)
@@ -281,7 +281,7 @@ bool irl_open_stream(struct irl_source *ctx)
 
 void irl_prepare_new_connection(struct irl_source *ctx)
 {
-	ctx->reconnecting = false;
+	os_atomic_store_bool(&ctx->reconnecting, false);
 	ctx->first_keyframe_received = false;
 	ctx->video_ts_init = false;
 	ctx->fade_in_pending = true;
@@ -291,17 +291,18 @@ void irl_prepare_new_connection(struct irl_source *ctx)
 
 bool irl_wait_for_reconnect(struct irl_source *ctx)
 {
-	ctx->reconnecting = true;
+	os_atomic_store_bool(&ctx->reconnecting, true);
 	ctx->reconnect_count++;
 	blog(LOG_INFO, "[irl-source] Reconnecting in %ds...",
 	     ctx->config.reconnect_delay);
-	for (int i = 0; i < ctx->config.reconnect_delay * 10 &&
-			ctx->thread_active;
+	for (int i = 0;
+	     i < ctx->config.reconnect_delay * 10 &&
+	     os_atomic_load_bool(&ctx->thread_active);
 	     i++) {
 		av_usleep(100000);
 	}
-	ctx->reconnecting = false;
-	return ctx->thread_active;
+	os_atomic_store_bool(&ctx->reconnecting, false);
+	return os_atomic_load_bool(&ctx->thread_active);
 }
 
 static void fade_out_buffered_audio(struct irl_source *ctx)
@@ -346,7 +347,7 @@ static void fade_out_buffered_audio(struct irl_source *ctx)
 void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 {
 	char errbuf[AV_ERROR_MAX_STRING_SIZE];
-	ctx->reconnecting = true;
+	os_atomic_store_bool(&ctx->reconnecting, true);
 	av_strerror(read_ret, errbuf, sizeof(errbuf));
 	blog(LOG_WARNING,
 	     "[irl-source] Stream read error: %s (video_frames=%llu, audio_frames=%llu)",
