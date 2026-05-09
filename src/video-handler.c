@@ -238,13 +238,22 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		if (!ctx->sws_ctx)
 			return;
 
-		int y_size = frame->width * frame->height;
-		int uv_size = y_size / 2;
-		uint8_t *nv12_data = malloc(y_size + uv_size);
-		if (!nv12_data)
-			return;
+		size_t y_size = (size_t)frame->width * frame->height;
+		size_t uv_size = y_size / 2;
+		size_t need = y_size + uv_size;
+		if (need > ctx->sws_nv12_buf_capacity) {
+			uint8_t *next = realloc(ctx->sws_nv12_buf, need);
+			if (!next) {
+				if (sw_frame)
+					av_frame_free(&sw_frame);
+				return;
+			}
+			ctx->sws_nv12_buf = next;
+			ctx->sws_nv12_buf_capacity = need;
+		}
 
-		uint8_t *dst_planes[2] = {nv12_data, nv12_data + y_size};
+		uint8_t *dst_planes[2] = {ctx->sws_nv12_buf,
+					  ctx->sws_nv12_buf + y_size};
 		int dst_strides[2] = {frame->width, frame->width};
 
 		sws_scale(ctx->sws_ctx, (const uint8_t *const *)frame->data,
@@ -263,7 +272,6 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		setup_color_params(&obs_frame, frame, VIDEO_FORMAT_NV12);
 
 		obs_source_output_video(ctx->source, &obs_frame);
-		free(nv12_data);
 		if (sw_frame)
 			av_frame_free(&sw_frame);
 		return;

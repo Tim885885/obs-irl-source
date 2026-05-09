@@ -116,6 +116,8 @@ struct irl_source {
 	int sws_src_w;
 	int sws_src_h;
 	enum AVPixelFormat sws_src_fmt;
+	uint8_t *sws_nv12_buf;       /* receiver-thread-owned NV12 scratch */
+	size_t sws_nv12_buf_capacity;
 
 	/* Video timestamp sync (anchors stream PTS to system clock) */
 	bool video_ts_init;

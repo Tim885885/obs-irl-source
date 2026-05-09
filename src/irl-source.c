@@ -256,6 +256,7 @@ void irl_source_destroy(void *data)
 
 	free(ctx->audio_pump_scratch);
 	free(ctx->audio_resample_scratch);
+	free(ctx->sws_nv12_buf);
 
 	if (ctx->swr_ctx)
 		swr_free(&ctx->swr_ctx);
