@@ -168,6 +168,7 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 	ctx->video_stream_idx = -1;
 	ctx->using_hw_decode = false;
 	ctx->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+	ctx->hw_map_ok = -1;
 }
 
 static int interrupt_cb(void *opaque)

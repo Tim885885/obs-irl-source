@@ -104,6 +104,11 @@ struct irl_source {
 	int audio_stream_idx;
 	int video_stream_idx;
 	bool using_hw_decode;
+	/* Tri-state: -1 = not yet attempted, 0 = map fails, falling back
+	 * to transfer_data, 1 = map succeeded at least once. Used to
+	 * skip the doomed map attempt on the second frame onwards once
+	 * we've learned the platform can't map. */
+	int hw_map_ok;
 
 	/* Resampler (planar → interleaved float) */
 	SwrContext *swr_ctx;
