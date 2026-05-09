@@ -323,12 +323,43 @@ size_t audio_buffer_write(struct audio_buffer *buf, const uint8_t *samples,
 		return 0;
 
 	pthread_mutex_lock(&buf->lock);
-	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes, NULL);
+
+	/* Continuation marker: derive the new chunk's PTS from the prior
+	 * chunk's end so reads stay PTS-consistent. Without this, downstream
+	 * read_pts would return 0 for these bytes while pts_consume drained
+	 * unrelated chunk metadata, slowly poisoning the PTS queue. */
+	int64_t pts_ns = 0;
+	if (buf->chunk_count > 0 && buf->sample_rate > 0 &&
+	    buf->frame_size > 0) {
+		int last_idx = (buf->chunk_head - 1 + AUDIO_PTS_MAX_CHUNKS) %
+			       AUDIO_PTS_MAX_CHUNKS;
+		const struct audio_pts_chunk *last = &buf->chunks[last_idx];
+		int64_t samples_in_chunk =
+			(int64_t)last->size / buf->frame_size;
+		pts_ns = last->pts_ns + samples_in_chunk * 1000000000LL /
+						 buf->sample_rate;
+	}
+
+	while (buf->chunk_count >= AUDIO_PTS_MAX_CHUNKS)
+		skip_oldest_chunk_locked(buf);
+
+	bytes = trim_incoming_to_max_fill_locked(buf, &samples, bytes,
+						 &pts_ns);
 	if (bytes == 0) {
 		pthread_mutex_unlock(&buf->lock);
 		return 0;
 	}
+
 	size_t written = ring_write(buf, samples, bytes);
+	if (written > 0) {
+		struct audio_pts_chunk *c = &buf->chunks[buf->chunk_head];
+		c->pts_ns = pts_ns;
+		c->size = written;
+		c->consumed = 0;
+		buf->chunk_head =
+			(buf->chunk_head + 1) % AUDIO_PTS_MAX_CHUNKS;
+		buf->chunk_count++;
+	}
 	pthread_mutex_unlock(&buf->lock);
 	return written;
 }
