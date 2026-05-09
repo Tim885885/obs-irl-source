@@ -104,8 +104,33 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	int gap_ms = ts_to_ms(r, gap >= 0 ? gap : -gap);
 	bool is_backward = gap < 0;
 
-	/* Backward jump or tiny gap — likely reorder, pass through */
-	if (is_backward || gap_ms < 1) {
+	if (is_backward) {
+		/* Small backward jumps look like B-frame reorder or
+		 * decoder ts wobble. Pass through without updating
+		 * last_pts so the baseline keeps tracking the leading
+		 * edge of the stream — otherwise the next forward
+		 * frame would compute a huge "gap" against the older,
+		 * smaller baseline and trigger a needless silence /
+		 * reset. */
+		if (gap_ms < r->small_gap_ms) {
+			*corrected_pts = pts;
+			return PTS_ACTION_PASS;
+		}
+		/* Large backward jump — timeline reset (new segment,
+		 * sender pts wrap, or remap). Treat exactly like a
+		 * large forward gap: reanchor from the new pts. */
+		r->last_pts = pts;
+		r->last_duration =
+			duration > 0 ? duration : r->last_duration;
+		r->last_gap_ms = 0;
+		r->consecutive_small_repairs = 0;
+		r->relocking = false;
+		*corrected_pts = pts;
+		return PTS_ACTION_RESET;
+	}
+
+	/* Tiny forward gap (< 1 ms): essentially-aligned, pass through. */
+	if (gap_ms < 1) {
 		r->last_pts = pts;
 		r->last_duration = duration > 0 ? duration : r->last_duration;
 		r->last_gap_ms = 0;
