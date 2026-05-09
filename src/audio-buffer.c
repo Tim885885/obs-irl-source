@@ -195,13 +195,18 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	buf->min_ms = min_ms;
 	buf->max_ms = max_ms;
 
+	/* Initialise the lock before publishing buf->data: stats readers
+	 * (e.g. proc_handler) gate locking on buf->data != NULL, so the
+	 * mutex must already be live when data becomes visible. */
+	pthread_mutex_init(&buf->lock, NULL);
+
 	/* Allocate for max_ms plus some headroom */
 	buf->capacity = ms_to_bytes(buf, max_ms * 2);
 	if (buf->capacity == 0)
 		buf->capacity = 65536; /* fallback */
 	buf->data = calloc(1, buf->capacity);
-
-	pthread_mutex_init(&buf->lock, NULL);
+	if (!buf->data)
+		buf->capacity = 0;
 }
 
 bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
@@ -249,7 +254,10 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 
 void audio_buffer_free(struct audio_buffer *buf)
 {
-	if (!buf->data)
+	/* sample_rate is the canonical "init was called" marker. capacity
+	 * may legitimately be 0 if calloc failed, but the mutex is still
+	 * live and must be destroyed. */
+	if (buf->sample_rate == 0)
 		return;
 
 	pthread_mutex_destroy(&buf->lock);
