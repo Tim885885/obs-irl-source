@@ -146,36 +146,49 @@ static void stop_receiver(struct irl_source *ctx, bool clear_video)
 static void irl_source_get_stats(void *data, calldata_t *cd)
 {
 	struct irl_source *ctx = data;
-	calldata_set_int(cd, "buffer_fill_ms",
-			 audio_buffer_fill_ms_locked(&ctx->audio_buf));
-	calldata_set_float(cd, "current_speed",
-			   (double)ctx->current_speed);
+
+	/* Snapshot all shared mutable state under the lock so the stats
+	 * blob is internally consistent and we don't race the receiver
+	 * thread reconfiguring the audio buffer. */
+	pthread_mutex_lock(&ctx->audio_state_lock);
+	int buffer_fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
+	float current_speed = ctx->current_speed;
+	uint64_t total_audio_frames = ctx->total_audio_frames;
+	uint64_t total_video_frames = ctx->total_video_frames;
+	uint64_t pts_repairs = ctx->pts_repairs;
+	uint64_t silence_insertions = ctx->silence_insertions;
+	uint64_t reconnect_count = ctx->reconnect_count;
+	bool video_ts_init = ctx->video_ts_init;
+	uint64_t video_sys_base = ctx->video_sys_base;
+	int64_t video_pts_base = ctx->video_pts_base;
+	int64_t latest_video_stream_pts_ns = ctx->latest_video_stream_pts_ns;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
+
+	calldata_set_int(cd, "buffer_fill_ms", buffer_fill_ms);
+	calldata_set_float(cd, "current_speed", (double)current_speed);
 	calldata_set_bool(cd, "adaptive_latency_control",
 			  ctx->config.adaptive_speed);
 	calldata_set_bool(cd, "reconnecting",
 			  os_atomic_load_bool(&ctx->reconnecting));
 	calldata_set_int(cd, "total_audio_frames",
-			 (long long)ctx->total_audio_frames);
+			 (long long)total_audio_frames);
 	calldata_set_int(cd, "total_video_frames",
-			 (long long)ctx->total_video_frames);
-	calldata_set_int(cd, "pts_repairs",
-			 (long long)ctx->pts_repairs);
+			 (long long)total_video_frames);
+	calldata_set_int(cd, "pts_repairs", (long long)pts_repairs);
 	calldata_set_int(cd, "silence_insertions",
-			 (long long)ctx->silence_insertions);
+			 (long long)silence_insertions);
 
 	/* Stream delay: how far behind real-time the video output is.
 	 * Computed as wall_clock - anchored_video_PTS.  Includes SRT
 	 * latency, decode time, and any buffering.  Useful for
 	 * monitoring end-to-end latency in stats overlays. */
 	int64_t stream_delay_ms = 0;
-	if (ctx->video_ts_init && ctx->latest_video_stream_pts_ns != 0) {
-		int64_t video_wall_ns =
-			(int64_t)ctx->video_sys_base +
-			(ctx->latest_video_stream_pts_ns -
-			 ctx->video_pts_base);
+	if (video_ts_init && latest_video_stream_pts_ns != 0) {
+		int64_t video_wall_ns = (int64_t)video_sys_base +
+					(latest_video_stream_pts_ns -
+					 video_pts_base);
 		stream_delay_ms =
-			((int64_t)os_gettime_ns() - video_wall_ns) /
-			1000000;
+			((int64_t)os_gettime_ns() - video_wall_ns) / 1000000;
 		if (stream_delay_ms < 0)
 			stream_delay_ms = 0;
 	}
@@ -185,8 +198,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			  ctx->config.low_latency_audio);
 	calldata_set_bool(cd, "decoupled_audio",
 			  ctx->config.decoupled_audio);
-	calldata_set_int(cd, "reconnect_count",
-			 (long long)ctx->reconnect_count);
+	calldata_set_int(cd, "reconnect_count", (long long)reconnect_count);
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */
