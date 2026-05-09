@@ -77,9 +77,9 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 	if (ctx->fmt_ctx && ctx->video_stream_idx >= 0) {
 		AVStream *vs =
 			ctx->fmt_ctx->streams[ctx->video_stream_idx];
-		ctx->latest_video_stream_pts_ns =
-			frame->pts * 1000000000LL * vs->time_base.num /
-			vs->time_base.den;
+		ctx->latest_video_stream_pts_ns = av_rescale_q(
+			frame->pts, vs->time_base,
+			(AVRational){1, 1000000000});
 	}
 
 	irl_video_output_frame(ctx, frame);

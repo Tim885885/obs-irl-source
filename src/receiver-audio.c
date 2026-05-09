@@ -622,9 +622,10 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		uint8_t *silence = calloc(1, silence_bytes);
 		if (silence) {
 			int64_t silence_pts_ns =
-				(corrected_pts * 1000000000LL *
-				 ctx->pts_state.tb_num /
-				 ctx->pts_state.tb_den) -
+				av_rescale_q(corrected_pts,
+					     (AVRational){ctx->pts_state.tb_num,
+							  ctx->pts_state.tb_den},
+					     (AVRational){1, 1000000000}) -
 				(int64_t)silence_ms * 1000000LL;
 			if (silence_pts_ns < 0)
 				silence_pts_ns = 0;
@@ -712,9 +713,10 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		return;
 	}
 
-	int64_t frame_pts_ns = corrected_pts * 1000000000LL *
-			       ctx->pts_state.tb_num /
-			       ctx->pts_state.tb_den;
+	int64_t frame_pts_ns = av_rescale_q(
+		corrected_pts,
+		(AVRational){ctx->pts_state.tb_num, ctx->pts_state.tb_den},
+		(AVRational){1, 1000000000});
 	audio_buffer_write_pts(&ctx->audio_buf, interleaved, data_bytes,
 			       frame_pts_ns);
 	if (interleaved != frame->data[0])
