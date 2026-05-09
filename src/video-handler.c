@@ -214,6 +214,21 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	enum video_format obs_fmt = avpixfmt_to_obs(frame->format);
 
+	/* Negative linesize means the frame is laid out bottom-up. OBS's
+	 * async path expects positive strides, so taking abs() would
+	 * silently flip the image vertically. Route through swscale
+	 * instead. Real-world FFmpeg decoders almost never produce this,
+	 * but cheap to be defensive. */
+	bool negative_stride = false;
+	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
+		if (frame->data[i] && frame->linesize[i] < 0) {
+			negative_stride = true;
+			break;
+		}
+	}
+	if (negative_stride)
+		obs_fmt = VIDEO_FORMAT_NONE;
+
 	/* If format not directly supported, convert to NV12 via swscale */
 	if (obs_fmt == VIDEO_FORMAT_NONE) {
 		if (!ctx->sws_ctx || ctx->sws_src_w != frame->width ||
@@ -287,7 +302,10 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
 		obs_frame.data[i] = frame->data[i];
-		obs_frame.linesize[i] = abs(frame->linesize[i]);
+		/* Linesize is non-negative here: negative_stride above
+		 * routes to the swscale path. */
+		obs_frame.linesize[i] =
+			frame->linesize[i] > 0 ? frame->linesize[i] : 0;
 	}
 
 	obs_source_output_video(ctx->source, &obs_frame);
