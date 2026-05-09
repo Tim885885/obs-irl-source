@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <util/bmem.h>
+
 #include "../include/audio-buffer.h"
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -204,7 +206,7 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	buf->capacity = ms_to_bytes(buf, max_ms * 2);
 	if (buf->capacity == 0)
 		buf->capacity = 65536; /* fallback */
-	buf->data = calloc(1, buf->capacity);
+	buf->data = bzalloc(buf->capacity);
 	if (!buf->data)
 		buf->capacity = 0;
 }
@@ -227,12 +229,12 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 	next.capacity = ms_to_bytes(&next, max_ms * 2);
 	if (next.capacity == 0)
 		next.capacity = 65536;
-	next.data = calloc(1, next.capacity);
+	next.data = bzalloc(next.capacity);
 	if (!next.data)
 		return false;
 
 	pthread_mutex_lock(&buf->lock);
-	free(buf->data);
+	bfree(buf->data);
 	buf->data = next.data;
 	buf->capacity = next.capacity;
 	buf->head = 0;
@@ -255,13 +257,13 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 void audio_buffer_free(struct audio_buffer *buf)
 {
 	/* sample_rate is the canonical "init was called" marker. capacity
-	 * may legitimately be 0 if calloc failed, but the mutex is still
+	 * may legitimately be 0 if bzalloc failed, but the mutex is still
 	 * live and must be destroyed. */
 	if (buf->sample_rate == 0)
 		return;
 
 	pthread_mutex_destroy(&buf->lock);
-	free(buf->data);
+	bfree(buf->data);
 	memset(buf, 0, sizeof(*buf));
 }
 
