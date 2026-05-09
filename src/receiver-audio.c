@@ -639,13 +639,17 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		pthread_mutex_lock(&ctx->audio_state_lock);
 		audio_buffer_flush(&ctx->audio_buf);
 		irl_reset_stream_timing_state(ctx);
-		pthread_mutex_unlock(&ctx->audio_state_lock);
 		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+		pthread_mutex_unlock(&ctx->audio_state_lock);
 	}
 
 	if (action != PTS_ACTION_PASS) {
 		ctx->pts_repairs++;
-		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+		if (action != PTS_ACTION_RESET) {
+			pthread_mutex_lock(&ctx->audio_state_lock);
+			irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+			pthread_mutex_unlock(&ctx->audio_state_lock);
+		}
 	}
 
 	uint8_t *interleaved = NULL;
@@ -726,6 +730,8 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (interleaved != frame->data[0])
 		free(interleaved);
 
+	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->latest_audio_stream_pts_ns = frame_pts_ns;
 	ctx->decoded_frame_samples = out_samples;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 }

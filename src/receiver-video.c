@@ -77,9 +77,11 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 	if (ctx->fmt_ctx && ctx->video_stream_idx >= 0) {
 		AVStream *vs =
 			ctx->fmt_ctx->streams[ctx->video_stream_idx];
-		ctx->latest_video_stream_pts_ns = av_rescale_q(
-			frame->pts, vs->time_base,
-			(AVRational){1, 1000000000});
+		int64_t pts_ns = av_rescale_q(frame->pts, vs->time_base,
+					      (AVRational){1, 1000000000});
+		pthread_mutex_lock(&ctx->audio_state_lock);
+		ctx->latest_video_stream_pts_ns = pts_ns;
+		pthread_mutex_unlock(&ctx->audio_state_lock);
 	}
 
 	irl_video_output_frame(ctx, frame);

@@ -133,12 +133,21 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 				      (AVRational){1, 1000000000});
 	uint64_t now = os_gettime_ns();
 
-	if (ctx->audio_stream_idx >= 0 && ctx->latest_audio_obs_end_ts_ns != 0 &&
-	    ctx->latest_audio_buffered_end_pts_ns > 0) {
-		int64_t mapped =
-			(int64_t)pts_ns +
-			((int64_t)ctx->latest_audio_obs_end_ts_ns -
-			 ctx->latest_audio_buffered_end_pts_ns);
+	/* Snapshot audio-thread-owned fields under the lock. */
+	uint64_t audio_obs_end_ts_ns;
+	int64_t audio_buffered_end_pts_ns;
+	int startup_warmup_ms;
+	pthread_mutex_lock(&ctx->audio_state_lock);
+	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
+	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
+	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
+
+	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
+	    audio_buffered_end_pts_ns > 0) {
+		int64_t mapped = (int64_t)pts_ns +
+				 ((int64_t)audio_obs_end_ts_ns -
+				  audio_buffered_end_pts_ns);
 		if (mapped < 0)
 			mapped = 0;
 		return (uint64_t)mapped;
@@ -165,10 +174,8 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	/* Startup fallback before the audio playout mapping exists. */
 	if (ctx->audio_stream_idx >= 0) {
 		int64_t audio_lead_ns = 0;
-		if (ctx->latest_audio_obs_end_ts_ns == 0) {
-			audio_lead_ns =
-				(int64_t)ctx->startup_audio_warmup_remaining_ms *
-				1000000LL;
+		if (audio_obs_end_ts_ns == 0) {
+			audio_lead_ns = (int64_t)startup_warmup_ms * 1000000LL;
 			if (!ctx->config.low_latency_audio) {
 				audio_lead_ns +=
 					(int64_t)ctx->config.buffer_target_ms *

@@ -284,9 +284,11 @@ void irl_prepare_new_connection(struct irl_source *ctx)
 	os_atomic_store_bool(&ctx->reconnecting, false);
 	ctx->first_keyframe_received = false;
 	ctx->video_ts_init = false;
+	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->fade_in_pending = true;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = IRL_STARTUP_AUDIO_WARMUP_MS;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 }
 
 bool irl_wait_for_reconnect(struct irl_source *ctx)
@@ -360,8 +362,9 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	irl_reset_stream_timing_state(ctx);
-	pthread_mutex_unlock(&ctx->audio_state_lock);
 	irl_mark_audio_recovery(ctx, 2500000ULL);
+	ctx->fade_in_pending = true;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->current_speed = 1.0f;
 	ctx->audio_pll_corrections = 0;
@@ -373,7 +376,6 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->last_stats_time = 0;
-	ctx->fade_in_pending = true;
 }
 
 void irl_log_receiver_stats(struct irl_source *ctx)
