@@ -13,6 +13,11 @@
  *   large  (>= large_gap_ms): full timestamp reset
  */
 
+#include <limits.h>
+
+#include <libavutil/mathematics.h>
+#include <libavutil/rational.h>
+
 #include "../include/pts-repair.h"
 
 #define PTS_SMALL_GAP_RELOCK_COUNT 8
@@ -23,9 +28,15 @@
 
 static int ts_to_ms(const struct pts_repair *r, int64_t ts)
 {
-	if (r->tb_den == 0)
+	if (r->tb_den <= 0 || r->tb_num <= 0)
 		return 0;
-	return (int)(ts * 1000 * r->tb_num / r->tb_den);
+	int64_t ms = av_rescale_q(ts, (AVRational){r->tb_num, r->tb_den},
+				  (AVRational){1, 1000});
+	if (ms > INT_MAX)
+		return INT_MAX;
+	if (ms < INT_MIN)
+		return INT_MIN;
+	return (int)ms;
 }
 
 static int64_t ms_to_ts_ceil(const struct pts_repair *r, int ms)
@@ -33,9 +44,9 @@ static int64_t ms_to_ts_ceil(const struct pts_repair *r, int ms)
 	if (r->tb_num <= 0 || r->tb_den <= 0 || ms <= 0)
 		return 1;
 
-	int64_t num = (int64_t)ms * r->tb_den;
-	int64_t den = 1000LL * r->tb_num;
-	int64_t ts = (num + den - 1) / den;
+	int64_t ts = av_rescale_q_rnd(ms, (AVRational){1, 1000},
+				      (AVRational){r->tb_num, r->tb_den},
+				      AV_ROUND_UP);
 	return ts > 0 ? ts : 1;
 }
 
