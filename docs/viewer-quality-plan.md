@@ -8,7 +8,7 @@ video output.
 
 - Prefer silence over jittery, glitchy, metallic, or artifacty audio.
 - Prefer holding the last good video frame over gray/corrupt frames.
-- Prefer bounded latency movement over aggressive audio stretching, while
+- Prefer bounded latency movement over continuous audio stretching, while
   preserving the plugin's latency advantage over multi-second Media Source
   buffering.
 - Keep recovery behavior visible in logs and stats before tuning thresholds.
@@ -18,15 +18,16 @@ video output.
 - Split aggregate PTS repair telemetry into normalization, interpolation,
   silence, reset, last gap, and max gap counters.
 - Keep the old `pts_repairs` counter for script compatibility.
-- Log buffer fill, speed correction, underruns, trims, OBS lead, timestamp drift,
+- Log buffer fill, underruns, trims, OBS lead, timestamp drift,
   and the split PTS repair counters together.
 
 ## Phase 2: Tune audio for viewer quality
 
 - Treat small timestamp jitter as timestamp repair, not inserted silence.
 - Treat real medium gaps as silence, not time compression.
-- Use mild rate correction only while it remains inaudible.
-- If rate correction becomes audible, reduce or remove it and let latency move.
+- Keep buffered audio at native rate by default.
+- If latency needs recovery, prefer hidden-backlog trimming or silence over
+  continuous rate correction.
 - Insert silence on underrun so OBS timestamps remain monotonic.
 
 ## Phase 3: Tune video for viewer quality
@@ -47,7 +48,8 @@ Use live lossy SRT logs to check:
 - `pts_interpolations` should be watched together with gap size and audio
   quality.
 - `pts_resets` stays rare.
-- `speed` moves slightly only when buffer fill is clearly away from target.
+- `speed` stays at 1.000 in buffered mode unless a future explicitly tested
+  correction path proves inaudible.
 - `resync_skips` happens only during hidden/recovery backlog cleanup.
 - Video corruption logs do not imply audio corruption unless audio decoder or PTS
   diagnostics also show damage.

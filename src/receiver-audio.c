@@ -7,7 +7,6 @@
  */
 
 #include <limits.h>
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -201,31 +200,13 @@ static int audio_soft_compensation_samples(const struct irl_source *ctx,
 
 static float compute_buffered_output_speed(struct irl_source *ctx, int fill_ms)
 {
-	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio) {
-		ctx->current_speed = 1.0f;
-		return ctx->current_speed;
-	}
+	UNUSED_PARAMETER(fill_ms);
 
-	int error_ms = fill_ms - ctx->config.buffer_target_ms;
-	int deadband_ms = 24;
-	float desired = 1.0f;
-
-	if (error_ms > deadband_ms || error_ms < -deadband_ms) {
-		/* Buffered steady-state correction should stay subtle enough
-		 * to be inaudible on healthy links. A few tenths of a percent
-		 * is enough to cancel normal sender/receiver clock skew
-		 * without the obvious artifacts caused by large rate swings. */
-		desired += (float)error_ms * 0.00005f;
-	}
-
-	if (desired < 0.995f)
-		desired = 0.995f;
-	if (desired > 1.005f)
-		desired = 1.005f;
-
-	ctx->current_speed += (desired - ctx->current_speed) * 0.10f;
-	if (desired == 1.0f && fabsf(ctx->current_speed - 1.0f) < 0.0002f)
-		ctx->current_speed = 1.0f;
+	/* Viewer-quality rule: do not continuously retune OBS's audio
+	 * sample rate. Even very small correction can sound phasey or
+	 * unstable on voice. Latency recovery is handled by buffering,
+	 * silence, and rare hidden-backlog trims instead. */
+	ctx->current_speed = 1.0f;
 	return ctx->current_speed;
 }
 
@@ -507,10 +488,8 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
 	uint32_t frames_out = 0;
-	float speed = compute_buffered_output_speed(ctx, fill_ms);
-	uint32_t obs_rate = (uint32_t)llround((double)out_rate * speed);
-	if (obs_rate == 0)
-		obs_rate = (uint32_t)out_rate;
+	compute_buffered_output_speed(ctx, fill_ms);
+	uint32_t obs_rate = (uint32_t)out_rate;
 
 	int chunk_samples = base_samples;
 	size_t frame_bytes =
