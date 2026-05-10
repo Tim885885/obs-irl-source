@@ -162,6 +162,54 @@ static int audio_frame_duration_ms(int samples, int sample_rate)
 	return (int)ms;
 }
 
+static int audio_pts_gap_ms(const struct irl_source *ctx, int64_t pts,
+			    int64_t duration)
+{
+	if (!ctx->pts_state.initialised || ctx->pts_state.tb_den <= 0 ||
+	    ctx->pts_state.tb_num <= 0)
+		return 0;
+
+	int64_t expected = ctx->pts_state.last_pts +
+			   (ctx->pts_state.last_duration > 0 ?
+				    ctx->pts_state.last_duration :
+				    duration);
+	int64_t gap = pts - expected;
+	if (gap <= 0)
+		return 0;
+
+	int64_t ms = av_rescale_q(gap,
+				  (AVRational){ctx->pts_state.tb_num,
+					       ctx->pts_state.tb_den},
+				  (AVRational){1, 1000});
+	if (ms <= 0)
+		return 0;
+	if (ms > INT_MAX)
+		return INT_MAX;
+	return (int)ms;
+}
+
+static bool audio_gap_likely_missing_frame(int gap_ms, int frame_ms)
+{
+	if (gap_ms <= 0)
+		return false;
+
+	int threshold_ms = frame_ms > 0 ? frame_ms / 2 : 10;
+	if (threshold_ms < 8)
+		threshold_ms = 8;
+	return gap_ms >= threshold_ms;
+}
+
+static void reanchor_audio_pts_repair(struct irl_source *ctx, int64_t pts,
+				      int64_t duration)
+{
+	ctx->pts_state.last_pts = pts;
+	ctx->pts_state.last_duration =
+		duration > 0 ? duration : ctx->pts_state.last_duration;
+	ctx->pts_state.last_gap_ms = 0;
+	ctx->pts_state.consecutive_small_repairs = 0;
+	ctx->pts_state.relocking = false;
+}
+
 static int audio_expected_samples(const struct irl_source *ctx,
 				  int64_t duration, int out_rate,
 				  int fallback_samples)
@@ -626,13 +674,23 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (duration <= 0)
 		duration = 1;
 
+	int frame_ms = audio_frame_duration_ms(frame->nb_samples, out_rate);
+	int forward_gap_ms = audio_pts_gap_ms(ctx, input_pts, duration);
 	int64_t corrected_pts;
 	int silence_ms = 0;
 	enum pts_action action = pts_repair_evaluate(
 		&ctx->pts_state, input_pts, duration, &corrected_pts,
 		&silence_ms);
 
-	int frame_ms = audio_frame_duration_ms(frame->nb_samples, out_rate);
+	if (action == PTS_ACTION_INTERPOLATE &&
+	    audio_gap_likely_missing_frame(forward_gap_ms, frame_ms) &&
+	    forward_gap_ms < ctx->config.large_gap_ms) {
+		action = PTS_ACTION_SILENCE;
+		corrected_pts = input_pts;
+		silence_ms = forward_gap_ms;
+		reanchor_audio_pts_repair(ctx, input_pts, duration);
+	}
+
 	if (ctx->startup_audio_warmup_remaining_ms > 0) {
 		ctx->startup_audio_warmup_remaining_ms -= frame_ms;
 		if (ctx->startup_audio_warmup_remaining_ms < 0)
@@ -670,11 +728,6 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 	if (action != PTS_ACTION_PASS) {
 		ctx->pts_repairs++;
-		if (action != PTS_ACTION_RESET) {
-			pthread_mutex_lock(&ctx->audio_state_lock);
-			irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
-			pthread_mutex_unlock(&ctx->audio_state_lock);
-		}
 	}
 
 	uint8_t *interleaved = NULL;
