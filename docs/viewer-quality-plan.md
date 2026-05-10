@@ -26,8 +26,8 @@ video output.
 - Treat small timestamp jitter as timestamp repair, not inserted silence.
 - Treat real medium gaps as silence, not time compression.
 - Keep buffered audio at native rate by default.
-- If latency needs recovery, prefer hidden-backlog trimming or silence over
-  continuous rate correction.
+- If latency needs recovery, prefer hidden-backlog trimming, sustained-high-fill
+  single-chunk trims, or silence over continuous rate correction.
 - Insert silence on underrun so OBS timestamps remain monotonic.
 
 ## Phase 3: Tune video for viewer quality
@@ -51,5 +51,7 @@ Use live lossy SRT logs to check:
 - `speed` stays at 1.000 in buffered mode unless a future explicitly tested
   correction path proves inaudible.
 - `resync_skips` happens only during hidden/recovery backlog cleanup.
+- `Audio latency trim` logs appear only after sustained high fill and should be
+  spaced by the cooldown.
 - Video corruption logs do not imply audio corruption unless audio decoder or PTS
   diagnostics also show damage.

@@ -97,7 +97,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Target Buffer | 120ms | Audio jitter buffer target fill level |
 | Min Buffer | 60ms | Minimum buffer before playback starts |
 | Max Buffer | 300ms | Maximum buffer size (excess is trimmed) |
-| Adaptive Latency Control | On | Keeps audio at native rate, with old-buffer trimming reserved for recovery/hidden backlog cases |
+| Adaptive Latency Control | On | Keeps audio at native rate, with old-buffer trimming reserved for recovery/hidden backlog or sustained high-latency cases |
 | Small Gap | 70ms | PTS gaps below this are interpolated silently |
 | Large Gap | 2000ms | PTS gaps above this trigger a full reset |
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
@@ -110,7 +110,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at native 1.0x, inserts silence on underruns or real medium PTS gaps, and can trim old buffered audio only when recovery would otherwise leave hidden backlog.
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at native 1.0x, inserts silence on underruns or real medium PTS gaps, and can trim old buffered audio only when recovery would otherwise leave hidden backlog or latency stays high for several seconds.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
 - `Decoupled Audio` only applies when low-latency mode is enabled.
 

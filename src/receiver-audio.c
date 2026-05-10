@@ -15,6 +15,9 @@
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
 #define AUDIO_CONCEAL_FADE_MS 8
+#define AUDIO_SUSTAINED_TRIM_EXTRA_MS 100
+#define AUDIO_SUSTAINED_TRIM_HOLD_US 4000000ULL
+#define AUDIO_SUSTAINED_TRIM_COOLDOWN_US 10000000ULL
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -92,6 +95,8 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
+	ctx->audio_high_fill_since_us = 0;
+	ctx->audio_last_sustained_trim_us = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
@@ -123,6 +128,8 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
+	ctx->audio_high_fill_since_us = 0;
+	ctx->audio_last_sustained_trim_us = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
@@ -477,6 +484,48 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	return true;
 }
 
+static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
+					       int fill_ms, int chunk_count)
+{
+	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio)
+		return false;
+	if (should_hide_audio_backlog(ctx))
+		return false;
+	if (chunk_count <= 3)
+		return false;
+
+	int trim_threshold_ms =
+		ctx->config.buffer_target_ms + AUDIO_SUSTAINED_TRIM_EXTRA_MS;
+	uint64_t now_us = (uint64_t)av_gettime();
+	if (fill_ms <= trim_threshold_ms) {
+		ctx->audio_high_fill_since_us = 0;
+		return false;
+	}
+
+	if (ctx->audio_high_fill_since_us == 0) {
+		ctx->audio_high_fill_since_us = now_us;
+		return false;
+	}
+	if (now_us - ctx->audio_high_fill_since_us <
+	    AUDIO_SUSTAINED_TRIM_HOLD_US) {
+		return false;
+	}
+	if (ctx->audio_last_sustained_trim_us != 0 &&
+	    now_us - ctx->audio_last_sustained_trim_us <
+		    AUDIO_SUSTAINED_TRIM_COOLDOWN_US) {
+		return false;
+	}
+
+	audio_buffer_skip_chunk(&ctx->audio_buf);
+	ctx->audio_resync_skipped_chunks++;
+	ctx->audio_last_sustained_trim_us = now_us;
+	ctx->audio_high_fill_since_us = 0;
+	blog(LOG_INFO,
+	     "[irl-source] Audio latency trim: dropped 1 old buffered chunk (fill=%dms target=%dms)",
+	     fill_ms, ctx->config.buffer_target_ms);
+	return true;
+}
+
 bool irl_pump_audio_once(struct irl_source *ctx)
 {
 	bool low_latency = ctx->config.low_latency_audio;
@@ -510,6 +559,10 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 							 &chunk_count);
 	if (has_audio &&
 	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count)) {
+		return true;
+	}
+	if (has_audio &&
+	    maybe_trim_sustained_audio_latency(ctx, fill_ms, chunk_count)) {
 		return true;
 	}
 

@@ -54,6 +54,7 @@ Even with the drain loop, the buffer level drifts over time due to network throu
 Buffered mode uses native-rate playback with explicit recovery:
 
 - If hidden/recovery backlog grows too far, the plugin can trim old buffered chunks before they become audible.
+- If fill stays well above target for several seconds, the plugin can drop one old buffered chunk and then cool down before trimming again.
 - If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
@@ -112,7 +113,7 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 | Stable connection | Works fine, but adds seconds of latency | Buffered mode adds ~120ms, low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode keeps native audio rate and trims hidden/recovery backlog only when needed |
+| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode keeps native audio rate and trims hidden/recovery or sustained high-latency backlog conservatively |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
 | Decoder corruption | Gray/corrupt flicker until manual restart | Last good frame is held, bad frames are skipped, decoder state is flushed on repeated errors |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |
