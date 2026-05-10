@@ -373,6 +373,7 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
 	ctx->pts_repairs = 0;
+	ctx->pts_normalizations = 0;
 	ctx->pts_interpolations = 0;
 	ctx->pts_resets = 0;
 	ctx->pts_last_gap_ms = 0;
@@ -393,7 +394,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
 	     "buf=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
-	     "interp=%llu silence=%llu resets=%llu "
+	     "norm=%llu interp=%llu silence=%llu resets=%llu "
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
 	     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
@@ -404,6 +405,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (double)ctx->current_speed,
 	     ctx->config.adaptive_speed ? "on" : "off",
 	     (unsigned long long)ctx->pts_repairs,
+	     (unsigned long long)ctx->pts_normalizations,
 	     (unsigned long long)ctx->pts_interpolations,
 	     (unsigned long long)ctx->silence_insertions,
 	     (unsigned long long)ctx->pts_resets,

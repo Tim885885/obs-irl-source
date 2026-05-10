@@ -58,7 +58,7 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	     "[irl-source] Audio timing diag: obs_lead=%lldms ts_drift=%lldms "
 	     "fill=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
 	     "obs_chunk=%llums underruns=%llu resync_skips=%llu "
-	     "pll=%llu hard_resets=%llu repairs=%llu interp=%llu "
+	     "pll=%llu hard_resets=%llu repairs=%llu norm=%llu interp=%llu "
 	     "silence=%llu resets=%llu last_gap=%dms max_gap=%dms",
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
 	     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL), fill_ms,
@@ -73,6 +73,7 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_pll_corrections,
 	     (unsigned long long)ctx->audio_pll_hard_resets,
 	     (unsigned long long)ctx->pts_repairs,
+	     (unsigned long long)ctx->pts_normalizations,
 	     (unsigned long long)ctx->pts_interpolations,
 	     (unsigned long long)ctx->silence_insertions,
 	     (unsigned long long)ctx->pts_resets, ctx->pts_last_gap_ms,
@@ -673,13 +674,21 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 
 	if (action != PTS_ACTION_PASS) {
-		ctx->pts_repairs++;
 		ctx->pts_last_gap_ms = ctx->pts_state.last_action_gap_ms;
 		if (ctx->pts_last_gap_ms > ctx->pts_max_gap_ms)
 			ctx->pts_max_gap_ms = ctx->pts_last_gap_ms;
-		if (action == PTS_ACTION_INTERPOLATE)
-			ctx->pts_interpolations++;
-		else if (action == PTS_ACTION_RESET)
+
+		bool frame_sized_normalization =
+			action == PTS_ACTION_INTERPOLATE && frame_ms > 0 &&
+			ctx->pts_last_gap_ms <= frame_ms + 2;
+		if (frame_sized_normalization) {
+			ctx->pts_normalizations++;
+		} else {
+			ctx->pts_repairs++;
+			if (action == PTS_ACTION_INTERPOLATE)
+				ctx->pts_interpolations++;
+		}
+		if (action == PTS_ACTION_RESET)
 			ctx->pts_resets++;
 	}
 

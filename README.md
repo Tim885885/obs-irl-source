@@ -10,7 +10,7 @@ The plugin optimizes for the stream viewers hear and see, not for preserving eve
 
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
 - Video should stay temporally smooth. During decoder damage, holding the last good frame is preferred over outputting gray or corrupt frames.
-- Latency is allowed to move within reason if that protects viewer quality. Buffered mode should use mild correction and explicit recovery instead of aggressive time stretching.
+- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2-3 second live delay often seen with OBS Media Source. Buffered mode should use mild correction and explicit recovery instead of aggressive time stretching.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and speed correction are tracked separately.
 
 ## Why open source?
@@ -155,8 +155,9 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `reconnecting` | bool | Whether the source is currently reconnecting |
 | `total_audio_frames` | int | Total audio frames decoded since connection |
 | `total_video_frames` | int | Total video frames decoded since connection |
-| `pts_repairs` | int | Number of PTS discontinuities repaired |
-| `pts_interpolations` | int | Number of small PTS gaps smoothed by timestamp interpolation |
+| `pts_repairs` | int | Number of non-normal PTS discontinuities repaired |
+| `pts_normalizations` | int | Number of frame-sized PTS cadence offsets normalized without treating them as damage |
+| `pts_interpolations` | int | Number of non-frame-sized small PTS gaps smoothed by timestamp interpolation |
 | `pts_resets` | int | Number of large PTS gaps that triggered a timing reset |
 | `pts_last_gap_ms` | int | Most recent repaired PTS gap size |
 | `pts_max_gap_ms` | int | Largest repaired PTS gap size since the current connection/reset |
@@ -222,7 +223,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
 ```
 
 ## Hardware decoding

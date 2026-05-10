@@ -93,6 +93,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->pts_repairs = 0;
+	ctx->pts_normalizations = 0;
 	ctx->pts_interpolations = 0;
 	ctx->pts_resets = 0;
 	ctx->pts_last_gap_ms = 0;
@@ -160,6 +161,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	uint64_t total_audio_frames = ctx->total_audio_frames;
 	uint64_t total_video_frames = ctx->total_video_frames;
 	uint64_t pts_repairs = ctx->pts_repairs;
+	uint64_t pts_normalizations = ctx->pts_normalizations;
 	uint64_t pts_interpolations = ctx->pts_interpolations;
 	uint64_t pts_resets = ctx->pts_resets;
 	int pts_last_gap_ms = ctx->pts_last_gap_ms;
@@ -183,6 +185,8 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	calldata_set_int(cd, "total_video_frames",
 			 (long long)total_video_frames);
 	calldata_set_int(cd, "pts_repairs", (long long)pts_repairs);
+	calldata_set_int(cd, "pts_normalizations",
+			 (long long)pts_normalizations);
 	calldata_set_int(cd, "pts_interpolations",
 			 (long long)pts_interpolations);
 	calldata_set_int(cd, "pts_resets", (long long)pts_resets);
@@ -240,9 +244,10 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out float current_speed, out bool adaptive_latency_control, "
 		"out bool reconnecting, "
 		"out int total_audio_frames, out int total_video_frames, "
-		"out int pts_repairs, out int pts_interpolations, "
-		"out int pts_resets, out int pts_last_gap_ms, "
-		"out int pts_max_gap_ms, out int silence_insertions, "
+		"out int pts_repairs, out int pts_normalizations, "
+		"out int pts_interpolations, out int pts_resets, "
+		"out int pts_last_gap_ms, out int pts_max_gap_ms, "
+		"out int silence_insertions, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
 		"out bool decoupled_audio, out int reconnect_count)",
 		irl_source_get_stats, ctx);

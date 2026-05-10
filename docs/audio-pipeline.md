@@ -13,7 +13,7 @@ The output policy is viewer-first:
 
 ## The problem with big buffers
 
-Media Source handles network jitter the simple way: buffer a lot of data, play it back with a delay. If the network hiccups, the buffer absorbs it. This works, but every millisecond of buffer is a millisecond of extra latency. For IRL streaming — where you're reading chat and reacting live — a 2-second buffer means a 2-second delay on top of everything else.
+Media Source handles network jitter the simple way: buffer a lot of data, play it back with a delay. If the network hiccups, the buffer absorbs it. This works, but every millisecond of buffer is a millisecond of extra latency. For IRL streaming — where you're reading chat and reacting live — a 2-3 second buffer means a 2-3 second delay on top of everything else.
 
 The plugin takes the opposite approach: keep the buffer as small as possible and actively compensate for the problems that a small buffer exposes.
 
@@ -74,7 +74,7 @@ The PTS repair system classifies gaps into three tiers:
 
 Thresholds are configurable (Small Gap and Large Gap settings in the UI).
 
-`pts_repairs` is an aggregate compatibility counter. For tuning, use the split diagnostics: `pts_interpolations`, `silence_insertions`, `pts_resets`, `pts_last_gap_ms`, and `pts_max_gap_ms`. A high repair count with low silence usually means timestamp smoothing, not silence concealment.
+`pts_repairs` tracks non-normal PTS discontinuities. For tuning, use the split diagnostics: `pts_normalizations`, `pts_interpolations`, `silence_insertions`, `pts_resets`, `pts_last_gap_ms`, and `pts_max_gap_ms`. A high normalization count with low silence usually means frame-sized timestamp cadence smoothing, not packet-loss concealment.
 
 ### 4. Fade in/out (eliminates clicks on disconnect)
 

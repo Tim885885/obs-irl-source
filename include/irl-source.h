@@ -219,6 +219,7 @@ struct irl_source {
 	uint64_t total_audio_frames;
 	uint64_t total_video_frames;
 	uint64_t pts_repairs;
+	uint64_t pts_normalizations;
 	uint64_t pts_interpolations;
 	uint64_t pts_resets;
 	int pts_last_gap_ms;
