@@ -59,14 +59,14 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	ctx->last_audio_diag_time = now;
 	blog(LOG_WARNING,
 	     "[irl-source] Audio timing diag: obs_lead=%lldms ts_drift=%lldms "
-	     "fill=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
+	     "fill=%dms target=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
 	     "obs_chunk=%llums underruns=%llu resync_skips=%llu "
 	     "pll=%llu hard_resets=%llu repairs=%llu norm=%llu interp=%llu "
 	     "silence=%llu resets=%llu last_gap=%dms max_gap=%dms",
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
 	     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL), fill_ms,
-	     (double)ctx->current_speed, ctx->audio_last_frames_out,
-	     ctx->audio_last_samples_per_sec,
+	     ctx->config.buffer_target_ms, (double)ctx->current_speed,
+	     ctx->audio_last_frames_out, ctx->audio_last_samples_per_sec,
 	     (unsigned long long)(ctx->audio_last_chunk_stream_duration_ns /
 				  1000000ULL),
 	     (unsigned long long)(ctx->audio_last_chunk_obs_duration_ns /
@@ -547,11 +547,22 @@ static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
 
 	int trim_threshold_ms =
 		ctx->config.buffer_target_ms + AUDIO_SUSTAINED_TRIM_EXTRA_MS;
+	int chunk_ms = 0;
+	if (ctx->audio_buf.sample_rate > 0 && ctx->decoded_frame_samples > 0) {
+		chunk_ms = (int)((int64_t)ctx->decoded_frame_samples * 1000LL /
+				 ctx->audio_buf.sample_rate);
+	}
+	if (chunk_ms <= 0)
+		chunk_ms = 21;
+	int clear_threshold_ms = ctx->config.buffer_target_ms + chunk_ms;
+
 	uint64_t now_us = (uint64_t)av_gettime();
-	if (fill_ms <= trim_threshold_ms) {
+	if (fill_ms <= clear_threshold_ms) {
 		ctx->audio_high_fill_since_us = 0;
 		return false;
 	}
+	if (fill_ms <= trim_threshold_ms)
+		return false;
 
 	if (ctx->audio_high_fill_since_us == 0) {
 		ctx->audio_high_fill_since_us = now_us;

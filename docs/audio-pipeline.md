@@ -54,7 +54,7 @@ Even with the drain loop, the buffer level drifts over time due to network throu
 Buffered mode uses native-rate playback with explicit recovery:
 
 - If hidden/recovery backlog grows too far, the plugin can trim old buffered chunks before they become audible.
-- If fill stays well above target for several seconds, the plugin can drop one old buffered chunk, crossfade the next audible boundary, and then cool down before trimming again.
+- If fill stays well above target for several seconds, the plugin can drop one old buffered chunk, crossfade the next audible boundary, and then cool down before trimming again. Brief chunk-level fill dips do not cancel the high-fill timer unless the buffer returns near target.
 - If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 

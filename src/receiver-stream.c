@@ -393,7 +393,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	ctx->last_stats_time = now;
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
-	     "buf=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
+	     "buf=%dms target=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
 	     "norm=%llu interp=%llu silence=%llu resets=%llu "
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
 	     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
@@ -402,6 +402,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
+	     ctx->config.buffer_target_ms,
 	     (double)ctx->current_speed,
 	     ctx->config.adaptive_speed ? "on" : "off",
 	     (unsigned long long)ctx->pts_repairs,

@@ -223,7 +223,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms target=120ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
 ```
 
 ## Hardware decoding
