@@ -106,6 +106,9 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_last_sample_channels = 0;
 	ctx->audio_last_sample_valid = false;
+	ctx->audio_last_output_sample_channels = 0;
+	ctx->audio_last_output_sample_valid = false;
+	ctx->audio_trim_crossfade_pending = false;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
@@ -137,6 +140,9 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_last_sample_channels = 0;
 	ctx->audio_last_sample_valid = false;
+	ctx->audio_last_output_sample_channels = 0;
+	ctx->audio_last_output_sample_valid = false;
+	ctx->audio_trim_crossfade_pending = false;
 	ctx->audio_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
 	ctx->audio_last_decoder_warning_time_us = 0;
@@ -221,6 +227,51 @@ static void audio_apply_fade_in(uint8_t *samples, int frames, int channels,
 		float gain = (float)(f + 1) / (float)fade_frames;
 		for (int ch = 0; ch < channels; ch++)
 			pcm[(size_t)f * channels + ch] *= gain;
+	}
+}
+
+static void audio_remember_last_output_sample(struct irl_source *ctx,
+					      const uint8_t *samples,
+					      int frames, int channels)
+{
+	if (!samples || frames <= 0 || channels <= 0 ||
+	    channels > (int)(sizeof(ctx->audio_last_output_sample) /
+			     sizeof(ctx->audio_last_output_sample[0]))) {
+		ctx->audio_last_output_sample_valid = false;
+		ctx->audio_last_output_sample_channels = 0;
+		return;
+	}
+
+	const float *pcm = (const float *)samples;
+	const float *last = pcm + (size_t)(frames - 1) * channels;
+	for (int ch = 0; ch < channels; ch++)
+		ctx->audio_last_output_sample[ch] = last[ch];
+	ctx->audio_last_output_sample_channels = channels;
+	ctx->audio_last_output_sample_valid = true;
+}
+
+static void audio_apply_trim_crossfade(struct irl_source *ctx, uint8_t *samples,
+				       int frames, int channels,
+				       int sample_rate)
+{
+	int fade_frames = audio_conceal_fade_frames(sample_rate, frames);
+	if (!samples || fade_frames <= 0 || channels <= 0)
+		return;
+
+	float *pcm = (float *)samples;
+	bool have_anchor = ctx->audio_last_output_sample_valid &&
+			   ctx->audio_last_output_sample_channels == channels;
+
+	for (int f = 0; f < fade_frames; f++) {
+		float wet = (float)(f + 1) / (float)fade_frames;
+		float dry = 1.0f - wet;
+		for (int ch = 0; ch < channels; ch++) {
+			float anchor = have_anchor ?
+					       ctx->audio_last_output_sample[ch] :
+					       0.0f;
+			size_t idx = (size_t)f * channels + ch;
+			pcm[idx] = anchor * dry + pcm[idx] * wet;
+		}
 	}
 }
 
@@ -517,6 +568,7 @@ static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
 	}
 
 	audio_buffer_skip_chunk(&ctx->audio_buf);
+	ctx->audio_trim_crossfade_pending = true;
 	ctx->audio_resync_skipped_chunks++;
 	ctx->audio_last_sustained_trim_us = now_us;
 	ctx->audio_high_fill_since_us = 0;
@@ -660,6 +712,11 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 			ctx->fade_in_frames_remaining--;
 		}
 	}
+	if (ctx->audio_trim_crossfade_pending) {
+		audio_apply_trim_crossfade(ctx, out_buf, (int)frames_out,
+					   out_channels, out_rate);
+		ctx->audio_trim_crossfade_pending = false;
+	}
 
 	int ts_samples = low_latency ? (int)frames_out : base_samples;
 	if (ts_samples <= 0)
@@ -675,6 +732,8 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	obs_audio.samples_per_sec = obs_rate;
 
 	obs_source_output_audio(ctx->source, &obs_audio);
+	audio_remember_last_output_sample(ctx, out_buf, (int)frames_out,
+					  out_channels);
 	finalize_audio_output(ctx, &obs_audio, chunk_pts_ns, stream_duration_ns);
 	return true;
 }

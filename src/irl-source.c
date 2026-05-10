@@ -89,6 +89,9 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+	ctx->audio_last_output_sample_channels = 0;
+	ctx->audio_last_output_sample_valid = false;
+	ctx->audio_trim_crossfade_pending = false;
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;

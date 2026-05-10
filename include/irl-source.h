@@ -215,6 +215,10 @@ struct irl_source {
 	float audio_last_sample[8];
 	int audio_last_sample_channels;
 	bool audio_last_sample_valid;
+	float audio_last_output_sample[8];
+	int audio_last_output_sample_channels;
+	bool audio_last_output_sample_valid;
+	bool audio_trim_crossfade_pending;
 
 	/* Resolution tracking (for mid-stream changes) */
 	int last_video_width;
