@@ -218,8 +218,8 @@ static float compute_buffered_output_speed(struct irl_source *ctx, int fill_ms)
 	if (desired > 1.005f)
 		desired = 1.005f;
 
-	ctx->current_speed += (desired - ctx->current_speed) * 0.02f;
-	if (fabsf(ctx->current_speed - 1.0f) < 0.0002f)
+	ctx->current_speed += (desired - ctx->current_speed) * 0.10f;
+	if (desired == 1.0f && fabsf(ctx->current_speed - 1.0f) < 0.0002f)
 		ctx->current_speed = 1.0f;
 	return ctx->current_speed;
 }
