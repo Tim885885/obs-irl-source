@@ -4,6 +4,15 @@ Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live 
 
 > **Note:** This is an independent project by [irlserver.com](https://irlserver.com). It is not developed by, affiliated with, or endorsed by the OBS Project.
 
+## Viewer-quality policy
+
+The plugin optimizes for the stream viewers hear and see, not for preserving every damaged packet.
+
+- Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
+- Video should stay temporally smooth. During decoder damage, holding the last good frame is preferred over outputting gray or corrupt frames.
+- Latency is allowed to move within reason if that protects viewer quality. Buffered mode should use mild correction and explicit recovery instead of aggressive time stretching.
+- Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and speed correction are tracked separately.
+
 ## Why open source?
 
 We run a commercial streaming service (relay infrastructure and more), so yes, we have plenty of closed-source code. But OBS itself is GPL-2.0. It is free software built by its community. Paywalling the thing that keeps your stream from dropping frames, just to upsell a subscription, feels like the wrong move.
@@ -19,7 +28,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | | Media Source | IRL Source |
 |---|---|---|
 | **Audio jitter buffer** | None. Plays audio as fast as it arrives, so unstable connections give you stuttering or speedups | Configurable ring buffer (default 120ms) that absorbs network jitter, or a low-latency mode if you prefer |
-| **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps normal playback at 1x and trims old buffered audio when latency drifts too high |
+| **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps normal playback close to 1x, uses mild rate correction when safe, and trims only when latency recovery is clearly needed |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt cutoff, loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
 | **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Drops pre-keyframe audio so the decoder does not warm up with garbage |
@@ -37,7 +46,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 - Protocol agnostic: SRT, RTMP, RIST, UDP, TCP, HTTP, or anything FFmpeg can open.
 - Codec agnostic: H.264, HEVC (8-bit and 10-bit), AV1, VP9, AAC, Opus, etc.
 - Audio jitter buffer, sized in milliseconds, adapts to any sample rate or channel count.
-- Adaptive latency control that keeps buffered mode near target without continuously warping audio during normal playback.
+- Adaptive latency control that keeps buffered mode near target without introducing audible time-stretch artifacts.
 - Low Latency Audio mode that uses OBS async unbuffered semantics and drains immediately instead of building a 60-120ms startup cushion.
 - PTS discontinuity repair for the timestamp jumps that happen during cell tower handoffs and packet loss.
 - Keyframe gating, so you do not get corrupted frames on stream join or reconnect.
@@ -88,7 +97,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Target Buffer | 120ms | Audio jitter buffer target fill level |
 | Min Buffer | 60ms | Minimum buffer before playback starts |
 | Max Buffer | 300ms | Maximum buffer size (excess is trimmed) |
-| Adaptive Latency Control | On | Keeps the buffer near target by trimming stale buffered audio when latency grows too high |
+| Adaptive Latency Control | On | Keeps the buffer near target using mild inaudible rate correction first, with old-buffer trimming reserved for recovery/hidden backlog cases |
 | Small Gap | 70ms | PTS gaps below this are interpolated silently |
 | Large Gap | 2000ms | PTS gaps above this trigger a full reset |
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
@@ -101,7 +110,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at 1.0x, inserts silence on underruns, and can occasionally trim old buffered audio if latency drifts too high.
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback close to 1.0x, inserts silence on underruns or real medium PTS gaps, and can trim old buffered audio only when recovery would otherwise leave hidden backlog.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
 - `Decoupled Audio` only applies when low-latency mode is enabled.
 
@@ -147,6 +156,10 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `total_audio_frames` | int | Total audio frames decoded since connection |
 | `total_video_frames` | int | Total video frames decoded since connection |
 | `pts_repairs` | int | Number of PTS discontinuities repaired |
+| `pts_interpolations` | int | Number of small PTS gaps smoothed by timestamp interpolation |
+| `pts_resets` | int | Number of large PTS gaps that triggered a timing reset |
+| `pts_last_gap_ms` | int | Most recent repaired PTS gap size |
+| `pts_max_gap_ms` | int | Largest repaired PTS gap size since the current connection/reset |
 | `silence_insertions` | int | Number of silence insertions for gap filling |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |
 | `low_latency_audio` | bool | Whether OBS async unbuffered low-latency mode is enabled |
@@ -209,7 +222,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 silence=0 underruns=0 resync_skips=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms speed=1.000 ctrl=on pts_repairs=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
 ```
 
 ## Hardware decoding

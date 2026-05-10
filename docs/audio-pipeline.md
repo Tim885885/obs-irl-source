@@ -2,6 +2,15 @@
 
 How the plugin keeps audio stable on unreliable mobile connections, and how the buffered and low-latency modes differ.
 
+## Quality policy
+
+The output policy is viewer-first:
+
+- Prefer short silence over jittery, glitchy, metallic, or artifacty audio.
+- Prefer holding the last good video frame over outputting gray/corrupt frames.
+- Prefer bounded latency movement over aggressive time-stretching.
+- Make every recovery mechanism visible in stats so tuning is evidence-driven.
+
 ## The problem with big buffers
 
 Media Source handles network jitter the simple way: buffer a lot of data, play it back with a delay. If the network hiccups, the buffer absorbs it. This works, but every millisecond of buffer is a millisecond of extra latency. For IRL streaming — where you're reading chat and reacting live — a 2-second buffer means a 2-second delay on top of everything else.
@@ -40,15 +49,16 @@ Audio is output in chunks matching the decoded frame size (AAC = 1024 samples, O
 
 ### 2. Adaptive latency control (prevents latency creep)
 
-Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin no longer tries to hide that by continuously warping audio rate during normal playback.
+Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin avoids aggressive time stretching because viewer-visible audio artifacts are worse than a small amount of silence or bounded latency movement.
 
-Instead, buffered mode keeps normal playback at 1.0x and uses discrete correction:
+Buffered mode uses a conservative hybrid controller:
 
-- If buffered latency drifts clearly above target, the plugin can drop one old buffered chunk and fade back in.
+- If buffered latency drifts above target, the plugin first uses very mild rate correction through OBS's audio resampler.
+- If hidden/recovery backlog grows too far, the plugin can trim old buffered chunks before they become audible.
 - If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
-The result is that stable links stay transparent, while unstable links still have bounded latency and explicit recovery tools.
+The result should be transparent on stable links and non-artifacty on unstable links. If the source cannot make damaged audio sound natural, silence is preferred.
 
 ### 3. PTS repair (handles timestamp discontinuities)
 
@@ -63,6 +73,8 @@ The PTS repair system classifies gaps into three tiers:
 | > 2s | **Full reset** — flush the buffer, re-arm the keyframe gate, restart from scratch. The stream has fundamentally changed. | Extended silence, possibly wrong audio |
 
 Thresholds are configurable (Small Gap and Large Gap settings in the UI).
+
+`pts_repairs` is an aggregate compatibility counter. For tuning, use the split diagnostics: `pts_interpolations`, `silence_insertions`, `pts_resets`, `pts_last_gap_ms`, and `pts_max_gap_ms`. A high repair count with low silence usually means timestamp smoothing, not silence concealment.
 
 ### 4. Fade in/out (eliminates clicks on disconnect)
 
@@ -101,7 +113,7 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 | Stable connection | Works fine, but adds seconds of latency | Buffered mode adds ~120ms, low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode stays at 1.0x and occasionally trims stale buffered audio to bring latency back down |
+| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode uses mild correction first and trims hidden/recovery backlog only when needed |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
 | Decoder corruption | Gray/corrupt flicker until manual restart | Last good frame is held, bad frames are skipped, decoder state is flushed on repeated errors |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |

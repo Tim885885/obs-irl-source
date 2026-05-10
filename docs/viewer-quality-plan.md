@@ -1,0 +1,49 @@
+# Viewer-quality plan
+
+The plugin should optimize for what viewers hear and see during bad IRL signal.
+Latency matters, but it is secondary to avoiding audio artifacts and gray/corrupt
+video output.
+
+## Policy
+
+- Prefer silence over jittery, glitchy, metallic, or artifacty audio.
+- Prefer holding the last good video frame over gray/corrupt frames.
+- Prefer bounded latency movement over aggressive audio stretching.
+- Keep recovery behavior visible in logs and stats before tuning thresholds.
+
+## Phase 1: Make recovery observable
+
+- Split aggregate PTS repair telemetry into interpolation, silence, reset, last
+  gap, and max gap counters.
+- Keep the old `pts_repairs` counter for script compatibility.
+- Log buffer fill, speed correction, underruns, trims, OBS lead, timestamp drift,
+  and the split PTS repair counters together.
+
+## Phase 2: Tune audio for viewer quality
+
+- Treat small timestamp jitter as timestamp repair, not inserted silence.
+- Treat real medium gaps as silence, not time compression.
+- Use mild rate correction only while it remains inaudible.
+- If rate correction becomes audible, reduce or remove it and let latency move.
+- Insert silence on underrun so OBS timestamps remain monotonic.
+
+## Phase 3: Tune video for viewer quality
+
+- Keep first-keyframe gating on by default.
+- Hold the last good frame during decoder corruption.
+- Flush damaged decoder state conservatively so one bad packet does not cause a
+  reset storm.
+- Prefer smooth frame cadence and last-good-frame hold over gray frame output.
+
+## Phase 4: Validate with bad-signal logs
+
+Use live lossy SRT logs to check:
+
+- `silence_insertions` rises only when there are real medium audio gaps or
+  underruns.
+- `pts_interpolations` can be high without audible artifacts.
+- `pts_resets` stays rare.
+- `speed` moves slightly only when buffer fill is clearly away from target.
+- `resync_skips` happens only during hidden/recovery backlog cleanup.
+- Video corruption logs do not imply audio corruption unless audio decoder or PTS
+  diagnostics also show damage.
