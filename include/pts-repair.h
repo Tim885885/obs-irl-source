@@ -44,6 +44,7 @@ struct pts_repair {
 
 	/* Self-healing for sustained small offsets after corruption. */
 	int last_gap_ms;
+	int last_action_gap_ms;
 	int consecutive_small_repairs;
 	bool relocking;
 

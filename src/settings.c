@@ -91,9 +91,9 @@ obs_properties_t *irl_source_get_properties(void *data)
 		obs_module_text(
 			"Buffered mode is the normal IRL path: Target/Min/Max "
 			"Buffer absorb short jitter. Adaptive Latency Control "
-			"holds the buffer near target by occasionally trimming old "
-			"buffered audio when latency drifts too high. Lower values "
-			"reduce delay but make random hitches more likely."),
+			"uses mild correction first and trims only hidden/recovery "
+			"backlog. Lower values reduce delay but make silence or "
+			"hitches more likely on bad signal."),
 		OBS_TEXT_INFO);
 
 	/* ── PTS Repair ────────────────────────────────────── */
@@ -109,7 +109,8 @@ obs_properties_t *irl_source_get_properties(void *data)
 		obs_module_text(
 			"Small gaps are interpolated. Medium gaps insert silence. "
 			"Large gaps trigger a clean timing reset. The defaults are "
-			"meant to be a safe starting point."),
+			"meant to avoid glitchy audio; silence is preferred over "
+			"audible artifacts when real audio is missing."),
 		OBS_TEXT_INFO);
 
 	/* ── Advanced ──────────────────────────────────────── */

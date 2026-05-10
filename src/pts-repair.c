@@ -62,6 +62,7 @@ void pts_repair_init(struct pts_repair *r, int small_gap_ms, int large_gap_ms,
 	r->small_gap_ms = small_gap_ms;
 	r->large_gap_ms = large_gap_ms;
 	r->last_gap_ms = 0;
+	r->last_action_gap_ms = 0;
 	r->consecutive_small_repairs = 0;
 	r->relocking = false;
 	r->initialised = false;
@@ -72,6 +73,7 @@ void pts_repair_reset(struct pts_repair *r)
 	r->last_pts = 0;
 	r->last_duration = 0;
 	r->last_gap_ms = 0;
+	r->last_action_gap_ms = 0;
 	r->consecutive_small_repairs = 0;
 	r->relocking = false;
 	r->initialised = false;
@@ -103,6 +105,7 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 	/* Convert gap to milliseconds for threshold comparison */
 	int gap_ms = ts_to_ms(r, gap >= 0 ? gap : -gap);
 	bool is_backward = gap < 0;
+	r->last_action_gap_ms = gap_ms;
 
 	if (is_backward) {
 		/* Small backward jumps look like B-frame reorder or
@@ -123,6 +126,7 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 		r->last_duration =
 			duration > 0 ? duration : r->last_duration;
 		r->last_gap_ms = 0;
+		r->last_action_gap_ms = gap_ms;
 		r->consecutive_small_repairs = 0;
 		r->relocking = false;
 		*corrected_pts = pts;
