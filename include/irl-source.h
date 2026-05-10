@@ -210,6 +210,9 @@ struct irl_source {
 	bool fade_in_pending;
 	int fade_in_frames_remaining;
 	int startup_audio_warmup_remaining_ms;
+	float audio_last_sample[8];
+	int audio_last_sample_channels;
+	bool audio_last_sample_valid;
 
 	/* Resolution tracking (for mid-stream changes) */
 	int last_video_width;

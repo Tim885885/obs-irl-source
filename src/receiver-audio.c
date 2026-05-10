@@ -14,6 +14,7 @@
 
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
+#define AUDIO_CONCEAL_FADE_MS 8
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -98,6 +99,8 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+	ctx->audio_last_sample_channels = 0;
+	ctx->audio_last_sample_valid = false;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
@@ -125,6 +128,8 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->decoded_frame_samples = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
+	ctx->audio_last_sample_channels = 0;
+	ctx->audio_last_sample_valid = false;
 	ctx->audio_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
 	ctx->audio_last_decoder_warning_time_us = 0;
@@ -164,6 +169,78 @@ static int audio_frame_duration_ms(int samples, int sample_rate)
 	if (ms <= 0)
 		ms = 1;
 	return (int)ms;
+}
+
+static int audio_conceal_fade_frames(int sample_rate, int max_frames)
+{
+	if (sample_rate <= 0 || max_frames <= 0)
+		return 0;
+
+	int frames = sample_rate * AUDIO_CONCEAL_FADE_MS / 1000;
+	if (frames <= 0)
+		frames = 1;
+	return frames < max_frames ? frames : max_frames;
+}
+
+static void audio_remember_last_sample(struct irl_source *ctx,
+				       const uint8_t *samples, int frames,
+				       int channels)
+{
+	if (!samples || frames <= 0 || channels <= 0 ||
+	    channels > (int)(sizeof(ctx->audio_last_sample) /
+			     sizeof(ctx->audio_last_sample[0]))) {
+		ctx->audio_last_sample_valid = false;
+		ctx->audio_last_sample_channels = 0;
+		return;
+	}
+
+	const float *pcm = (const float *)samples;
+	const float *last = pcm + (size_t)(frames - 1) * channels;
+	for (int ch = 0; ch < channels; ch++)
+		ctx->audio_last_sample[ch] = last[ch];
+	ctx->audio_last_sample_channels = channels;
+	ctx->audio_last_sample_valid = true;
+}
+
+static void audio_apply_fade_in(uint8_t *samples, int frames, int channels,
+				int sample_rate)
+{
+	int fade_frames = audio_conceal_fade_frames(sample_rate, frames);
+	if (!samples || fade_frames <= 0 || channels <= 0)
+		return;
+
+	float *pcm = (float *)samples;
+	for (int f = 0; f < fade_frames; f++) {
+		float gain = (float)(f + 1) / (float)fade_frames;
+		for (int ch = 0; ch < channels; ch++)
+			pcm[(size_t)f * channels + ch] *= gain;
+	}
+}
+
+static void audio_shape_inserted_silence(struct irl_source *ctx,
+					 uint8_t *silence, size_t silence_bytes)
+{
+	int channels = ctx->audio_buf.channels;
+	int frame_size = ctx->audio_buf.frame_size;
+	int sample_rate = ctx->audio_buf.sample_rate;
+	if (!silence || silence_bytes == 0 || channels <= 0 ||
+	    frame_size <= 0 || sample_rate <= 0)
+		return;
+
+	int frames = (int)(silence_bytes / (size_t)frame_size);
+	int fade_frames = audio_conceal_fade_frames(sample_rate, frames);
+	if (!ctx->audio_last_sample_valid ||
+	    ctx->audio_last_sample_channels != channels || fade_frames <= 0)
+		return;
+
+	float *pcm = (float *)silence;
+	for (int f = 0; f < fade_frames; f++) {
+		float gain = 1.0f - (float)(f + 1) / (float)fade_frames;
+		for (int ch = 0; ch < channels; ch++) {
+			pcm[(size_t)f * channels + ch] =
+				ctx->audio_last_sample[ch] * gain;
+		}
+	}
 }
 
 static int audio_expected_samples(const struct irl_source *ctx,
@@ -615,6 +692,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	enum pts_action action = pts_repair_evaluate(
 		&ctx->pts_state, input_pts, duration, &corrected_pts,
 		&silence_ms);
+	bool inserted_silence = false;
 
 	int frame_ms = audio_frame_duration_ms(frame->nb_samples, out_rate);
 	if (ctx->startup_audio_warmup_remaining_ms > 0) {
@@ -632,6 +710,8 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			&ctx->audio_resample_scratch_capacity, silence_bytes);
 		if (silence) {
 			memset(silence, 0, silence_bytes);
+			audio_shape_inserted_silence(ctx, silence,
+						     silence_bytes);
 			int64_t silence_pts_ns =
 				av_rescale_q(corrected_pts,
 					     (AVRational){ctx->pts_state.tb_num,
@@ -643,6 +723,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			audio_buffer_write_pts(&ctx->audio_buf, silence,
 					       silence_bytes, silence_pts_ns);
 			ctx->silence_insertions++;
+			inserted_silence = true;
 		}
 	} else if (action == PTS_ACTION_RESET) {
 		pthread_mutex_lock(&ctx->audio_state_lock);
@@ -733,6 +814,9 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 	size_t data_bytes =
 		(size_t)out_samples * out_channels * bytes_per_sample;
+	if (inserted_silence)
+		audio_apply_fade_in(interleaved, out_samples, out_channels,
+				    out_rate);
 	if (ctx->config.wait_for_keyframe && ctx->video_stream_idx >= 0 &&
 	    !ctx->first_keyframe_received) {
 		return;
@@ -744,6 +828,8 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		(AVRational){1, 1000000000});
 	audio_buffer_write_pts(&ctx->audio_buf, interleaved, data_bytes,
 			       frame_pts_ns);
+	audio_remember_last_sample(ctx, interleaved, out_samples,
+				   out_channels);
 
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->latest_audio_stream_pts_ns = frame_pts_ns;
