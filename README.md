@@ -162,6 +162,13 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `pts_last_gap_ms` | int | Most recent repaired PTS gap size |
 | `pts_max_gap_ms` | int | Largest repaired PTS gap size since the current connection/reset |
 | `silence_insertions` | int | Number of silence insertions for gap filling |
+| `audio_underruns` | int | Number of plugin-side underruns that emitted silence to keep OBS audio timestamps monotonic |
+| `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped during low-latency resync or latency recovery |
+| `audio_hidden_trimmed_chunks` | int | Number of buffered chunks trimmed while audio was hidden, recovering, or not yet audible |
+| `audio_latency_trimmed_chunks` | int | Number of old audible-path chunks trimmed after sustained high buffer fill |
+| `audio_quality_events` | int | Aggregate audible-risk counter for underruns, inserted silence, resyncs, latency trims, PTS resets, and audio decoder flushes |
+| `audio_decoder_flushes` | int | Number of audio decoder flushes after repeated decode errors |
+| `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |
 | `low_latency_audio` | bool | Whether OBS async unbuffered low-latency mode is enabled |
 | `decoupled_audio` | bool | Whether OBS async decoupled mode is enabled |
@@ -196,6 +203,14 @@ function script_tick(seconds)
     local video = obs.calldata_int(cd, "total_video_frames")
     local audio = obs.calldata_int(cd, "total_audio_frames")
     local repairs = obs.calldata_int(cd, "pts_repairs")
+    local silence = obs.calldata_int(cd, "silence_insertions")
+    local underruns = obs.calldata_int(cd, "audio_underruns")
+    local resync_skips = obs.calldata_int(cd, "audio_resync_skipped_chunks")
+    local hidden_trims = obs.calldata_int(cd, "audio_hidden_trimmed_chunks")
+    local latency_trims = obs.calldata_int(cd, "audio_latency_trimmed_chunks")
+    local quality_events = obs.calldata_int(cd, "audio_quality_events")
+    local audio_flushes = obs.calldata_int(cd, "audio_decoder_flushes")
+    local video_flushes = obs.calldata_int(cd, "video_decoder_flushes")
     local delay = obs.calldata_int(cd, "stream_delay_ms")
 
     obs.calldata_destroy(cd)
@@ -203,8 +218,10 @@ function script_tick(seconds)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nDelay: %dms\nBuffer: %dms\nControl: %s\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d",
-        status, delay, buf_ms, ctrl and "on" or "off", speed, video, audio, repairs
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nControl: %s\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d\nAudio Quality: %d events\nSilence/Underruns: %d/%d\nTrims: %d hidden, %d latency\nResync Skips: %d\nDecoder Flushes: %d/%d (a/v)",
+        status, delay, buf_ms, ctrl and "on" or "off", speed, video, audio,
+        repairs, quality_events, silence, underruns, hidden_trims,
+        latency_trims, resync_skips, audio_flushes, video_flushes
     )
 
     local text_source = obs.obs_get_source_by_name("IRL Stats")
@@ -223,7 +240,7 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms target=120ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 res=1920x1080
+[irl-source] Stats: video=1800 audio=2700 buf=82ms target=120ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 hidden_trims=0 latency_trims=0 quality_events=0 audio_flushes=0 video_flushes=0 res=1920x1080
 ```
 
 ## Hardware decoding

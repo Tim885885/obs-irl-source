@@ -86,6 +86,11 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->audio_pll_hard_resets = 0;
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
+	ctx->audio_hidden_trimmed_chunks = 0;
+	ctx->audio_latency_trimmed_chunks = 0;
+	ctx->audio_quality_events = 0;
+	ctx->audio_decoder_flushes = 0;
+	ctx->video_decoder_flushes = 0;
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
@@ -170,6 +175,16 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	int pts_last_gap_ms = ctx->pts_last_gap_ms;
 	int pts_max_gap_ms = ctx->pts_max_gap_ms;
 	uint64_t silence_insertions = ctx->silence_insertions;
+	uint64_t audio_underruns = ctx->audio_underruns;
+	uint64_t audio_resync_skipped_chunks =
+		ctx->audio_resync_skipped_chunks;
+	uint64_t audio_hidden_trimmed_chunks =
+		ctx->audio_hidden_trimmed_chunks;
+	uint64_t audio_latency_trimmed_chunks =
+		ctx->audio_latency_trimmed_chunks;
+	uint64_t audio_quality_events = ctx->audio_quality_events;
+	uint64_t audio_decoder_flushes = ctx->audio_decoder_flushes;
+	uint64_t video_decoder_flushes = ctx->video_decoder_flushes;
 	uint64_t reconnect_count = ctx->reconnect_count;
 	bool video_ts_init = ctx->video_ts_init;
 	uint64_t video_sys_base = ctx->video_sys_base;
@@ -197,6 +212,20 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	calldata_set_int(cd, "pts_max_gap_ms", pts_max_gap_ms);
 	calldata_set_int(cd, "silence_insertions",
 			 (long long)silence_insertions);
+	calldata_set_int(cd, "audio_underruns",
+			 (long long)audio_underruns);
+	calldata_set_int(cd, "audio_resync_skipped_chunks",
+			 (long long)audio_resync_skipped_chunks);
+	calldata_set_int(cd, "audio_hidden_trimmed_chunks",
+			 (long long)audio_hidden_trimmed_chunks);
+	calldata_set_int(cd, "audio_latency_trimmed_chunks",
+			 (long long)audio_latency_trimmed_chunks);
+	calldata_set_int(cd, "audio_quality_events",
+			 (long long)audio_quality_events);
+	calldata_set_int(cd, "audio_decoder_flushes",
+			 (long long)audio_decoder_flushes);
+	calldata_set_int(cd, "video_decoder_flushes",
+			 (long long)video_decoder_flushes);
 
 	/* Stream delay: how far behind real-time the video output is.
 	 * Computed as wall_clock - anchored_video_PTS.  Includes SRT
@@ -250,7 +279,13 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int pts_repairs, out int pts_normalizations, "
 		"out int pts_interpolations, out int pts_resets, "
 		"out int pts_last_gap_ms, out int pts_max_gap_ms, "
-		"out int silence_insertions, "
+		"out int silence_insertions, out int audio_underruns, "
+		"out int audio_resync_skipped_chunks, "
+		"out int audio_hidden_trimmed_chunks, "
+		"out int audio_latency_trimmed_chunks, "
+		"out int audio_quality_events, "
+		"out int audio_decoder_flushes, "
+		"out int video_decoder_flushes, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
 		"out bool decoupled_audio, out int reconnect_count)",
 		irl_source_get_stats, ctx);

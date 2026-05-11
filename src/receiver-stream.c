@@ -372,6 +372,11 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	ctx->audio_pll_hard_resets = 0;
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
+	ctx->audio_hidden_trimmed_chunks = 0;
+	ctx->audio_latency_trimmed_chunks = 0;
+	ctx->audio_quality_events = 0;
+	ctx->audio_decoder_flushes = 0;
+	ctx->video_decoder_flushes = 0;
 	ctx->pts_repairs = 0;
 	ctx->pts_normalizations = 0;
 	ctx->pts_interpolations = 0;
@@ -396,6 +401,8 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "buf=%dms target=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
 	     "norm=%llu interp=%llu silence=%llu resets=%llu "
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
+	     "hidden_trims=%llu latency_trims=%llu quality_events=%llu "
+	     "audio_flushes=%llu video_flushes=%llu "
 	     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "pll=%llu hard_resets=%llu res=%dx%d",
@@ -413,6 +420,11 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     ctx->pts_last_gap_ms, ctx->pts_max_gap_ms,
 	     (unsigned long long)ctx->audio_underruns,
 	     (unsigned long long)ctx->audio_resync_skipped_chunks,
+	     (unsigned long long)ctx->audio_hidden_trimmed_chunks,
+	     (unsigned long long)ctx->audio_latency_trimmed_chunks,
+	     (unsigned long long)ctx->audio_quality_events,
+	     (unsigned long long)ctx->audio_decoder_flushes,
+	     (unsigned long long)ctx->video_decoder_flushes,
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
 	     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL),
 	     ctx->audio_last_frames_out, ctx->audio_last_samples_per_sec,

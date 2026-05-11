@@ -172,6 +172,9 @@ struct irl_source {
 	uint64_t audio_pll_hard_resets;
 	uint64_t audio_underruns;
 	uint64_t audio_resync_skipped_chunks;
+	uint64_t audio_hidden_trimmed_chunks;
+	uint64_t audio_latency_trimmed_chunks;
+	uint64_t audio_quality_events;
 	int64_t audio_last_ts_drift_ns;
 	int64_t audio_last_obs_lead_ns;
 	uint64_t audio_last_chunk_stream_duration_ns;
@@ -194,6 +197,8 @@ struct irl_source {
 	 * not reset the decoder state (losing reference frames). */
 	int audio_decode_errors;
 	int video_decode_errors;
+	uint64_t audio_decoder_flushes;
+	uint64_t video_decoder_flushes;
 	uint64_t audio_last_decoder_flush_time_us;
 	uint64_t video_last_decoder_flush_time_us;
 	uint64_t audio_last_decoder_warning_time_us;

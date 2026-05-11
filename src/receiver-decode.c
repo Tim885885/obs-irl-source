@@ -62,8 +62,11 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 				     do_flush ? ", flushing"
 					      : ", suppressing repeated flush");
 			}
-			if (do_flush)
+			if (do_flush) {
 				avcodec_flush_buffers(ctx->audio_dec_ctx);
+				ctx->audio_decoder_flushes++;
+				ctx->audio_quality_events++;
+			}
 			ctx->audio_decode_errors = 0;
 		}
 	} else {
@@ -92,6 +95,8 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 				}
 				if (do_flush) {
 					avcodec_flush_buffers(ctx->audio_dec_ctx);
+					ctx->audio_decoder_flushes++;
+					ctx->audio_quality_events++;
 					pthread_mutex_lock(&ctx->audio_state_lock);
 					audio_buffer_flush(&ctx->audio_buf);
 					irl_reset_audio_timing_state(ctx);
@@ -131,8 +136,10 @@ void irl_handle_video_packet(struct irl_source *ctx, AVPacket *pkt,
 				     do_flush ? ", flushing"
 					      : ", flush cooldown active");
 			}
-			if (do_flush)
+			if (do_flush) {
 				avcodec_flush_buffers(ctx->video_dec_ctx);
+				ctx->video_decoder_flushes++;
+			}
 			ctx->video_decode_errors = 0;
 		}
 	} else {
@@ -160,8 +167,10 @@ void irl_handle_video_packet(struct irl_source *ctx, AVPacket *pkt,
 					     do_flush ? ", flushing"
 						      : ", flush cooldown active");
 				}
-				if (do_flush)
+				if (do_flush) {
 					avcodec_flush_buffers(ctx->video_dec_ctx);
+					ctx->video_decoder_flushes++;
+				}
 				ctx->video_decode_errors = 0;
 			}
 			break;

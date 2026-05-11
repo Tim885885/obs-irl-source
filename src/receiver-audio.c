@@ -61,6 +61,7 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	     "[irl-source] Audio timing diag: obs_lead=%lldms ts_drift=%lldms "
 	     "fill=%dms target=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
 	     "obs_chunk=%llums underruns=%llu resync_skips=%llu "
+	     "hidden_trims=%llu latency_trims=%llu quality_events=%llu "
 	     "pll=%llu hard_resets=%llu repairs=%llu norm=%llu interp=%llu "
 	     "silence=%llu resets=%llu last_gap=%dms max_gap=%dms",
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
@@ -73,6 +74,9 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 				  1000000ULL),
 	     (unsigned long long)ctx->audio_underruns,
 	     (unsigned long long)ctx->audio_resync_skipped_chunks,
+	     (unsigned long long)ctx->audio_hidden_trimmed_chunks,
+	     (unsigned long long)ctx->audio_latency_trimmed_chunks,
+	     (unsigned long long)ctx->audio_quality_events,
 	     (unsigned long long)ctx->audio_pll_corrections,
 	     (unsigned long long)ctx->audio_pll_hard_resets,
 	     (unsigned long long)ctx->pts_repairs,
@@ -480,6 +484,7 @@ static bool maybe_resync_audio_buffer(struct irl_source *ctx, int64_t peek,
 		return false;
 
 	ctx->audio_resync_skipped_chunks += (uint64_t)chunk_count;
+	ctx->audio_quality_events++;
 	audio_buffer_flush(&ctx->audio_buf);
 	irl_reset_audio_timing_state(ctx);
 	irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
@@ -528,6 +533,7 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 		return false;
 
 	ctx->audio_resync_skipped_chunks += (uint64_t)trimmed;
+	ctx->audio_hidden_trimmed_chunks += (uint64_t)trimmed;
 	blog(LOG_INFO,
 	     "[irl-source] Audio trim: dropped %d hidden buffered chunk%s before playback (fill=%dms target=%dms)",
 	     trimmed, trimmed == 1 ? "" : "s", post_fill_ms,
@@ -581,6 +587,8 @@ static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
 	audio_buffer_skip_chunk(&ctx->audio_buf);
 	ctx->audio_trim_crossfade_pending = true;
 	ctx->audio_resync_skipped_chunks++;
+	ctx->audio_latency_trimmed_chunks++;
+	ctx->audio_quality_events++;
 	ctx->audio_last_sustained_trim_us = now_us;
 	ctx->audio_high_fill_since_us = 0;
 	blog(LOG_INFO,
@@ -637,6 +645,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 		if (!low_latency && !has_audio &&
 		    ctx->latest_audio_buffered_end_pts_ns > 0) {
 			ctx->audio_underruns++;
+			ctx->audio_quality_events++;
 			irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 			size_t silence_bytes =
 				(size_t)base_samples * ctx->audio_buf.frame_size;
@@ -846,6 +855,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			audio_buffer_write_pts(&ctx->audio_buf, silence,
 					       silence_bytes, silence_pts_ns);
 			ctx->silence_insertions++;
+			ctx->audio_quality_events++;
 			inserted_silence = true;
 		}
 	} else if (action == PTS_ACTION_RESET) {
@@ -853,6 +863,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		audio_buffer_flush(&ctx->audio_buf);
 		irl_reset_stream_timing_state(ctx);
 		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+		ctx->audio_quality_events++;
 		pthread_mutex_unlock(&ctx->audio_state_lock);
 	}
 
