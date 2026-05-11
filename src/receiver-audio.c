@@ -15,6 +15,9 @@
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
 #define AUDIO_CONCEAL_FADE_MS 8
+#define AUDIO_SPEED_MIN 0.998f
+#define AUDIO_SPEED_MAX 1.010f
+#define AUDIO_SPEED_SMOOTHING 0.05f
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -280,13 +283,37 @@ static int audio_soft_compensation_samples(const struct irl_source *ctx,
 
 static float compute_buffered_output_speed(struct irl_source *ctx, int fill_ms)
 {
-	UNUSED_PARAMETER(fill_ms);
+	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio) {
+		ctx->current_speed = 1.0f;
+		return ctx->current_speed;
+	}
 
-	/* Viewer-quality rule: do not continuously retune OBS's audio
-	 * sample rate. Even very small correction can sound phasey or
-	 * unstable on voice. Latency recovery is handled by buffering,
-	 * silence, and rare hidden-backlog trims instead. */
-	ctx->current_speed = 1.0f;
+	int target_ms = ctx->config.buffer_target_ms;
+	int min_ms = ctx->config.buffer_min_ms;
+	int high_ms = target_ms + 250;
+	int max_ms = target_ms + 1000;
+	float target_speed = 1.0f;
+
+	if (fill_ms < min_ms) {
+		target_speed = AUDIO_SPEED_MIN;
+	} else if (fill_ms > high_ms) {
+		float t = (float)(fill_ms - high_ms) /
+			  (float)(max_ms - high_ms);
+		if (t < 0.0f)
+			t = 0.0f;
+		if (t > 1.0f)
+			t = 1.0f;
+		target_speed = 1.0f + (AUDIO_SPEED_MAX - 1.0f) * t;
+	}
+
+	if (ctx->current_speed <= 0.0f)
+		ctx->current_speed = 1.0f;
+	ctx->current_speed +=
+		(target_speed - ctx->current_speed) * AUDIO_SPEED_SMOOTHING;
+	if (ctx->current_speed < AUDIO_SPEED_MIN)
+		ctx->current_speed = AUDIO_SPEED_MIN;
+	if (ctx->current_speed > AUDIO_SPEED_MAX)
+		ctx->current_speed = AUDIO_SPEED_MAX;
 	return ctx->current_speed;
 }
 
@@ -571,8 +598,10 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int64_t chunk_pts_ns = 0;
 	uint64_t stream_duration_ns = 0;
 	uint32_t frames_out = 0;
-	compute_buffered_output_speed(ctx, fill_ms);
-	uint32_t obs_rate = (uint32_t)out_rate;
+	float output_speed = compute_buffered_output_speed(ctx, fill_ms);
+	uint32_t obs_rate = (uint32_t)((float)out_rate * output_speed + 0.5f);
+	if (obs_rate == 0)
+		obs_rate = (uint32_t)out_rate;
 
 	int chunk_samples = base_samples;
 	size_t frame_bytes =

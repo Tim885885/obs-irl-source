@@ -49,12 +49,13 @@ Audio is output in chunks matching the decoded frame size (AAC = 1024 samples, O
 
 ### 2. Adaptive latency control (prevents latency creep)
 
-Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin avoids continuous time stretching because viewer-visible audio artifacts are worse than a small amount of silence or bounded latency movement.
+Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin avoids trims and resets on audible audio; bounded speed correction is the steady-state latency control.
 
-Buffered mode uses native-rate playback with explicit recovery:
+Buffered mode uses near-native playback with explicit recovery:
 
 - If hidden/recovery backlog grows too far, the plugin can trim old buffered chunks before they become audible.
 - Once audio is audible, the plugin does not trim old chunks just to chase the target buffer. Extra delay is preferable to an audible skip, pop, or cadence discontinuity.
+- If fill stays high, bounded speed correction drains latency gradually while video remains synced to audio.
 - If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 

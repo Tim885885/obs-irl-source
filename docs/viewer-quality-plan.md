@@ -26,7 +26,8 @@ and video cadence freezes.
 
 - Treat small timestamp jitter as timestamp repair, not inserted silence.
 - Treat real medium gaps as silence, not time compression.
-- Keep buffered audio at native rate by default.
+- Keep buffered audio near native rate by default; speed correction must be
+  bounded, smoothed, and less audible than skips or pops.
 - If latency needs recovery, prefer hidden-backlog trimming or silence over
   continuous rate correction. Do not trim audible buffered audio just to reduce
   delay.
@@ -52,8 +53,8 @@ Use live lossy SRT logs to check:
 - `pts_interpolations` should be watched together with gap size and audio
   quality.
 - `pts_resets` stays rare.
-- `speed` stays at 1.000 in buffered mode unless a future explicitly tested
-  correction path proves inaudible.
+- `speed` stays near 1.000 in buffered mode; any deviation should be smooth and
+  correlated with high/low fill.
 - `resync_skips` happens only during low-latency resync or hidden/recovery
   backlog cleanup.
 - `Audio trim` logs are hidden/recovery cleanup only, before old chunks become
