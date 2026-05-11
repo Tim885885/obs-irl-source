@@ -115,6 +115,7 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
  * so OBS doesn't hold the previous frame for too long. */
 #define VIDEO_TS_CLAMP_NS 500000000LL   /* 500ms */
 #define VIDEO_TS_CAP_NS   200000000ULL  /* 200ms forward cap */
+#define VIDEO_AUDIO_MASTER_MAX_EXTRA_MS 250
 
 /* Convert stream PTS to OBS nanosecond timestamp.
  *
@@ -137,14 +138,19 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	uint64_t audio_obs_end_ts_ns;
 	int64_t audio_buffered_end_pts_ns;
 	int startup_warmup_ms;
+	int audio_fill_ms;
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
 	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
 	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
+	audio_fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 
+	int audio_master_limit_ms =
+		ctx->config.buffer_target_ms + VIDEO_AUDIO_MASTER_MAX_EXTRA_MS;
 	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
-	    audio_buffered_end_pts_ns > 0) {
+	    audio_buffered_end_pts_ns > 0 &&
+	    audio_fill_ms <= audio_master_limit_ms) {
 		int64_t mapped = (int64_t)pts_ns +
 				 ((int64_t)audio_obs_end_ts_ns -
 				  audio_buffered_end_pts_ns);
