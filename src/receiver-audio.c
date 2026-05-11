@@ -18,6 +18,7 @@
 #define AUDIO_SUSTAINED_TRIM_EXTRA_MS 100
 #define AUDIO_SUSTAINED_TRIM_HOLD_US 4000000ULL
 #define AUDIO_SUSTAINED_TRIM_COOLDOWN_US 10000000ULL
+#define AUDIO_SUSTAINED_TRIM_MAX_CHUNKS 4
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -584,16 +585,38 @@ static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
 		return false;
 	}
 
-	audio_buffer_skip_chunk(&ctx->audio_buf);
+	int desired_fill_ms = trim_threshold_ms - chunk_ms;
+	if (desired_fill_ms < clear_threshold_ms)
+		desired_fill_ms = clear_threshold_ms;
+	int trim_chunks = (fill_ms - desired_fill_ms + chunk_ms - 1) / chunk_ms;
+	if (trim_chunks < 1)
+		trim_chunks = 1;
+	if (trim_chunks > AUDIO_SUSTAINED_TRIM_MAX_CHUNKS)
+		trim_chunks = AUDIO_SUSTAINED_TRIM_MAX_CHUNKS;
+	if (trim_chunks > chunk_count - 3)
+		trim_chunks = chunk_count - 3;
+	if (trim_chunks <= 0)
+		return false;
+
+	for (int i = 0; i < trim_chunks; i++)
+		audio_buffer_skip_chunk(&ctx->audio_buf);
+
+	int post_fill_ms = fill_ms;
+	int post_chunk_count = chunk_count;
+	int64_t post_peek = 0;
+	audio_buffer_peek_state(&ctx->audio_buf, &post_peek, &post_fill_ms,
+				&post_chunk_count);
+
 	ctx->audio_trim_crossfade_pending = true;
-	ctx->audio_resync_skipped_chunks++;
-	ctx->audio_latency_trimmed_chunks++;
+	ctx->audio_resync_skipped_chunks += (uint64_t)trim_chunks;
+	ctx->audio_latency_trimmed_chunks += (uint64_t)trim_chunks;
 	ctx->audio_quality_events++;
 	ctx->audio_last_sustained_trim_us = now_us;
 	ctx->audio_high_fill_since_us = 0;
 	blog(LOG_INFO,
-	     "[irl-source] Audio latency trim: dropped 1 old buffered chunk (fill=%dms target=%dms)",
-	     fill_ms, ctx->config.buffer_target_ms);
+	     "[irl-source] Audio latency trim: dropped %d old buffered chunk%s (fill=%dms->%dms target=%dms)",
+	     trim_chunks, trim_chunks == 1 ? "" : "s", fill_ms,
+	     post_fill_ms, ctx->config.buffer_target_ms);
 	return true;
 }
 
