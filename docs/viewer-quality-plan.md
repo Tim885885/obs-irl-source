@@ -26,8 +26,11 @@ video output.
 - Treat small timestamp jitter as timestamp repair, not inserted silence.
 - Treat real medium gaps as silence, not time compression.
 - Keep buffered audio at native rate by default.
-- If latency needs recovery, prefer hidden-backlog trimming, sustained-high-fill
-  single-chunk trims, or silence over continuous rate correction.
+- If latency needs recovery, prefer hidden-backlog trimming or silence over
+  continuous rate correction. Do not trim audible buffered audio just to reduce
+  delay.
+- If latency runs away, recover at a deliberate fade/flush/fade-in boundary
+  instead of repeated audible chunk drops.
 - Insert silence on underrun so OBS timestamps remain monotonic.
 
 ## Phase 3: Tune video for viewer quality
@@ -50,8 +53,11 @@ Use live lossy SRT logs to check:
 - `pts_resets` stays rare.
 - `speed` stays at 1.000 in buffered mode unless a future explicitly tested
   correction path proves inaudible.
-- `resync_skips` happens only during hidden/recovery backlog cleanup.
-- `Audio latency trim` logs appear only after sustained high fill and should be
-  spaced by the cooldown.
+- `resync_skips` happens only during low-latency resync, hidden/recovery
+  backlog cleanup, or clean runaway-latency reset.
+- `Audio trim` logs are hidden/recovery cleanup only, before old chunks become
+  audible.
+- `Audio latency reset` logs should be rare and indicate a deliberate
+  fade/flush/fade-in recovery boundary.
 - Video corruption logs do not imply audio corruption unless audio decoder or PTS
   diagnostics also show damage.

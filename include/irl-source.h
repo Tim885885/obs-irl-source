@@ -173,7 +173,6 @@ struct irl_source {
 	uint64_t audio_underruns;
 	uint64_t audio_resync_skipped_chunks;
 	uint64_t audio_hidden_trimmed_chunks;
-	uint64_t audio_latency_trimmed_chunks;
 	uint64_t audio_quality_events;
 	int64_t audio_last_ts_drift_ns;
 	int64_t audio_last_obs_lead_ns;
@@ -183,8 +182,6 @@ struct irl_source {
 	uint32_t audio_last_samples_per_sec;
 	uint64_t last_audio_diag_time;
 	uint64_t audio_recovery_until_us;
-	uint64_t audio_high_fill_since_us;
-	uint64_t audio_last_sustained_trim_us;
 
 	/* Decoded frame size (samples per frame).  Used as the output
 	 * chunk size so OBS's smoothing advance matches our push rate.
@@ -220,10 +217,6 @@ struct irl_source {
 	float audio_last_sample[8];
 	int audio_last_sample_channels;
 	bool audio_last_sample_valid;
-	float audio_last_output_sample[8];
-	int audio_last_output_sample_channels;
-	bool audio_last_output_sample_valid;
-	bool audio_trim_crossfade_pending;
 
 	/* Resolution tracking (for mid-stream changes) */
 	int last_video_width;

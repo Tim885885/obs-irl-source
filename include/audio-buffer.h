@@ -70,7 +70,8 @@ struct audio_buffer {
 /* ── API ──────────────────────────────────────────────────── */
 
 /**
- * Initialise the buffer.  Allocates storage for `max_ms` at the given format.
+ * Initialise the buffer.  Allocates storage with headroom above `max_ms` so
+ * the configured max is not an audible old-audio drop point.
  * Call after the first decoded audio frame reveals the stream parameters.
  */
 void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,

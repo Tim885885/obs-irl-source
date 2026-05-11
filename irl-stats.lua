@@ -26,7 +26,6 @@ function script_tick(seconds)
     local underruns = obs.calldata_int(cd, "audio_underruns")
     local resync_skips = obs.calldata_int(cd, "audio_resync_skipped_chunks")
     local hidden_trims = obs.calldata_int(cd, "audio_hidden_trimmed_chunks")
-    local latency_trims = obs.calldata_int(cd, "audio_latency_trimmed_chunks")
     local quality_events = obs.calldata_int(cd, "audio_quality_events")
     local audio_flushes = obs.calldata_int(cd, "audio_decoder_flushes")
     local video_flushes = obs.calldata_int(cd, "video_decoder_flushes")
@@ -37,10 +36,10 @@ function script_tick(seconds)
 
     local status = reconnecting and "RECONNECTING" or "LIVE"
     local text = string.format(
-        "Status: %s\nDelay: %dms\nBuffer: %dms\nControl: %s\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d\nAudio Quality: %d events\nSilence/Underruns: %d/%d\nTrims: %d hidden, %d latency\nResync Skips: %d\nDecoder Flushes: %d/%d (a/v)",
+        "Status: %s\nDelay: %dms\nBuffer: %dms\nControl: %s\nCorrection: %.3fx\nFrames: %d/%d (v/a)\nPTS Repairs: %d\nAudio Quality: %d events\nSilence/Underruns: %d/%d\nHidden Trims: %d\nResync Skips: %d\nDecoder Flushes: %d/%d (a/v)",
         status, delay, buf_ms, ctrl and "on" or "off", speed, video, audio,
         repairs, quality_events, silence, underruns, hidden_trims,
-        latency_trims, resync_skips, audio_flushes, video_flushes
+        resync_skips, audio_flushes, video_flushes
     )
 
     local text_source = obs.obs_get_source_by_name("IRL Stats")

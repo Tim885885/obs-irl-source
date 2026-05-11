@@ -92,7 +92,7 @@ obs_properties_t *irl_source_get_properties(void *data)
 			"Buffered mode is the normal IRL path: Target/Min/Max "
 			"Buffer absorb short jitter. Adaptive Latency Control "
 			"keeps audio at native rate and trims only hidden/recovery "
-			"backlog or sustained high fill. Lower values reduce "
+			"backlog before it becomes audible. Lower values reduce "
 			"delay but make silence or hitches more likely on bad "
 			"signal."),
 		OBS_TEXT_INFO);

@@ -15,10 +15,8 @@
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
 #define AUDIO_CONCEAL_FADE_MS 8
-#define AUDIO_SUSTAINED_TRIM_EXTRA_MS 100
-#define AUDIO_SUSTAINED_TRIM_HOLD_US 4000000ULL
-#define AUDIO_SUSTAINED_TRIM_COOLDOWN_US 10000000ULL
-#define AUDIO_SUSTAINED_TRIM_MAX_CHUNKS 4
+#define AUDIO_RUNAWAY_LATENCY_MIN_MS 750
+#define AUDIO_RUNAWAY_LATENCY_MULTIPLIER 2
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -62,7 +60,7 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	     "[irl-source] Audio timing diag: obs_lead=%lldms ts_drift=%lldms "
 	     "fill=%dms target=%dms speed=%.3f chunk=%u@%u stream_chunk=%llums "
 	     "obs_chunk=%llums underruns=%llu resync_skips=%llu "
-	     "hidden_trims=%llu latency_trims=%llu quality_events=%llu "
+	     "hidden_trims=%llu quality_events=%llu "
 	     "pll=%llu hard_resets=%llu repairs=%llu norm=%llu interp=%llu "
 	     "silence=%llu resets=%llu last_gap=%dms max_gap=%dms",
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
@@ -76,7 +74,6 @@ static void maybe_log_audio_timing_diag(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_underruns,
 	     (unsigned long long)ctx->audio_resync_skipped_chunks,
 	     (unsigned long long)ctx->audio_hidden_trimmed_chunks,
-	     (unsigned long long)ctx->audio_latency_trimmed_chunks,
 	     (unsigned long long)ctx->audio_quality_events,
 	     (unsigned long long)ctx->audio_pll_corrections,
 	     (unsigned long long)ctx->audio_pll_hard_resets,
@@ -100,8 +97,6 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
-	ctx->audio_high_fill_since_us = 0;
-	ctx->audio_last_sustained_trim_us = 0;
 	ctx->video_ts_init = false;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
@@ -111,9 +106,6 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_last_sample_channels = 0;
 	ctx->audio_last_sample_valid = false;
-	ctx->audio_last_output_sample_channels = 0;
-	ctx->audio_last_output_sample_valid = false;
-	ctx->audio_trim_crossfade_pending = false;
 	ctx->audio_decode_errors = 0;
 	ctx->video_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
@@ -136,8 +128,6 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_last_samples_per_sec = 0;
 	ctx->last_audio_diag_time = 0;
 	ctx->audio_recovery_until_us = 0;
-	ctx->audio_high_fill_since_us = 0;
-	ctx->audio_last_sustained_trim_us = 0;
 	ctx->latest_audio_stream_pts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
@@ -145,9 +135,6 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->startup_audio_warmup_remaining_ms = 0;
 	ctx->audio_last_sample_channels = 0;
 	ctx->audio_last_sample_valid = false;
-	ctx->audio_last_output_sample_channels = 0;
-	ctx->audio_last_output_sample_valid = false;
-	ctx->audio_trim_crossfade_pending = false;
 	ctx->audio_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
 	ctx->audio_last_decoder_warning_time_us = 0;
@@ -232,51 +219,6 @@ static void audio_apply_fade_in(uint8_t *samples, int frames, int channels,
 		float gain = (float)(f + 1) / (float)fade_frames;
 		for (int ch = 0; ch < channels; ch++)
 			pcm[(size_t)f * channels + ch] *= gain;
-	}
-}
-
-static void audio_remember_last_output_sample(struct irl_source *ctx,
-					      const uint8_t *samples,
-					      int frames, int channels)
-{
-	if (!samples || frames <= 0 || channels <= 0 ||
-	    channels > (int)(sizeof(ctx->audio_last_output_sample) /
-			     sizeof(ctx->audio_last_output_sample[0]))) {
-		ctx->audio_last_output_sample_valid = false;
-		ctx->audio_last_output_sample_channels = 0;
-		return;
-	}
-
-	const float *pcm = (const float *)samples;
-	const float *last = pcm + (size_t)(frames - 1) * channels;
-	for (int ch = 0; ch < channels; ch++)
-		ctx->audio_last_output_sample[ch] = last[ch];
-	ctx->audio_last_output_sample_channels = channels;
-	ctx->audio_last_output_sample_valid = true;
-}
-
-static void audio_apply_trim_crossfade(struct irl_source *ctx, uint8_t *samples,
-				       int frames, int channels,
-				       int sample_rate)
-{
-	int fade_frames = audio_conceal_fade_frames(sample_rate, frames);
-	if (!samples || fade_frames <= 0 || channels <= 0)
-		return;
-
-	float *pcm = (float *)samples;
-	bool have_anchor = ctx->audio_last_output_sample_valid &&
-			   ctx->audio_last_output_sample_channels == channels;
-
-	for (int f = 0; f < fade_frames; f++) {
-		float wet = (float)(f + 1) / (float)fade_frames;
-		float dry = 1.0f - wet;
-		for (int ch = 0; ch < channels; ch++) {
-			float anchor = have_anchor ?
-					       ctx->audio_last_output_sample[ch] :
-					       0.0f;
-			size_t idx = (size_t)f * channels + ch;
-			pcm[idx] = anchor * dry + pcm[idx] * wet;
-		}
 	}
 }
 
@@ -542,81 +484,69 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	return true;
 }
 
-static bool maybe_trim_sustained_audio_latency(struct irl_source *ctx,
-					       int fill_ms, int chunk_count)
+static bool maybe_reset_runaway_audio_latency(struct irl_source *ctx,
+					      int fill_ms, int chunk_count)
 {
-	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio)
-		return false;
-	if (should_hide_audio_backlog(ctx))
+	if (ctx->config.low_latency_audio || should_hide_audio_backlog(ctx))
 		return false;
 	if (chunk_count <= 3)
 		return false;
 
-	int trim_threshold_ms =
-		ctx->config.buffer_target_ms + AUDIO_SUSTAINED_TRIM_EXTRA_MS;
-	int chunk_ms = 0;
-	if (ctx->audio_buf.sample_rate > 0 && ctx->decoded_frame_samples > 0) {
-		chunk_ms = (int)((int64_t)ctx->decoded_frame_samples * 1000LL /
-				 ctx->audio_buf.sample_rate);
-	}
-	if (chunk_ms <= 0)
-		chunk_ms = 21;
-	int clear_threshold_ms = ctx->config.buffer_target_ms + chunk_ms;
-
-	uint64_t now_us = (uint64_t)av_gettime();
-	if (fill_ms <= clear_threshold_ms) {
-		ctx->audio_high_fill_since_us = 0;
-		return false;
-	}
-	if (fill_ms <= trim_threshold_ms)
+	int reset_threshold_ms =
+		ctx->config.buffer_max_ms * AUDIO_RUNAWAY_LATENCY_MULTIPLIER;
+	if (reset_threshold_ms < AUDIO_RUNAWAY_LATENCY_MIN_MS)
+		reset_threshold_ms = AUDIO_RUNAWAY_LATENCY_MIN_MS;
+	if (fill_ms <= reset_threshold_ms)
 		return false;
 
-	if (ctx->audio_high_fill_since_us == 0) {
-		ctx->audio_high_fill_since_us = now_us;
-		return false;
-	}
-	if (now_us - ctx->audio_high_fill_since_us <
-	    AUDIO_SUSTAINED_TRIM_HOLD_US) {
-		return false;
-	}
-	if (ctx->audio_last_sustained_trim_us != 0 &&
-	    now_us - ctx->audio_last_sustained_trim_us <
-		    AUDIO_SUSTAINED_TRIM_COOLDOWN_US) {
-		return false;
+	size_t fade_bytes =
+		audio_buffer_ms_to_bytes(&ctx->audio_buf, IRL_FADE_DURATION_MS);
+	size_t buffered_bytes =
+		audio_buffer_ms_to_bytes(&ctx->audio_buf, fill_ms);
+	if (fade_bytes > buffered_bytes)
+		fade_bytes = buffered_bytes;
+
+	uint8_t *fade_buf = NULL;
+	if (fade_bytes > 0) {
+		fade_buf = ensure_scratch(&ctx->audio_pump_scratch,
+					  &ctx->audio_pump_scratch_capacity,
+					  fade_bytes);
 	}
 
-	int desired_fill_ms = trim_threshold_ms - chunk_ms;
-	if (desired_fill_ms < clear_threshold_ms)
-		desired_fill_ms = clear_threshold_ms;
-	int trim_chunks = (fill_ms - desired_fill_ms + chunk_ms - 1) / chunk_ms;
-	if (trim_chunks < 1)
-		trim_chunks = 1;
-	if (trim_chunks > AUDIO_SUSTAINED_TRIM_MAX_CHUNKS)
-		trim_chunks = AUDIO_SUSTAINED_TRIM_MAX_CHUNKS;
-	if (trim_chunks > chunk_count - 3)
-		trim_chunks = chunk_count - 3;
-	if (trim_chunks <= 0)
-		return false;
+	if (fade_buf) {
+		size_t got = audio_buffer_read_with_fade_out(&ctx->audio_buf,
+							     fade_buf,
+							     fade_bytes);
+		if (got > 0) {
+			uint32_t fade_frames =
+				(uint32_t)(got /
+					   (ctx->audio_buf.channels *
+					    ctx->audio_buf.bytes_per_sample));
+			struct obs_source_audio obs_audio = {0};
+			obs_audio.data[0] = fade_buf;
+			obs_audio.frames = fade_frames;
+			obs_audio.format = AUDIO_FORMAT_FLOAT;
+			obs_audio.speakers =
+				(enum speaker_layout)ctx->audio_buf.channels;
+			obs_audio.timestamp = irl_next_audio_timestamp(
+				ctx, (int)fade_frames,
+				ctx->audio_buf.sample_rate);
+			obs_audio.samples_per_sec =
+				(uint32_t)ctx->audio_buf.sample_rate;
+			obs_source_output_audio(ctx->source, &obs_audio);
+		}
+	}
 
-	for (int i = 0; i < trim_chunks; i++)
-		audio_buffer_skip_chunk(&ctx->audio_buf);
-
-	int post_fill_ms = fill_ms;
-	int post_chunk_count = chunk_count;
-	int64_t post_peek = 0;
-	audio_buffer_peek_state(&ctx->audio_buf, &post_peek, &post_fill_ms,
-				&post_chunk_count);
-
-	ctx->audio_trim_crossfade_pending = true;
-	ctx->audio_resync_skipped_chunks += (uint64_t)trim_chunks;
-	ctx->audio_latency_trimmed_chunks += (uint64_t)trim_chunks;
+	int skipped_chunks = chunk_count;
+	audio_buffer_flush(&ctx->audio_buf);
+	irl_reset_audio_timing_state(ctx);
+	irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
+	ctx->fade_in_pending = true;
+	ctx->audio_resync_skipped_chunks += (uint64_t)skipped_chunks;
 	ctx->audio_quality_events++;
-	ctx->audio_last_sustained_trim_us = now_us;
-	ctx->audio_high_fill_since_us = 0;
-	blog(LOG_INFO,
-	     "[irl-source] Audio latency trim: dropped %d old buffered chunk%s (fill=%dms->%dms target=%dms)",
-	     trim_chunks, trim_chunks == 1 ? "" : "s", fill_ms,
-	     post_fill_ms, ctx->config.buffer_target_ms);
+	blog(LOG_WARNING,
+	     "[irl-source] Audio latency reset: faded and flushed %d buffered chunks (fill=%dms threshold=%dms)",
+	     skipped_chunks, fill_ms, reset_threshold_ms);
 	return true;
 }
 
@@ -656,7 +586,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 		return true;
 	}
 	if (has_audio &&
-	    maybe_trim_sustained_audio_latency(ctx, fill_ms, chunk_count)) {
+	    maybe_reset_runaway_audio_latency(ctx, fill_ms, chunk_count)) {
 		return true;
 	}
 
@@ -755,12 +685,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 			ctx->fade_in_frames_remaining--;
 		}
 	}
-	if (ctx->audio_trim_crossfade_pending) {
-		audio_apply_trim_crossfade(ctx, out_buf, (int)frames_out,
-					   out_channels, out_rate);
-		ctx->audio_trim_crossfade_pending = false;
-	}
-
 	int ts_samples = low_latency ? (int)frames_out : base_samples;
 	if (ts_samples <= 0)
 		ts_samples = base_samples;
@@ -775,8 +699,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	obs_audio.samples_per_sec = obs_rate;
 
 	obs_source_output_audio(ctx->source, &obs_audio);
-	audio_remember_last_output_sample(ctx, out_buf, (int)frames_out,
-					  out_channels);
 	finalize_audio_output(ctx, &obs_audio, chunk_pts_ns, stream_duration_ns);
 	return true;
 }

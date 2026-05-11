@@ -87,16 +87,12 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
 	ctx->audio_hidden_trimmed_chunks = 0;
-	ctx->audio_latency_trimmed_chunks = 0;
 	ctx->audio_quality_events = 0;
 	ctx->audio_decoder_flushes = 0;
 	ctx->video_decoder_flushes = 0;
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
-	ctx->audio_last_output_sample_channels = 0;
-	ctx->audio_last_output_sample_valid = false;
-	ctx->audio_trim_crossfade_pending = false;
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
@@ -180,8 +176,6 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 		ctx->audio_resync_skipped_chunks;
 	uint64_t audio_hidden_trimmed_chunks =
 		ctx->audio_hidden_trimmed_chunks;
-	uint64_t audio_latency_trimmed_chunks =
-		ctx->audio_latency_trimmed_chunks;
 	uint64_t audio_quality_events = ctx->audio_quality_events;
 	uint64_t audio_decoder_flushes = ctx->audio_decoder_flushes;
 	uint64_t video_decoder_flushes = ctx->video_decoder_flushes;
@@ -218,8 +212,6 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 (long long)audio_resync_skipped_chunks);
 	calldata_set_int(cd, "audio_hidden_trimmed_chunks",
 			 (long long)audio_hidden_trimmed_chunks);
-	calldata_set_int(cd, "audio_latency_trimmed_chunks",
-			 (long long)audio_latency_trimmed_chunks);
 	calldata_set_int(cd, "audio_quality_events",
 			 (long long)audio_quality_events);
 	calldata_set_int(cd, "audio_decoder_flushes",
@@ -282,7 +274,6 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int silence_insertions, out int audio_underruns, "
 		"out int audio_resync_skipped_chunks, "
 		"out int audio_hidden_trimmed_chunks, "
-		"out int audio_latency_trimmed_chunks, "
 		"out int audio_quality_events, "
 		"out int audio_decoder_flushes, "
 		"out int video_decoder_flushes, "
