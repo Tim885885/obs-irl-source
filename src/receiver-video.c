@@ -51,14 +51,12 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 	if (ctx->video_corrupted || frame->decode_error_flags != 0) {
 		if (!ctx->video_skip_logged) {
 			blog(LOG_WARNING,
-			     "[irl-source] Skipping corrupt video frames, holding last good frame");
+			     "[irl-source] Passing through corrupt video frames to preserve cadence");
 			ctx->video_skip_logged = true;
 		}
-		return;
-	}
-	if (ctx->video_skip_logged) {
+	} else if (ctx->video_skip_logged) {
 		blog(LOG_INFO,
-		     "[irl-source] Clean video frame received, resuming output");
+		     "[irl-source] Clean video frame received, normal video cadence restored");
 		ctx->video_skip_logged = false;
 	}
 

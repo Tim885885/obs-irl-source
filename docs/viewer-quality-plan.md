@@ -1,13 +1,14 @@
 # Viewer-quality plan
 
 The plugin should optimize for what viewers hear and see during bad IRL signal.
-Latency matters, but it is secondary to avoiding audio artifacts and gray/corrupt
-video output.
+Latency matters, but it is secondary to avoiding audio artifacts, gray frames,
+and video cadence freezes.
 
 ## Policy
 
 - Prefer silence over jittery, glitchy, metallic, or artifacty audio.
-- Prefer holding the last good video frame over gray/corrupt frames.
+- Prefer timestamped damaged frames over cadence freezes; avoid gray/blank
+  frames and decoder reset storms.
 - Prefer bounded latency movement over continuous audio stretching, while
   preserving the plugin's latency advantage over multi-second Media Source
   buffering.
@@ -34,10 +35,12 @@ video output.
 ## Phase 3: Tune video for viewer quality
 
 - Keep first-keyframe gating on by default.
-- Hold the last good frame during decoder corruption.
+- Pass through timestamped damaged frames during decoder corruption so video
+  cadence stays smooth.
 - Flush damaged decoder state conservatively so one bad packet does not cause a
   reset storm.
-- Prefer smooth frame cadence and last-good-frame hold over gray frame output.
+- Prefer smooth frame cadence over last-good-frame freezes; avoid gray frame
+  output.
 
 ## Phase 4: Validate with bad-signal logs
 

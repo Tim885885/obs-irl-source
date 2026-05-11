@@ -7,7 +7,7 @@ How the plugin keeps audio stable on unreliable mobile connections, and how the 
 The output policy is viewer-first:
 
 - Prefer short silence over jittery, glitchy, metallic, or artifacty audio.
-- Prefer holding the last good video frame over outputting gray/corrupt frames.
+- Prefer smooth video cadence; timestamped damaged frames are better than freezes, while gray/blank frames and decoder reset storms should be avoided.
 - Prefer bounded latency movement over aggressive time-stretching.
 - Make every recovery mechanism visible in stats so tuning is evidence-driven.
 
@@ -115,7 +115,7 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
 | Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode keeps native audio rate and lets audible-path latency float rather than trimming good audio |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
-| Decoder corruption | Gray/corrupt flicker until manual restart | Last good frame is held, bad frames are skipped, decoder state is flushed on repeated errors |
+| Decoder corruption | Gray/corrupt flicker until manual restart | Timestamped damaged frames are passed through to preserve cadence; decoder state is flushed only on repeated hard errors |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |
 
 The tradeoff: buffered mode is more resilient to short stalls, but adds intentional latency. Low-latency mode reacts faster and works better with OBS async unbuffered audio, but it gives up most of that jitter cushion. For rough SRTLA field conditions, buffered mode should still be the default. Low-latency mode is there when absolute latency matters more than smoothing over short network wobble.

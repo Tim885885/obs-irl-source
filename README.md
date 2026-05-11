@@ -9,7 +9,7 @@ Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live 
 The plugin optimizes for the stream viewers hear and see, not for preserving every damaged packet.
 
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
-- Video should stay temporally smooth. During decoder damage, holding the last good frame is preferred over outputting gray or corrupt frames.
+- Video should stay temporally smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
 - Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2-3 second live delay often seen with OBS Media Source. Buffered mode should use explicit recovery instead of continuous time stretching.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and playback mode are tracked separately.
 
@@ -32,7 +32,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt cutoff, loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
 | **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Drops pre-keyframe audio so the decoder does not warm up with garbage |
-| **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation. Audio breaks permanently until you restart the source | Flushes the decoder on repeated send/receive errors, resets bad timing state, holds the last good video frame during corruption |
+| **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation. Audio breaks permanently until you restart the source | Flushes the decoder on repeated send/receive errors, resets bad timing state, and preserves video cadence through timestamped damaged frames |
 | **Reconnection** | Reconnect exists but uses general-purpose defaults | 2-second default reconnect, tuned for how often IRL streams drop |
 | **Hardware decoding** | Supported | Auto-detects D3D11VA, CUDA/NVDEC, VAAPI. Works on NVIDIA, Intel, AMD, with automatic fallback |
 | **Resolution changes** | May crash or freeze on adaptive bitrate resolution changes | Handles mid-stream resolution changes gracefully (phone rotation, adaptive bitrate) |
@@ -58,7 +58,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 - Native 10-bit passthrough for YUV420P10LE (I010) and P010.
 - FFmpeg option passthrough, so you can override any demuxer option (latency, probesize, etc.) from the UI.
 - Zero-copy video for supported pixel formats, planes go straight to OBS.
-- Holds the last good video frame while the decoder is damaged, instead of showing gray/corrupt output.
+- Preserves video cadence during decoder damage by passing through timestamped damaged frames instead of freezing on every corrupt frame.
 - Periodic stats logging every 30 seconds: frame counts, buffer level, correction state, PTS repairs.
 
 ## Installation
