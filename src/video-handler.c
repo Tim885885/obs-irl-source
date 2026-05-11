@@ -150,12 +150,6 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 				  audio_buffered_end_pts_ns);
 		if (mapped < 0)
 			mapped = 0;
-		int64_t drift = mapped - (int64_t)now;
-		if (drift < -(int64_t)VIDEO_TS_CLAMP_NS) {
-			mapped = (int64_t)now;
-		} else if (drift > (int64_t)VIDEO_TS_CLAMP_NS) {
-			mapped = (int64_t)(now + VIDEO_TS_CAP_NS);
-		}
 		return (uint64_t)mapped;
 	}
 
