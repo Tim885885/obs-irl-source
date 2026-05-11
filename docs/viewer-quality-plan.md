@@ -29,8 +29,6 @@ video output.
 - If latency needs recovery, prefer hidden-backlog trimming or silence over
   continuous rate correction. Do not trim audible buffered audio just to reduce
   delay.
-- If latency runs away, recover at a deliberate fade/flush/fade-in boundary
-  instead of repeated audible chunk drops.
 - Insert silence on underrun so OBS timestamps remain monotonic.
 
 ## Phase 3: Tune video for viewer quality
@@ -53,11 +51,9 @@ Use live lossy SRT logs to check:
 - `pts_resets` stays rare.
 - `speed` stays at 1.000 in buffered mode unless a future explicitly tested
   correction path proves inaudible.
-- `resync_skips` happens only during low-latency resync, hidden/recovery
-  backlog cleanup, or clean runaway-latency reset.
+- `resync_skips` happens only during low-latency resync or hidden/recovery
+  backlog cleanup.
 - `Audio trim` logs are hidden/recovery cleanup only, before old chunks become
   audible.
-- `Audio latency reset` logs should be rare and indicate a deliberate
-  fade/flush/fade-in recovery boundary.
 - Video corruption logs do not imply audio corruption unless audio decoder or PTS
   diagnostics also show damage.

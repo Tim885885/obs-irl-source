@@ -110,7 +110,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at native 1.0x, inserts silence on underruns or real medium PTS gaps, and trims old buffered audio only while recovery/hidden backlog means those chunks are not yet audible. If latency runs away far beyond the configured buffer, it uses a fade/flush/fade-in recovery boundary instead of dropping audible chunks.
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback at native 1.0x, inserts silence on underruns or real medium PTS gaps, and trims old buffered audio only while recovery/hidden backlog means those chunks are not yet audible.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
 - `Decoupled Audio` only applies when low-latency mode is enabled.
 
@@ -163,9 +163,9 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `pts_max_gap_ms` | int | Largest repaired PTS gap size since the current connection/reset |
 | `silence_insertions` | int | Number of silence insertions for gap filling |
 | `audio_underruns` | int | Number of plugin-side underruns that emitted silence to keep OBS audio timestamps monotonic |
-| `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped during low-latency resync, hidden/recovery cleanup, or clean runaway-latency reset |
+| `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped during low-latency resync or hidden/recovery cleanup |
 | `audio_hidden_trimmed_chunks` | int | Number of buffered chunks trimmed while audio was hidden, recovering, or not yet audible |
-| `audio_quality_events` | int | Aggregate audible-risk counter for underruns, inserted silence, resyncs, clean latency resets, PTS resets, and audio decoder flushes |
+| `audio_quality_events` | int | Aggregate audible-risk counter for underruns, inserted silence, resyncs, PTS resets, and audio decoder flushes |
 | `audio_decoder_flushes` | int | Number of audio decoder flushes after repeated decode errors |
 | `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |

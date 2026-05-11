@@ -15,8 +15,6 @@
 #define AUDIO_RECOVERY_HOLD_US 1500000ULL
 #define AUDIO_TRIM_TRIGGER_MS 90
 #define AUDIO_CONCEAL_FADE_MS 8
-#define AUDIO_RUNAWAY_LATENCY_MIN_MS 750
-#define AUDIO_RUNAWAY_LATENCY_MULTIPLIER 2
 
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
@@ -484,72 +482,6 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	return true;
 }
 
-static bool maybe_reset_runaway_audio_latency(struct irl_source *ctx,
-					      int fill_ms, int chunk_count)
-{
-	if (ctx->config.low_latency_audio || should_hide_audio_backlog(ctx))
-		return false;
-	if (chunk_count <= 3)
-		return false;
-
-	int reset_threshold_ms =
-		ctx->config.buffer_max_ms * AUDIO_RUNAWAY_LATENCY_MULTIPLIER;
-	if (reset_threshold_ms < AUDIO_RUNAWAY_LATENCY_MIN_MS)
-		reset_threshold_ms = AUDIO_RUNAWAY_LATENCY_MIN_MS;
-	if (fill_ms <= reset_threshold_ms)
-		return false;
-
-	size_t fade_bytes =
-		audio_buffer_ms_to_bytes(&ctx->audio_buf, IRL_FADE_DURATION_MS);
-	size_t buffered_bytes =
-		audio_buffer_ms_to_bytes(&ctx->audio_buf, fill_ms);
-	if (fade_bytes > buffered_bytes)
-		fade_bytes = buffered_bytes;
-
-	uint8_t *fade_buf = NULL;
-	if (fade_bytes > 0) {
-		fade_buf = ensure_scratch(&ctx->audio_pump_scratch,
-					  &ctx->audio_pump_scratch_capacity,
-					  fade_bytes);
-	}
-
-	if (fade_buf) {
-		size_t got = audio_buffer_read_with_fade_out(&ctx->audio_buf,
-							     fade_buf,
-							     fade_bytes);
-		if (got > 0) {
-			uint32_t fade_frames =
-				(uint32_t)(got /
-					   (ctx->audio_buf.channels *
-					    ctx->audio_buf.bytes_per_sample));
-			struct obs_source_audio obs_audio = {0};
-			obs_audio.data[0] = fade_buf;
-			obs_audio.frames = fade_frames;
-			obs_audio.format = AUDIO_FORMAT_FLOAT;
-			obs_audio.speakers =
-				(enum speaker_layout)ctx->audio_buf.channels;
-			obs_audio.timestamp = irl_next_audio_timestamp(
-				ctx, (int)fade_frames,
-				ctx->audio_buf.sample_rate);
-			obs_audio.samples_per_sec =
-				(uint32_t)ctx->audio_buf.sample_rate;
-			obs_source_output_audio(ctx->source, &obs_audio);
-		}
-	}
-
-	int skipped_chunks = chunk_count;
-	audio_buffer_flush(&ctx->audio_buf);
-	irl_reset_audio_timing_state(ctx);
-	irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
-	ctx->fade_in_pending = true;
-	ctx->audio_resync_skipped_chunks += (uint64_t)skipped_chunks;
-	ctx->audio_quality_events++;
-	blog(LOG_WARNING,
-	     "[irl-source] Audio latency reset: faded and flushed %d buffered chunks (fill=%dms threshold=%dms)",
-	     skipped_chunks, fill_ms, reset_threshold_ms);
-	return true;
-}
-
 bool irl_pump_audio_once(struct irl_source *ctx)
 {
 	bool low_latency = ctx->config.low_latency_audio;
@@ -583,10 +515,6 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 							 &chunk_count);
 	if (has_audio &&
 	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count)) {
-		return true;
-	}
-	if (has_audio &&
-	    maybe_reset_runaway_audio_latency(ctx, fill_ms, chunk_count)) {
 		return true;
 	}
 
