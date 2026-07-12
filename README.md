@@ -9,8 +9,9 @@ Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live 
 The plugin optimizes for the stream viewers hear and see, not for preserving every damaged packet.
 
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
+- Audio content is never skipped once playback has started. Backlog from a stall is played back slightly sped up (up to +5%) until latency returns to target, the same approach used by dedicated IRL ingest players.
 - Video should stay temporally smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
-- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2-3 second live delay often seen with OBS Media Source. Buffered mode should use explicit recovery instead of continuous time stretching.
+- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2-3 second live delay often seen with OBS Media Source.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and playback mode are tracked separately.
 
 ## Why open source?
@@ -27,11 +28,12 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 
 | | Media Source | IRL Source |
 |---|---|---|
+| **Audio timing** | Delivers audio just in time with no lead, so decode jitter makes OBS "detect" problems and silently add up to a second of global audio buffering that is never removed | Perfectly contiguous timestamps at a constant sample rate with a fixed lead, engineered around how libobs actually consumes source audio. OBS never rebuilds its resampler and never adds hidden buffering |
 | **Audio jitter buffer** | None. Plays audio as fast as it arrives, so unstable connections give you stuttering or speedups | Configurable ring buffer (default 120ms) that absorbs network jitter, or a low-latency mode if you prefer |
 | **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps audio near native rate with bounded speed correction; post-stall backlog is played back slightly sped up (up to +5%) instead of skipped |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt cutoff, loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
-| **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Drops pre-keyframe audio so the decoder does not warm up with garbage |
+| **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Holds video packets from the decoder until the first keyframe (no reference-error spam or garbage frames on join). Drops pre-keyframe audio so the decoder does not warm up with garbage |
 | **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation. Audio breaks permanently until you restart the source | Flushes the decoder on repeated send/receive errors, resets bad timing state, and preserves video cadence through timestamped damaged frames |
 | **Reconnection** | Reconnect exists but uses general-purpose defaults | 2-second default reconnect, tuned for how often IRL streams drop |
 | **Hardware decoding** | Supported | Auto-detects D3D11VA, CUDA/NVDEC, VAAPI. Works on NVIDIA, Intel, AMD, with automatic fallback |
@@ -46,11 +48,13 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 - Protocol agnostic: SRT, RTMP, RIST, UDP, TCP, HTTP, or anything FFmpeg can open.
 - Codec agnostic: H.264, HEVC (8-bit and 10-bit), AV1, VP9, AAC, Opus, etc.
 - Audio jitter buffer, sized in milliseconds, adapts to any sample rate or channel count.
-- Adaptive latency control that keeps buffered mode near target without introducing audible time-stretch artifacts.
-- Low Latency Audio mode that uses OBS async unbuffered semantics and drains immediately instead of building a 60-120ms startup cushion.
+- Audio output built around how libobs consumes source audio: contiguous sample-counter timestamps at a constant rate, continuous submission with dropout concealment, and a fixed lead so the OBS mixer never starves.
+- Adaptive latency control with asymmetric speed authority (-2% build, +5% drain). Post-stall backlog is played back sped up, never skipped, and above a fill ceiling the receiver applies transport backpressure instead of dropping data.
+- Low Latency Audio mode that uses OBS async unbuffered semantics and drains immediately instead of building a startup cushion.
+- Low-delay video decode: no B-frame reorder buffering and capped decode threading, cutting hidden decoder latency.
 - PTS discontinuity repair for the timestamp jumps that happen during cell tower handoffs and packet loss.
-- Keyframe gating, so you do not get corrupted frames on stream join or reconnect.
-- Audio fade in and out on disconnect/reconnect (no clicks).
+- Keyframe gating at the packet level, so the decoder never even sees pre-keyframe data on join or reconnect.
+- Audio fade in and out on disconnect/reconnect, and shaped concealment silence on dropouts (no clicks).
 - Hardware decoding with auto-detection of NVDEC, D3D11VA, VAAPI, and automatic software fallback.
 - Decoder auto-recovery: flushes the decoder on repeated decode errors (including receive-frame failures), audio self-heals.
 - Graceful mid-stream resolution changes for adaptive bitrate and phone rotation.
@@ -102,7 +106,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Large Gap | 2000ms | PTS gaps above this trigger a full reset |
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
 | Hardware Decode | Auto | GPU decoding (Auto tries D3D11VA/CUDA/VAAPI, Off forces software) |
-| Wait for Keyframe | On | Don't output video until a keyframe arrives |
+| Wait for Keyframe | On | Hold video packets from the decoder until a keyframe arrives |
 | Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of waiting for the normal buffer minimum |
 | Decoupled Audio | Off | Enables OBS async decoupled mode when Low Latency Audio is on |
 
@@ -128,16 +132,16 @@ cmake --build build --parallel
 
 ### Windows (MSVC)
 
-Requires Visual Studio 2022 and OBS source + obs-deps:
+Requires Visual Studio 2026 and OBS source + obs-deps (see `.github/workflows/build.yml` for the exact versions CI uses):
 
 ```powershell
 # Clone OBS and download pre-built dependencies
-git clone --depth 1 --branch 32.1.0 https://github.com/obsproject/obs-studio.git obs-src
+git clone --depth 1 --branch 32.1.2 https://github.com/obsproject/obs-studio.git obs-src
 # Download obs-deps from https://github.com/obsproject/obs-deps/releases
 # Install SIMDe headers or add them to CMAKE_PREFIX_PATH
 
 # Build
-cmake -B build -G "Visual Studio 17 2022" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
 cmake --build build --config RelWithDebInfo
 ```
 
@@ -163,8 +167,8 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `pts_max_gap_ms` | int | Largest repaired PTS gap size since the current connection/reset |
 | `silence_insertions` | int | Number of silence insertions for gap filling |
 | `audio_underruns` | int | Number of plugin-side underruns that emitted silence to keep OBS audio timestamps monotonic |
-| `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped during low-latency resync or hidden/recovery cleanup |
-| `audio_hidden_trimmed_chunks` | int | Number of buffered chunks trimmed while audio was hidden, recovering, or not yet audible |
+| `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped by low-latency backlog capping or startup trims |
+| `audio_hidden_trimmed_chunks` | int | Number of buffered chunks trimmed before playback primed (never audible) |
 | `audio_quality_events` | int | Aggregate audible-risk counter for underruns, inserted silence, resyncs, PTS resets, and audio decoder flushes |
 | `audio_decoder_flushes` | int | Number of audio decoder flushes after repeated decode errors |
 | `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
@@ -238,8 +242,10 @@ end
 The plugin also logs stats to the OBS log every 30 seconds:
 
 ```
-[irl-source] Stats: video=1800 audio=2700 buf=82ms target=120ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 hidden_trims=0 quality_events=0 audio_flushes=0 video_flushes=0 res=1920x1080
+[irl-source] Stats: video=1801 audio=2997 buf=100ms target=120ms speed=1.000 ctrl=on pts_repairs=0 norm=0 interp=0 silence=0 resets=0 last_gap=0ms max_gap=0ms underruns=0 resync_skips=0 hidden_trims=0 quality_events=0 audio_flushes=0 video_flushes=0 obs_lead=99ms chunk=960@48000 stream_chunk=20ms obs_chunk=20ms restarts=0 res=1920x1080
 ```
+
+A healthy stream shows `speed=1.000`, `underruns=0`, `restarts=0`, and a constant `chunk` size. `buf` plus `obs_lead` is your plugin-side latency (fill wanders inside a deadband around the target by design). `obs_lead` is how far ahead of real time audio is queued inside OBS, and `restarts` counts output clock restarts after the audio thread stalled (should stay 0).
 
 ## Hardware decoding
 
@@ -253,10 +259,16 @@ The plugin automatically tries GPU-accelerated decoding in this order:
 
 Falls back to software decoding if no hardware decoder is available. Turn it off with the **Hardware Decode: Off** setting.
 
-The OBS log shows which decoder is active:
+The OBS log shows which decoder was requested at stream open:
 
 ```
 [irl-source] Video stream 0: hevc 1920x1080 (d3d11va)
+```
+
+The first-keyframe line reports the ground truth from the actual decoded frame, which is the one to trust:
+
+```
+[irl-source] First keyframe received (1920x1080 fmt=171 hardware decode)
 ```
 
 ## AI usage
