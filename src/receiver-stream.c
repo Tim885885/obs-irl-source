@@ -295,6 +295,8 @@ void irl_prepare_new_connection(struct irl_source *ctx)
 {
 	os_atomic_store_bool(&ctx->reconnecting, false);
 	ctx->first_keyframe_received = false;
+	ctx->video_pkt_gate_open = false;
+	ctx->video_pkt_gate_start_us = 0;
 	ctx->video_ts_init = false;
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	ctx->fade_in_pending = true;

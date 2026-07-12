@@ -227,8 +227,13 @@ struct irl_source {
 	bool video_corrupted;
 	bool video_skip_logged;
 
-	/* Keyframe gate */
+	/* Keyframe gate.  Packet-level: don't feed the decoder at all
+	 * until a key packet arrives (avoids reference-miss error spam
+	 * and decoder churn on join).  Frame-level backstop:
+	 * first_keyframe_received gates decoded output. */
 	bool first_keyframe_received;
+	bool video_pkt_gate_open;
+	uint64_t video_pkt_gate_start_us;
 
 	/* Audio fade state */
 	bool fade_in_pending;

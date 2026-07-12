@@ -76,6 +76,8 @@ static void apply_async_audio_mode(struct irl_source *ctx)
 static void reset_runtime_state(struct irl_source *ctx)
 {
 	ctx->first_keyframe_received = false;
+	ctx->video_pkt_gate_open = false;
+	ctx->video_pkt_gate_start_us = 0;
 	os_atomic_store_bool(&ctx->reconnecting, false);
 	pthread_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);

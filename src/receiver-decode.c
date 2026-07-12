@@ -119,6 +119,25 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 void irl_handle_video_packet(struct irl_source *ctx, AVPacket *pkt,
 			     AVFrame *frame)
 {
+	/* Packet-level keyframe gate: pre-keyframe packets only produce
+	 * reference-miss error spam and garbage frames that the
+	 * frame-level gate discards anyway. The timeout covers demuxers
+	 * that never set AV_PKT_FLAG_KEY; the decoder then finds the
+	 * keyframe itself. */
+	if (ctx->config.wait_for_keyframe && !ctx->first_keyframe_received &&
+	    !ctx->video_pkt_gate_open) {
+		if (pkt->flags & AV_PKT_FLAG_KEY) {
+			ctx->video_pkt_gate_open = true;
+		} else {
+			uint64_t now_us = (uint64_t)av_gettime();
+			if (ctx->video_pkt_gate_start_us == 0)
+				ctx->video_pkt_gate_start_us = now_us;
+			if (now_us - ctx->video_pkt_gate_start_us < 5000000ULL)
+				return;
+			ctx->video_pkt_gate_open = true;
+		}
+	}
+
 	int ret = avcodec_send_packet(ctx->video_dec_ctx, pkt);
 	if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
 		ctx->video_decode_errors++;

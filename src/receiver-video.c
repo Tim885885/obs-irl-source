@@ -40,9 +40,13 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 
 		ctx->first_keyframe_received = true;
 		ctx->video_corrupted = false;
+		/* hw_frames_ctx on the decoded frame is the ground truth
+		 * for whether hardware decode is actually in use; the
+		 * stream-open log only reports what was requested. */
 		blog(LOG_INFO,
-		     "[irl-source] First keyframe received (%dx%d fmt=%d)",
-		     frame->width, frame->height, frame->format);
+		     "[irl-source] First keyframe received (%dx%d fmt=%d %s decode)",
+		     frame->width, frame->height, frame->format,
+		     frame->hw_frames_ctx ? "hardware" : "software");
 	}
 
 	if (irl_video_is_keyframe(frame))
