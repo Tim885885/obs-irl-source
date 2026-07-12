@@ -131,11 +131,23 @@ static void start_receiver(struct irl_source *ctx)
 		os_atomic_store_bool(&ctx->thread_active, false);
 		return;
 	}
+	if (pthread_create(&ctx->video_thread, NULL, irl_video_thread, ctx) !=
+	    0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create video thread");
+		os_atomic_store_bool(&ctx->thread_active, false);
+		pthread_join(ctx->audio_thread, NULL);
+		return;
+	}
 	if (pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread,
 			   ctx) != 0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create receiver thread");
 		os_atomic_store_bool(&ctx->thread_active, false);
+		pthread_mutex_lock(&ctx->video_queue_lock);
+		pthread_cond_broadcast(&ctx->video_queue_cond);
+		pthread_mutex_unlock(&ctx->video_queue_lock);
+		pthread_join(ctx->video_thread, NULL);
 		pthread_join(ctx->audio_thread, NULL);
 	}
 }
@@ -257,6 +269,8 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	ctx->source = source;
 	ctx->current_speed = 1.0f;
 	pthread_mutex_init(&ctx->audio_state_lock, NULL);
+	pthread_mutex_init(&ctx->video_queue_lock, NULL);
+	pthread_cond_init(&ctx->video_queue_cond, NULL);
 
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
@@ -304,6 +318,8 @@ void irl_source_destroy(void *data)
 	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
 	pthread_mutex_destroy(&ctx->audio_state_lock);
+	pthread_cond_destroy(&ctx->video_queue_cond);
+	pthread_mutex_destroy(&ctx->video_queue_lock);
 
 	free(ctx->audio_pump_scratch);
 	free(ctx->audio_resample_scratch);

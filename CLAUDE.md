@@ -84,7 +84,8 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 ### Threading model
 
 - **Main/OBS thread**: calls create, destroy, update, tick, get_properties
-- **Receiver thread**: owns all FFmpeg state. Writes to the audio buffer (mutex protected). Outputs video frames directly to OBS via `obs_source_output_video`.
+- **Receiver thread**: owns demux/decode FFmpeg state. Writes to the audio buffer (mutex protected) and pushes decoded video frames (PTS pre-converted to nanoseconds) onto the video queue. Never blocks on GPU or OBS video delivery.
+- **Video thread**: pops the video queue, does the HW frame transfer and format conversion (owns sws_ctx), and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`).
 - **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
 
 ### OBS API conventions

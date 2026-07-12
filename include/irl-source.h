@@ -116,9 +116,26 @@ struct irl_source {
 	/* Receiver / demux thread */
 	pthread_t receiver_thread;
 	pthread_t audio_thread;
+	pthread_t video_thread;
 	pthread_mutex_t audio_state_lock;
 	volatile bool thread_active;
 	volatile bool reconnecting;
+
+	/* Video output queue (receiver thread → video thread).
+	 * Decouples the GPU→CPU frame transfer and format conversion
+	 * from the receiver thread so a GPU stall cannot starve audio
+	 * decode. Depth stays small because queued HW frames pin
+	 * decoder surface-pool entries (matched by extra_hw_frames at
+	 * decoder open). Queued frame->pts is in nanoseconds; the
+	 * receiver converts before queueing because it may close
+	 * fmt_ctx while frames are still in flight. */
+#define IRL_VIDEO_QUEUE_SIZE 4
+	pthread_mutex_t video_queue_lock;
+	pthread_cond_t video_queue_cond;
+	AVFrame *video_queue[IRL_VIDEO_QUEUE_SIZE];
+	int video_queue_head;
+	int video_queue_count;
+	uint64_t video_queue_drops;
 
 	/* FFmpeg state (owned by receiver thread) */
 	AVFormatContext *fmt_ctx;

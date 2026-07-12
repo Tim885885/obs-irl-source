@@ -128,9 +128,10 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
  * video-only wall-clock anchor. */
 static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 {
-	AVStream *vs = ctx->fmt_ctx->streams[ctx->video_stream_idx];
-	int64_t pts_ns = av_rescale_q(frame->pts, vs->time_base,
-				      (AVRational){1, 1000000000});
+	/* frame->pts is pre-converted to nanoseconds by the receiver
+	 * thread (see irl_video_queue_push); fmt_ctx must not be
+	 * touched here, it can be freed mid-reconnect. */
+	int64_t pts_ns = frame->pts;
 	uint64_t now = os_gettime_ns();
 
 	/* Snapshot audio-thread-owned fields under the lock. */

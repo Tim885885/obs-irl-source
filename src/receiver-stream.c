@@ -106,6 +106,11 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		 * decode ignores both settings. */
 		ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
 		ctx->thread_count = 4;
+		/* The video output queue holds decoded HW frames, each
+		 * pinning a decoder surface; give the pool matching
+		 * headroom or the decoder can stall waiting for a
+		 * surface the queue is sitting on. */
+		ctx->extra_hw_frames = IRL_VIDEO_QUEUE_SIZE;
 	}
 
 	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -164,10 +169,9 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 	ctx->swr_in_rate = 0;
 	ctx->swr_in_channels = 0;
 	ctx->swr_in_format = AV_SAMPLE_FMT_NONE;
-	if (ctx->sws_ctx) {
-		sws_freeContext(ctx->sws_ctx);
-		ctx->sws_ctx = NULL;
-	}
+	/* sws_ctx is owned by the video thread (it converts queued
+	 * frames that may outlive this connection); it is recreated on
+	 * parameter change and freed at source destroy. */
 
 	if (ctx->audio_dec_ctx) {
 		avcodec_free_context(&ctx->audio_dec_ctx);
@@ -442,7 +446,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "norm=%llu interp=%llu silence=%llu resets=%llu "
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
 	     "hidden_trims=%llu quality_events=%llu "
-	     "audio_flushes=%llu video_flushes=%llu "
+	     "audio_flushes=%llu video_flushes=%llu vq_drops=%llu "
 	     "obs_lead=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "restarts=%llu res=%dx%d",
@@ -464,6 +468,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_quality_events,
 	     (unsigned long long)ctx->audio_decoder_flushes,
 	     (unsigned long long)ctx->video_decoder_flushes,
+	     (unsigned long long)ctx->video_queue_drops,
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
 	     ctx->audio_last_frames_out, ctx->audio_last_samples_per_sec,
 	     (unsigned long long)(ctx->audio_last_chunk_stream_duration_ns /

@@ -8,6 +8,82 @@
 
 #include "receiver-internal.h"
 
+/* ── Video output queue ───────────────────────────────────── */
+
+static void video_queue_drain_locked(struct irl_source *ctx)
+{
+	while (ctx->video_queue_count > 0) {
+		AVFrame *f = ctx->video_queue[ctx->video_queue_head];
+		ctx->video_queue[ctx->video_queue_head] = NULL;
+		ctx->video_queue_head =
+			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
+		ctx->video_queue_count--;
+		av_frame_free(&f);
+	}
+}
+
+void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
+			  int64_t pts_ns)
+{
+	AVFrame *clone = av_frame_alloc();
+	if (!clone)
+		return;
+	if (av_frame_ref(clone, frame) < 0) {
+		av_frame_free(&clone);
+		return;
+	}
+	clone->pts = pts_ns;
+
+	pthread_mutex_lock(&ctx->video_queue_lock);
+	if (ctx->video_queue_count >= IRL_VIDEO_QUEUE_SIZE) {
+		/* Video thread is stalled; keep the freshest frames and
+		 * never make the receiver (and therefore audio) wait. */
+		AVFrame *oldest = ctx->video_queue[ctx->video_queue_head];
+		ctx->video_queue[ctx->video_queue_head] = NULL;
+		ctx->video_queue_head =
+			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
+		ctx->video_queue_count--;
+		ctx->video_queue_drops++;
+		av_frame_free(&oldest);
+	}
+	int tail = (ctx->video_queue_head + ctx->video_queue_count) %
+		   IRL_VIDEO_QUEUE_SIZE;
+	ctx->video_queue[tail] = clone;
+	ctx->video_queue_count++;
+	pthread_cond_signal(&ctx->video_queue_cond);
+	pthread_mutex_unlock(&ctx->video_queue_lock);
+}
+
+void *irl_video_thread(void *data)
+{
+	struct irl_source *ctx = data;
+
+	pthread_mutex_lock(&ctx->video_queue_lock);
+	while (os_atomic_load_bool(&ctx->thread_active)) {
+		if (ctx->video_queue_count == 0) {
+			pthread_cond_wait(&ctx->video_queue_cond,
+					  &ctx->video_queue_lock);
+			continue;
+		}
+		AVFrame *f = ctx->video_queue[ctx->video_queue_head];
+		ctx->video_queue[ctx->video_queue_head] = NULL;
+		ctx->video_queue_head =
+			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
+		ctx->video_queue_count--;
+		pthread_mutex_unlock(&ctx->video_queue_lock);
+
+		irl_video_output_frame(ctx, f);
+		av_frame_free(&f);
+
+		pthread_mutex_lock(&ctx->video_queue_lock);
+	}
+	video_queue_drain_locked(ctx);
+	pthread_mutex_unlock(&ctx->video_queue_lock);
+	return NULL;
+}
+
+/* ── Decoded frame handling (receiver thread) ─────────────── */
+
 static int64_t video_frame_pts(const AVFrame *frame)
 {
 	if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
@@ -76,18 +152,22 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 	ctx->last_video_width = frame->width;
 	ctx->last_video_height = frame->height;
 
+	/* Convert PTS to nanoseconds here: the video thread must not
+	 * touch fmt_ctx, which this thread frees on reconnect while
+	 * queued frames may still be in flight. */
+	int64_t pts_ns = 0;
 	if (ctx->fmt_ctx && ctx->video_stream_idx >= 0) {
 		AVStream *vs =
 			ctx->fmt_ctx->streams[ctx->video_stream_idx];
-		int64_t pts_ns = av_rescale_q(frame->pts, vs->time_base,
-					      (AVRational){1, 1000000000});
+		pts_ns = av_rescale_q(frame->pts, vs->time_base,
+				      (AVRational){1, 1000000000});
 		pthread_mutex_lock(&ctx->audio_state_lock);
 		ctx->latest_video_stream_pts_ns = pts_ns;
 		pthread_mutex_unlock(&ctx->audio_state_lock);
 	}
 
-	irl_video_output_frame(ctx, frame);
+	irl_video_queue_push(ctx, frame, pts_ns);
 	ctx->total_video_frames++;
 	if (ctx->total_video_frames == 1)
-		blog(LOG_INFO, "[irl-source] First video frame output");
+		blog(LOG_INFO, "[irl-source] First video frame queued");
 }

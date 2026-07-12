@@ -121,6 +121,10 @@ void irl_receiver_stop(struct irl_source *ctx)
 		return;
 
 	os_atomic_store_bool(&ctx->thread_active, false);
+	pthread_mutex_lock(&ctx->video_queue_lock);
+	pthread_cond_broadcast(&ctx->video_queue_cond);
+	pthread_mutex_unlock(&ctx->video_queue_lock);
+	pthread_join(ctx->video_thread, NULL);
 	pthread_join(ctx->audio_thread, NULL);
 	pthread_join(ctx->receiver_thread, NULL);
 }
