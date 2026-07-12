@@ -13,7 +13,7 @@
 #pragma once
 
 #ifndef OBS_IRL_SOURCE_VERSION
-#define OBS_IRL_SOURCE_VERSION "0.3.0"
+#define OBS_IRL_SOURCE_VERSION "0.4.0"
 #endif
 
 #include <obs-module.h>
@@ -129,17 +129,33 @@ struct irl_source {
 	uint64_t video_sys_base;  /* os_gettime_ns() at first frame */
 	int64_t video_pts_base;   /* stream PTS at first frame (in ns) */
 
-	/* Audio timestamp sync (same approach as video — stream PTS
-	 * anchored to system clock, giving proper A/V sync).
-	 * PTS comes from the PTS-aware jitter buffer, not estimated. */
-	bool audio_ts_init;
-	uint64_t audio_sys_base;  /* os_gettime_ns() at first audio output */
+	/* Audio output clock.  OBS timestamps are a pure sample
+	 * counter anchored once at prime time:
+	 *   ts = anchor + samples/rate
+	 * Contiguous by construction, so OBS's timestamp smoothing
+	 * always takes the seamless-append path.  The wall clock is
+	 * only consulted for pacing and stall detection. */
+	bool audio_out_primed;
+	uint64_t audio_out_anchor_ns;
+	uint64_t audio_out_samples;
+	uint64_t audio_output_restarts;
 
-	/* Gentle PLL: Moblin-style ±1 frame correction when the
-	 * computed audio PTS drifts >30ms from wall clock.  Each
-	 * correction is ~21ms (one frame), well within OBS's 70ms
-	 * smoothing window — absorbed safely, no cascade. */
-	int64_t audio_pll_offset_ns;
+	/* Output-side speed resampler (audio thread).  Playback speed
+	 * is applied here via swr compensation because changing the
+	 * samples_per_sec submitted to OBS forces libobs to rebuild
+	 * its per-source resampler with no crossfade (audible click
+	 * per change). */
+	SwrContext *speed_swr;
+	int speed_swr_rate;
+	int speed_swr_channels;
+	uint8_t *audio_speed_scratch;      /* audio thread */
+	size_t audio_speed_scratch_capacity;
+
+	/* Dropout concealment state (audio thread) */
+	float audio_out_last_sample[8];
+	int audio_out_last_channels;
+	bool audio_out_last_valid;
+	bool audio_conceal_fade_pending;
 
 	/* Stream PTS tracking for A/V sync and re-sync mode */
 	int64_t latest_audio_stream_pts_ns;
@@ -168,19 +184,15 @@ struct irl_source {
 
 	/* Buffered audio correction state */
 	float current_speed;
-	uint64_t audio_pll_corrections;
-	uint64_t audio_pll_hard_resets;
 	uint64_t audio_underruns;
 	uint64_t audio_resync_skipped_chunks;
 	uint64_t audio_hidden_trimmed_chunks;
 	uint64_t audio_quality_events;
-	int64_t audio_last_ts_drift_ns;
 	int64_t audio_last_obs_lead_ns;
 	uint64_t audio_last_chunk_stream_duration_ns;
 	uint64_t audio_last_chunk_obs_duration_ns;
 	uint32_t audio_last_frames_out;
 	uint32_t audio_last_samples_per_sec;
-	uint64_t last_audio_diag_time;
 	uint64_t audio_recovery_until_us;
 
 	/* Decoded frame size (samples per frame).  Used as the output

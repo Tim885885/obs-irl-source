@@ -82,8 +82,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	pts_repair_reset(&ctx->pts_state);
 	irl_reset_stream_timing_state(ctx);
 	ctx->current_speed = 1.0f;
-	ctx->audio_pll_corrections = 0;
-	ctx->audio_pll_hard_resets = 0;
+	ctx->audio_output_restarts = 0;
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
 	ctx->audio_hidden_trimmed_chunks = 0;
@@ -305,10 +304,13 @@ void irl_source_destroy(void *data)
 
 	free(ctx->audio_pump_scratch);
 	free(ctx->audio_resample_scratch);
+	free(ctx->audio_speed_scratch);
 	free(ctx->sws_nv12_buf);
 
 	if (ctx->swr_ctx)
 		swr_free(&ctx->swr_ctx);
+	if (ctx->speed_swr)
+		swr_free(&ctx->speed_swr);
 	if (ctx->sws_ctx)
 		sws_freeContext(ctx->sws_ctx);
 	if (ctx->hw_device_ctx)

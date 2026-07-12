@@ -308,10 +308,13 @@ bool irl_wait_for_reconnect(struct irl_source *ctx)
 	return os_atomic_load_bool(&ctx->thread_active);
 }
 
+/* Caller must hold audio_state_lock: the timestamp claim advances
+ * the shared output clock that the audio pump also uses. */
 static void fade_out_buffered_audio(struct irl_source *ctx)
 {
 	int buffered_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
-	if (!ctx->audio_buf.data || buffered_ms <= 0)
+	if (!ctx->audio_buf.data || buffered_ms <= 0 ||
+	    !ctx->audio_out_primed)
 		return;
 
 	size_t fade_bytes =
@@ -339,7 +342,7 @@ static void fade_out_buffered_audio(struct irl_source *ctx)
 		a.format = AUDIO_FORMAT_FLOAT;
 		a.speakers = (enum speaker_layout)ctx->audio_buf.channels;
 		a.samples_per_sec = (uint32_t)ctx->audio_buf.sample_rate;
-		a.timestamp = irl_next_audio_timestamp(
+		a.timestamp = irl_audio_output_claim(
 			ctx, (int)fade_frames, ctx->audio_buf.sample_rate);
 		obs_source_output_audio(ctx->source, &a);
 	}
@@ -357,10 +360,10 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	     errbuf, (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames);
 
-	fade_out_buffered_audio(ctx);
 	irl_close_ffmpeg(ctx);
 	pts_repair_reset(&ctx->pts_state);
 	pthread_mutex_lock(&ctx->audio_state_lock);
+	fade_out_buffered_audio(ctx);
 	audio_buffer_flush(&ctx->audio_buf);
 	irl_reset_stream_timing_state(ctx);
 	irl_mark_audio_recovery(ctx, 2500000ULL);
@@ -368,8 +371,7 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 	pthread_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->current_speed = 1.0f;
-	ctx->audio_pll_corrections = 0;
-	ctx->audio_pll_hard_resets = 0;
+	ctx->audio_output_restarts = 0;
 	ctx->audio_underruns = 0;
 	ctx->audio_resync_skipped_chunks = 0;
 	ctx->audio_hidden_trimmed_chunks = 0;
@@ -402,9 +404,9 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
 	     "hidden_trims=%llu quality_events=%llu "
 	     "audio_flushes=%llu video_flushes=%llu "
-	     "obs_lead=%lldms ts_drift=%lldms chunk=%u@%u "
+	     "obs_lead=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
-	     "pll=%llu hard_resets=%llu res=%dx%d",
+	     "restarts=%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
@@ -424,13 +426,11 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_decoder_flushes,
 	     (unsigned long long)ctx->video_decoder_flushes,
 	     (long long)(ctx->audio_last_obs_lead_ns / 1000000LL),
-	     (long long)(ctx->audio_last_ts_drift_ns / 1000000LL),
 	     ctx->audio_last_frames_out, ctx->audio_last_samples_per_sec,
 	     (unsigned long long)(ctx->audio_last_chunk_stream_duration_ns /
 				  1000000ULL),
 	     (unsigned long long)(ctx->audio_last_chunk_obs_duration_ns /
 				  1000000ULL),
-	     (unsigned long long)ctx->audio_pll_corrections,
-	     (unsigned long long)ctx->audio_pll_hard_resets,
+	     (unsigned long long)ctx->audio_output_restarts,
 	     ctx->last_video_width, ctx->last_video_height);
 }

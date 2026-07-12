@@ -31,7 +31,7 @@ Low-latency mode uses a shorter path:
 decode -> PTS repair -> minimal buffer -> OBS output
 ```
 
-In that mode the plugin still repairs discontinuities and keeps monotonic OBS-facing timestamps, but it does not wait for the normal `min_ms` fill level and it does not use buffered latency correction.
+In that mode the plugin still repairs discontinuities and keeps monotonic OBS-facing timestamps, but it starts playback as soon as audio exists and it does not use buffered latency correction.
 
 ### 1. Jitter buffer (absorbs short-term network jitter)
 
@@ -39,24 +39,27 @@ A ring buffer sized in milliseconds, not bytes. Default settings:
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| Target | 120ms | Where the buffer tries to stay |
-| Min | 60ms | Playback starts when buffer reaches this level |
-| Max | 300ms | Upper bound before the buffer is considered overfull |
+| Target | 120ms | Where the speed controller tries to keep the buffer |
+| Min | 60ms | Low watermark. The speed controller slows playback as fill approaches this level |
+| Max | 300ms | High watermark. The speed controller reaches maximum speed at this level |
 
 The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in; smooth PCM comes out.
 
-Audio is output in chunks matching the decoded frame size (AAC = 1024 samples, Opus = 960). Matching the output chunk size to the codec frame size eliminates drift between OBS's internal smoothed timestamp advance and our push rate. The output loop drains multiple chunks per decoded frame if needed, keeping the buffer near its target.
+Playback primes once, when the buffer first reaches the target plus the fixed output lead. After priming, the output pump always emits: real audio when the buffer has data, shaped concealment silence when it does not. There is no fill level below which the pump simply stops feeding OBS. Starving the OBS mixer produces a tick of silence plus a splice discontinuity (crackle) and can cause OBS to permanently add global audio buffering, so continuous submission is non-negotiable.
 
 ### 2. Adaptive latency control (prevents latency creep)
 
-Even with the drain loop, the buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. The plugin avoids trims and resets on audible audio; bounded speed correction is the steady-state latency control.
+The buffer level drifts over time due to network throughput variation, clock mismatch, and decoder recovery events. Bounded playback speed correction is the only steady-state latency control.
 
-Buffered mode uses near-native playback with explicit recovery:
+Speed is applied inside the plugin with a persistent swresample compensation (the same mechanism ffplay uses for audio clock sync). The sample rate submitted to OBS never changes, because libobs destroys and rebuilds its per-source resampler with no crossfade whenever `samples_per_sec` changes, which produces a click per change.
 
-- If hidden/recovery backlog grows too far, the plugin can trim old buffered chunks before they become audible.
-- Once audio is audible, the plugin does not trim old chunks just to chase the target buffer. Extra delay is preferable to an audible skip, pop, or cadence discontinuity.
-- If fill stays high, bounded speed correction drains latency gradually while video remains synced to audio.
-- If the buffer underruns, the plugin inserts a short silence chunk so OBS timing stays monotonic.
+The controller is proportional with a deadband: near the target it plays at exactly 1.0x, below the target it slows toward 0.98x (building buffer), above the target it speeds toward 1.02x (draining backlog). A 2% deviation is inaudible in speech and moves 20ms of buffer per second.
+
+Recovery rules:
+
+- If hidden or recovery backlog grows too far, the plugin trims old buffered chunks before they become audible. This is the only trim path.
+- Once audio is audible, the plugin never trims old chunks just to chase the target buffer. Extra delay is preferable to an audible skip, pop, or cadence discontinuity.
+- If the buffer underruns, the pump emits concealment silence that decays from the last played sample, and the first real chunk after the dropout gets a short fade-in.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
 The result should be transparent on stable links and non-artifacty on unstable links. If the source cannot make damaged audio sound natural, silence is preferred.
@@ -87,17 +90,18 @@ OBS expects audio timestamps in its system clock domain (`os_gettime_ns()`). Liv
 
 ### Audio timestamps
 
-The plugin uses a running timestamp counter anchored to `os_gettime_ns()` on first output. In buffered mode it advances by the decoded frame duration; in low-latency mode it advances by the actual emitted frame count so OBS async unbuffered mode stays close to real time.
+Timestamps are a pure sample counter anchored once at prime time: `ts = anchor + samples_emitted / rate`. Every submitted timestamp is exactly contiguous with the previous one, whether the chunk was real audio or concealment silence.
 
-Three properties keep this stable:
+This shape is dictated by how libobs treats submitted audio timestamps. Deviations under 70ms from the expected next timestamp are smoothed away (the seamless append path). Gaps between 70ms and 2s are placed by timestamp with zero-filled silence, which is audible. Jumps beyond 2s flush all queued audio for the source. A sample counter keeps the plugin on the seamless path permanently.
 
-1. **Chunk size matches codec frame size** — output chunks are exactly one codec frame (AAC = 1024, Opus = 960 samples). OBS's internal smoothing advances `next_audio_ts_min` by `chunk_samples / mixer_rate` per push. When our PTS advance matches this exactly, there's zero drift and OBS always uses the fast `push_back` path (which doesn't reset `audio_ts`).
+The wall clock is consulted for exactly two things:
 
-2. **Buffered mode still tracks real playout** — audio timestamps advance from the actual chunk cadence handed to OBS, while the plugin separately tracks the source-side end PTS for the same audio. Video sync uses that mapping instead of assuming a fixed buffer delay.
+1. **Pacing.** The pump emits whenever the end of submitted audio is less than a fixed lead (about 80ms) ahead of `os_gettime_ns()`. The lead absorbs thread scheduling jitter plus one OBS mixer tick (21.3ms), so the mixer never runs dry between submissions.
+2. **Stall detection.** If the output clock falls far behind wall clock (audio thread starved, machine suspended), the clock line is restarted once, explicitly counted in `audio_output_restarts`, instead of letting OBS add permanent buffering for a late source.
 
-3. **Small wall-clock guardrails** — the running counter is periodically pulled back toward wall clock if it drifts too far ahead or too far away from real time. This is intentionally limited: buffered mode favors continuity, while low-latency mode is stricter about staying near wall clock.
+The plugin separately tracks the source-side end PTS for the audio it has submitted. Video sync uses that mapping instead of assuming a fixed buffer delay.
 
-The initial audio timestamp is set to `os_gettime_ns()` with no large offset. When decoded audio frames arrive without a usable PTS, the plugin falls back to `best_effort_timestamp` and only synthesizes continuity from the previous repaired PTS when necessary. Frames with no safe starting point are dropped instead of pushing broken timing into OBS.
+When decoded audio frames arrive without a usable PTS, the plugin falls back to `best_effort_timestamp` and only synthesizes continuity from the previous repaired PTS when necessary. Frames with no safe starting point are dropped instead of pushing broken timing into OBS.
 
 ### Video timestamps
 
@@ -111,7 +115,7 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 
 | Scenario | Media Source | IRL Source |
 |---|---|---|
-| Stable connection | Works fine, but adds seconds of latency | Buffered mode adds ~120ms, low-latency mode keeps the source much closer to real time |
+| Stable connection | Works fine, but adds seconds of latency | Buffered mode adds the target buffer plus a fixed output lead (about 200ms total at defaults), low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
 | Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode keeps native audio rate and lets audible-path latency float rather than trimming good audio |

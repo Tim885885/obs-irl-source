@@ -2,8 +2,8 @@
 
 #include "../include/irl-source.h"
 
-uint64_t irl_next_audio_timestamp(struct irl_source *ctx, int base_samples,
-				  int out_rate);
+uint64_t irl_audio_output_claim(struct irl_source *ctx, int frames,
+				int out_rate);
 void irl_reset_stream_timing_state(struct irl_source *ctx);
 void irl_reset_audio_timing_state(struct irl_source *ctx);
 void irl_mark_audio_recovery(struct irl_source *ctx, uint64_t duration_us);

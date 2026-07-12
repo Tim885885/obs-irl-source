@@ -44,21 +44,36 @@ Single OBS MODULE shared library. All source is C11.
 ### Data flow
 
 ```
-FFmpeg URL → [receiver thread] → demux → decode → PTS repair
-  → audio: jitter buffer → adaptive speed → fade → OBS audio output
-  → video: keyframe gate → format conversion → OBS async video output
+FFmpeg URL, [receiver thread]: demux, decode, PTS repair
+  audio: resample, jitter buffer
+  video: keyframe gate, format conversion, OBS async video output
+
+[audio thread]: jitter buffer, speed correction, concealment, OBS audio output
 ```
+
+### Audio output contract (verified against libobs source)
+
+The audio core is built around three facts about libobs:
+
+1. OBS timestamps must be contiguous (`ts[n+1] = ts[n] + frames/rate`). Deviations under 70ms are smoothed, 70ms to 2s gaps are zero filled by OBS (audible), larger jumps flush all queued audio. The plugin therefore derives timestamps from a pure sample counter anchored once at prime time and never jumps the clock outside declared restarts.
+2. Changing `samples_per_sec` between submissions makes OBS destroy and recreate its per source resampler with no crossfade (a click per change). Playback speed is instead applied inside the plugin with a persistent swresample compensation, and the rate submitted to OBS never changes.
+3. The OBS mixer consumes 21.3ms ticks against wall clock. A source whose queued audio runs dry gets a tick of silence plus a time shifted splice (crackle), and a source that falls behind the mix window causes OBS to permanently add global audio buffering. After priming, the pump always emits (real audio or shaped concealment silence) and keeps a fixed lead ahead of wall clock.
+
+Buffer regulation happens through playback speed only (bounded, roughly ±2%). Backlog is trimmed exclusively while the output is hidden (before priming or during concealment), never while audible.
 
 ### Source files
 
-- **`src/plugin.c`** — OBS module entry point. Registers `irl_source_info` with callbacks.
-- **`src/irl-source.c`** — Source lifecycle: create/destroy/update/tick. Loads config, manages receiver thread, registers `proc_handler` for stats.
-- **`src/receiver.c`** — FFmpeg demux/decode thread (the core). Opens URLs, sets up HW decode, runs `av_read_frame()` loop, handles reconnection, audio processing (PTS repair → resample → buffer → speed adjust → OBS output), video processing (keyframe gate → video handler). Pre-keyframe audio is discarded (not staged) to avoid decoder warm-up artifacts.
-- **`src/audio-buffer.c`** — Thread-safe ring buffer sized in milliseconds. Mutex-protected. Supports fade-out reads.
-- **`src/audio-speed.c`** — Adaptive playback speed controller (0.95x–1.05x). Adjusts `samples_per_sec` on OBS audio output to leverage OBS's built-in resampler.
-- **`src/video-handler.c`** — Converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats. Re-anchors video timestamps when PTS drift exceeds 100ms (prevents freezes from discontinuities).
-- **`src/pts-repair.c`** — Three-tier PTS discontinuity repair: small gaps interpolated, medium gaps get silence, large gaps trigger full reset.
-- **`src/settings.c`** — OBS properties UI and default values.
+- **`src/plugin.c`**: OBS module entry point. Registers `irl_source_info` with callbacks.
+- **`src/irl-source.c`**: Source lifecycle (create, destroy, update, tick). Loads config, manages threads, registers `proc_handler` for stats.
+- **`src/receiver.c`**: thread entry points. The receiver thread runs the `av_read_frame()` loop, the audio thread runs the output pump.
+- **`src/receiver-stream.c`**: stream open/close, demuxer options, reconnection, disconnect fade out, periodic stats logging.
+- **`src/receiver-decode.c`**: packet to decoder plumbing with corruption burst handling and throttled decoder flushes.
+- **`src/receiver-audio.c`**: the audio core. Intake side (receiver thread): PTS repair, resample to interleaved float, write to the PTS aware jitter buffer. Pre-keyframe audio is discarded (not staged) to avoid decoder warm-up artifacts. Output side (audio thread): sample counter output clock, constant rate submission, swr based speed correction, dropout concealment, hidden backlog trims.
+- **`src/receiver-video.c`**: decoded video frame handling, keyframe gate, resolution change detection.
+- **`src/audio-buffer.c`**: thread safe ring buffer sized in milliseconds with a parallel PTS chunk queue. Mutex protected. Supports fade-out reads.
+- **`src/video-handler.c`**: converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats. Maps video PTS through the audio playout offset for lip sync.
+- **`src/pts-repair.c`**: three tier PTS discontinuity repair. Small gaps interpolated, medium gaps get silence, large gaps trigger full reset.
+- **`src/settings.c`**: OBS properties UI and default values.
 
 ### Headers (`include/`)
 
@@ -69,7 +84,8 @@ FFmpeg URL → [receiver thread] → demux → decode → PTS repair
 ### Threading model
 
 - **Main/OBS thread**: calls create, destroy, update, tick, get_properties
-- **Receiver thread** (`receiver.c`): owns all FFmpeg state. Writes to audio buffer (mutex-protected). Outputs video frames directly to OBS via `obs_source_output_video`.
+- **Receiver thread**: owns all FFmpeg state. Writes to the audio buffer (mutex protected). Outputs video frames directly to OBS via `obs_source_output_video`.
+- **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
 
 ### OBS API conventions
 
