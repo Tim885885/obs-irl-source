@@ -21,8 +21,7 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	av_dict_set(opts, "probesize", "5000000", 0);
 	av_dict_set(opts, "analyzeduration", "5000000", 0);
 	av_dict_set(opts, "fflags", "+genpts+discardcorrupt", 0);
-	av_dict_set(opts, "flush_packets", "1", 0);
-	av_dict_set(opts, "thread_queue_size", "1024", 0);
+	/* http(s) inputs only; harmless no-ops elsewhere */
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
 
@@ -198,7 +197,15 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 static int interrupt_cb(void *opaque)
 {
 	struct irl_source *ctx = opaque;
-	return !os_atomic_load_bool(&ctx->thread_active);
+
+	if (!os_atomic_load_bool(&ctx->thread_active))
+		return 1;
+	if (ctx->io_start_us != 0 &&
+	    (uint64_t)av_gettime() - ctx->io_start_us >
+		    IRL_IO_STALL_TIMEOUT_US) {
+		return 1;
+	}
+	return 0;
 }
 
 bool irl_open_stream(struct irl_source *ctx)
@@ -218,6 +225,7 @@ bool irl_open_stream(struct irl_source *ctx)
 	ctx->fmt_ctx->interrupt_callback.callback = interrupt_cb;
 	ctx->fmt_ctx->interrupt_callback.opaque = ctx;
 
+	ctx->io_start_us = (uint64_t)av_gettime();
 	int ret = avformat_open_input(&ctx->fmt_ctx, ctx->config.url, NULL,
 				      &opts);
 	av_dict_free(&opts);
@@ -231,6 +239,7 @@ bool irl_open_stream(struct irl_source *ctx)
 
 	blog(LOG_INFO, "[irl-source] Input opened, probing streams...");
 
+	ctx->io_start_us = (uint64_t)av_gettime();
 	if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) {
 		blog(LOG_WARNING, "[irl-source] Failed to find stream info");
 		avformat_close_input(&ctx->fmt_ctx);

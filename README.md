@@ -165,6 +165,8 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `audio_resync_skipped_chunks` | int | Number of buffered audio chunks skipped by low-latency backlog capping or startup trims |
 | `audio_hidden_trimmed_chunks` | int | Number of buffered chunks trimmed before playback primed (never audible) |
 | `audio_quality_events` | int | Aggregate audible-risk counter for underruns, inserted silence, resyncs, PTS resets, and audio decoder flushes |
+| `audio_output_restarts` | int | Output clock restarts after the audio thread stalled (should stay 0) |
+| `obs_lead_ms` | int | How far ahead of real time audio is queued inside OBS (healthy is roughly 60 to 100ms) |
 | `audio_decoder_flushes` | int | Number of audio decoder flushes after repeated decode errors |
 | `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |

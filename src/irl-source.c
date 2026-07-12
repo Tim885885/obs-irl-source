@@ -175,6 +175,8 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	uint64_t audio_hidden_trimmed_chunks =
 		ctx->audio_hidden_trimmed_chunks;
 	uint64_t audio_quality_events = ctx->audio_quality_events;
+	uint64_t audio_output_restarts = ctx->audio_output_restarts;
+	int64_t obs_lead_ms = ctx->audio_last_obs_lead_ns / 1000000LL;
 	uint64_t audio_decoder_flushes = ctx->audio_decoder_flushes;
 	uint64_t video_decoder_flushes = ctx->video_decoder_flushes;
 	uint64_t reconnect_count = ctx->reconnect_count;
@@ -212,6 +214,9 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 (long long)audio_hidden_trimmed_chunks);
 	calldata_set_int(cd, "audio_quality_events",
 			 (long long)audio_quality_events);
+	calldata_set_int(cd, "audio_output_restarts",
+			 (long long)audio_output_restarts);
+	calldata_set_int(cd, "obs_lead_ms", (long long)obs_lead_ms);
 	calldata_set_int(cd, "audio_decoder_flushes",
 			 (long long)audio_decoder_flushes);
 	calldata_set_int(cd, "video_decoder_flushes",
@@ -271,6 +276,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int audio_resync_skipped_chunks, "
 		"out int audio_hidden_trimmed_chunks, "
 		"out int audio_quality_events, "
+		"out int audio_output_restarts, out int obs_lead_ms, "
 		"out int audio_decoder_flushes, "
 		"out int video_decoder_flushes, "
 		"out int stream_delay_ms, out bool low_latency_audio, "

@@ -90,6 +90,7 @@ void *irl_receiver_thread(void *data)
 				break;
 		}
 
+		ctx->io_start_us = (uint64_t)av_gettime();
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
 		if (ret < 0) {
 			irl_handle_stream_read_error(ctx, ret);

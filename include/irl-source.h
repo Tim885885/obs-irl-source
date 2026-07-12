@@ -73,6 +73,12 @@ struct irl_source;
  * buffer capacity (4x buffer_max_ms) or writes would drop old data. */
 #define IRL_BLEED_PACE_FILL_MS 1000
 
+/* Abort a blocking read/connect through the FFmpeg interrupt callback
+ * after this long without progress. A dead-but-open connection (uplink
+ * loss in a dead zone) otherwise hangs av_read_frame forever with no
+ * reconnect. Connect plus stream probe normally completes in under 3s. */
+#define IRL_IO_STALL_TIMEOUT_US 10000000ULL
+
 /* ── Source configuration ─────────────────────────────────── */
 
 struct irl_config {
@@ -116,6 +122,11 @@ struct irl_source {
 
 	/* FFmpeg state (owned by receiver thread) */
 	AVFormatContext *fmt_ctx;
+	/* Armed before each blocking FFmpeg I/O call; interrupt_cb
+	 * aborts the call when it has been blocked past the stall
+	 * timeout. Receiver-thread owned (interrupt_cb runs on the
+	 * calling thread). */
+	uint64_t io_start_us;
 	AVCodecContext *audio_dec_ctx;
 	AVCodecContext *video_dec_ctx;
 	AVBufferRef *hw_device_ctx;
