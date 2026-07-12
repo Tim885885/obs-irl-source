@@ -182,6 +182,12 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 		avformat_close_input(&ctx->fmt_ctx);
 		ctx->fmt_ctx = NULL;
 	}
+	/* Release the HW device with the connection it was created for.
+	 * Keeping it across reconnects made the device-creation loop
+	 * silently skip (no logging) and attach a stale device, so
+	 * reconnects behaved differently from fresh connects. */
+	if (ctx->hw_device_ctx)
+		av_buffer_unref(&ctx->hw_device_ctx);
 	ctx->audio_stream_idx = -1;
 	ctx->video_stream_idx = -1;
 	ctx->using_hw_decode = false;
