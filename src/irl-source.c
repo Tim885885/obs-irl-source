@@ -36,17 +36,20 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 
 	cfg->reconnect_delay =
 		(int)obs_data_get_int(settings, "reconnect_delay");
-	cfg->network_buffer_mb =
-		(int)obs_data_get_int(settings, "network_buffer_mb");
+	cfg->network_buffer_mb = IRL_DEFAULT_NETWORK_BUFFER_MB;
 
 	cfg->buffer_target_ms =
 		(int)obs_data_get_int(settings, "buffer_target_ms");
-	cfg->buffer_min_ms = (int)obs_data_get_int(settings, "buffer_min_ms");
-	cfg->buffer_max_ms = (int)obs_data_get_int(settings, "buffer_max_ms");
+	if (cfg->buffer_target_ms <= 0)
+		cfg->buffer_target_ms = IRL_DEFAULT_BUFFER_TARGET_MS;
+	cfg->buffer_min_ms = cfg->buffer_target_ms / IRL_BUFFER_MIN_DIVISOR;
+	if (cfg->buffer_min_ms < IRL_BUFFER_MIN_FLOOR_MS)
+		cfg->buffer_min_ms = IRL_BUFFER_MIN_FLOOR_MS;
+	cfg->buffer_max_ms = cfg->buffer_target_ms + IRL_BUFFER_MAX_EXTRA_MS;
 	cfg->adaptive_speed = obs_data_get_bool(settings, "adaptive_speed");
 
-	cfg->small_gap_ms = (int)obs_data_get_int(settings, "small_gap_ms");
-	cfg->large_gap_ms = (int)obs_data_get_int(settings, "large_gap_ms");
+	cfg->small_gap_ms = IRL_SMALL_GAP_MS;
+	cfg->large_gap_ms = IRL_LARGE_GAP_MS;
 
 	const char *ff = obs_data_get_string(settings, "ffmpeg_options");
 	cfg->ffmpeg_options = ff && *ff ? bstrdup(ff) : NULL;
@@ -56,21 +59,15 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 		obs_data_get_bool(settings, "wait_for_keyframe");
 	cfg->low_latency_audio =
 		obs_data_get_bool(settings, "low_latency_audio");
-	cfg->decoupled_audio =
-		obs_data_get_bool(settings, "decoupled_audio");
 	cfg->close_when_inactive =
 		obs_data_get_bool(settings, "close_when_inactive");
-	if (!cfg->low_latency_audio)
-		cfg->decoupled_audio = false;
 }
 
 static void apply_async_audio_mode(struct irl_source *ctx)
 {
 	obs_source_set_async_unbuffered(ctx->source,
 					ctx->config.low_latency_audio);
-	obs_source_set_async_decoupled(ctx->source,
-				       ctx->config.low_latency_audio &&
-					       ctx->config.decoupled_audio);
+	obs_source_set_async_decoupled(ctx->source, false);
 }
 
 static void reset_runtime_state(struct irl_source *ctx)
@@ -238,8 +235,6 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 (long long)stream_delay_ms);
 	calldata_set_bool(cd, "low_latency_audio",
 			  ctx->config.low_latency_audio);
-	calldata_set_bool(cd, "decoupled_audio",
-			  ctx->config.decoupled_audio);
 	calldata_set_int(cd, "reconnect_count", (long long)reconnect_count);
 }
 
@@ -279,7 +274,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int audio_decoder_flushes, "
 		"out int video_decoder_flushes, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
-		"out bool decoupled_audio, out int reconnect_count)",
+		"out int reconnect_count)",
 		irl_source_get_stats, ctx);
 
 	/* Start the receiver thread if we have a URL */

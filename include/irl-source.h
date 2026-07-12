@@ -36,16 +36,26 @@ struct irl_source;
 #define IRL_DEFAULT_RECONNECT_DELAY 2
 #define IRL_DEFAULT_NETWORK_BUFFER_MB 2
 #define IRL_DEFAULT_BUFFER_TARGET_MS 120
-#define IRL_DEFAULT_BUFFER_MIN_MS 60
-#define IRL_DEFAULT_BUFFER_MAX_MS 300
 #define IRL_DEFAULT_ADAPTIVE_SPEED true
-#define IRL_DEFAULT_SMALL_GAP_MS 70
-#define IRL_DEFAULT_LARGE_GAP_MS 2000
 #define IRL_DEFAULT_HW_DECODE 0 /* 0 = auto, 1 = off */
 #define IRL_DEFAULT_WAIT_KEYFRAME true
 #define IRL_DEFAULT_LOW_LATENCY_AUDIO false
-#define IRL_DEFAULT_DECOUPLED_AUDIO false
 #define IRL_DEFAULT_CLOSE_WHEN_INACTIVE false
+
+/* Min/max buffer are derived from the target rather than exposed as
+ * settings: min is the speed controller's low watermark, max is where
+ * drain speed peaks (and sizes the ring at 4x). Keeps users from
+ * creating broken configurations like min > target. */
+#define IRL_BUFFER_MIN_DIVISOR 2
+#define IRL_BUFFER_MIN_FLOOR_MS 20
+#define IRL_BUFFER_MAX_EXTRA_MS 200
+
+/* PTS repair thresholds (formerly settings; nobody could reason
+ * about them without reading the source, and the defaults are
+ * principled: below small_gap is decoder timestamp wobble, above
+ * large_gap the stream fundamentally changed). */
+#define IRL_SMALL_GAP_MS 70
+#define IRL_LARGE_GAP_MS 2000
 
 /* Audio fade duration on disconnect/reconnect (avoids clicks/pops) */
 #define IRL_FADE_DURATION_MS 50
@@ -71,13 +81,15 @@ struct irl_config {
 	int reconnect_delay;
 	int network_buffer_mb;
 
-	/* Audio buffer */
+	/* Audio buffer. Only target_ms is a user setting; min/max are
+	 * derived from it in config_load(). */
 	int buffer_target_ms;
 	int buffer_min_ms;
 	int buffer_max_ms;
 	bool adaptive_speed;
 
-	/* PTS repair */
+	/* PTS repair (constants, kept here so pts_repair_init has one
+	 * source of truth) */
 	int small_gap_ms;
 	int large_gap_ms;
 
@@ -86,7 +98,6 @@ struct irl_config {
 	int hw_decode;
 	bool wait_for_keyframe;
 	bool low_latency_audio;
-	bool decoupled_audio;
 	bool close_when_inactive;
 };
 

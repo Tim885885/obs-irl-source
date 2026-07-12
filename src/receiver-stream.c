@@ -124,6 +124,13 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 				     av_hwdevice_get_type_name(
 					     hw_device_types[i]));
 			} else {
+				char errbuf[AV_ERROR_MAX_STRING_SIZE];
+				av_strerror(err, errbuf, sizeof(errbuf));
+				blog(LOG_INFO,
+				     "[irl-source] Hardware device %s unavailable: %s",
+				     av_hwdevice_get_type_name(
+					     hw_device_types[i]),
+				     errbuf);
 				src->hw_device_ctx = NULL;
 			}
 		}
@@ -236,18 +243,22 @@ bool irl_open_stream(struct irl_source *ctx)
 			ctx->video_dec_ctx = open_decoder(ctx, s, try_hw);
 			if (ctx->video_dec_ctx) {
 				ctx->video_stream_idx = (int)i;
+				/* This reports the requested decode path;
+				 * the first-keyframe log reports the ground
+				 * truth from the actual decoded frame. */
+				bool hw_attached =
+					ctx->video_dec_ctx->hw_device_ctx !=
+					NULL;
 				blog(LOG_INFO,
-				     "[irl-source] Video stream %u: %s %dx%d%s%s%s",
+				     "[irl-source] Video stream %u: %s %dx%d (%s requested, using_hw=%d)",
 				     i, avcodec_get_name(s->codecpar->codec_id),
 				     s->codecpar->width, s->codecpar->height,
-				     ctx->using_hw_decode ? " (" : " (",
-				     ctx->using_hw_decode &&
-						     ctx->hw_device_type !=
-							     AV_HWDEVICE_TYPE_NONE
+				     hw_attached && ctx->hw_device_type !=
+							    AV_HWDEVICE_TYPE_NONE
 					     ? av_hwdevice_get_type_name(
 						       ctx->hw_device_type)
 					     : "SW",
-				     ")");
+				     ctx->using_hw_decode ? 1 : 0);
 			} else {
 				blog(LOG_WARNING,
 				     "[irl-source] Failed to open video decoder for stream %u (%s)",

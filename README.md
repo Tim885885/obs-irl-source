@@ -97,26 +97,21 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 |---|---|---|
 | URL | — | Any FFmpeg-supported URL (SRT, RTMP, etc.) |
 | Reconnect Delay | 2s | Seconds between reconnect attempts |
-| Network Buffer | 2 MB | Transport-level buffer size (higher = more resilient, more latency) |
-| Target Buffer | 120ms | Audio jitter buffer target fill level |
-| Min Buffer | 60ms | Low watermark; playback slows toward -2% as fill approaches this level |
-| Max Buffer | 300ms | High watermark; playback reaches its maximum drain speed at this level. Audible audio is never trimmed to enforce it |
+| Target Buffer | 120ms | The jitter cushion and the main latency knob. The speed controller's watermarks derive from it (low at half the target, full drain speed at target plus 200ms) |
 | Adaptive Latency Control | On | Keeps audio near native rate with bounded speed correction (-2% build, +5% drain); backlog trimming happens only before playback starts |
-| Small Gap | 70ms | PTS gaps below this are interpolated silently |
-| Large Gap | 2000ms | PTS gaps above this trigger a full reset |
-| FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
+| FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format), for example `buffer_size` or the SRT `latency` |
 | Hardware Decode | Auto | GPU decoding (Auto tries D3D11VA/CUDA/VAAPI, Off forces software) |
 | Wait for Keyframe | On | Hold video packets from the decoder until a keyframe arrives |
-| Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of waiting for the normal buffer minimum |
-| Decoupled Audio | Off | Enables OBS async decoupled mode when Low Latency Audio is on |
+| Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of building the jitter cushion |
+
+Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and Decoupled Audio as settings. Those are now derived or fixed internally (the PTS thresholds are 70ms and 2000ms, the transport buffer is 2MB and overridable through FFmpeg Options), so old scene collections keep working and simply ignore the stored values.
 
 ### Buffered vs low-latency audio mode
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback near native 1.0x with bounded speed correction, and conceals underruns or real medium PTS gaps with shaped silence. Backlog that builds up during a stall is played back sped up (never skipped); only startup backlog before playback begins gets trimmed.
+- Buffered mode is the default IRL path. It uses `Target Buffer` as the jitter cushion, keeps normal playback near native 1.0x with bounded speed correction, and conceals underruns or real medium PTS gaps with shaped silence. Backlog that builds up during a stall is played back sped up (never skipped); only startup backlog before playback begins gets trimmed.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
-- `Decoupled Audio` only applies when low-latency mode is enabled.
 
 ## Building from source
 
@@ -174,7 +169,6 @@ The plugin exposes live statistics via OBS's `proc_handler` API. You can query i
 | `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |
 | `low_latency_audio` | bool | Whether OBS async unbuffered low-latency mode is enabled |
-| `decoupled_audio` | bool | Whether OBS async decoupled mode is enabled |
 | `reconnect_count` | int | Number of reconnect attempts since the source was created |
 
 ### Example Lua script (stats text overlay)

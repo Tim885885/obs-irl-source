@@ -35,13 +35,13 @@ In that mode the plugin still repairs discontinuities and keeps monotonic OBS-fa
 
 ### 1. Jitter buffer (absorbs short-term network jitter)
 
-A ring buffer sized in milliseconds, not bytes. Default settings:
+A ring buffer sized in milliseconds, not bytes. Only the target is a user setting; the watermarks derive from it:
 
-| Parameter | Default | Purpose |
+| Parameter | Value | Purpose |
 |---|---|---|
-| Target | 120ms | Where the speed controller tries to keep the buffer |
-| Min | 60ms | Low watermark. The speed controller slows playback as fill approaches this level |
-| Max | 300ms | High watermark. The speed controller reaches maximum speed at this level |
+| Target | 120ms (setting) | Where the speed controller tries to keep the buffer |
+| Min | target / 2 | Low watermark. The speed controller slows playback as fill approaches this level |
+| Max | target + 200ms | High watermark. The speed controller reaches maximum drain speed at this level |
 
 The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in; smooth PCM comes out.
 
