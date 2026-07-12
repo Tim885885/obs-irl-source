@@ -53,12 +53,14 @@ The buffer level drifts over time due to network throughput variation, clock mis
 
 Speed is applied inside the plugin with a persistent swresample compensation (the same mechanism ffplay uses for audio clock sync). The sample rate submitted to OBS never changes, because libobs destroys and rebuilds its per-source resampler with no crossfade whenever `samples_per_sec` changes, which produces a click per change.
 
-The controller is proportional with a deadband: near the target it plays at exactly 1.0x, below the target it slows toward 0.98x (building buffer), above the target it speeds toward 1.02x (draining backlog). A 2% deviation is inaudible in speech and moves 20ms of buffer per second.
+The controller is proportional with a deadband and asymmetric authority: near the target it plays at exactly 1.0x, below the target it slows toward 0.98x (building buffer, inaudible), above the target it speeds toward 1.05x (draining backlog, a mild chipmunk effect). Draining 1s of backlog takes about 20s at full authority.
+
+Backlog is never skipped once playback has primed. When a stall ends and delayed data floods back in, everything gets played, sped up, until latency returns to the target. Above a fill ceiling (about 1s) the receiver simply stops reading from the transport, so the excess buffers at the sender or in the TCP path instead of overflowing the local ring buffer. With an RTMP encoder that buffers during congestion, the stream pauses and resumes exactly where it stopped, then bleeds the extra delay off over the following minutes. SRT bounds its own backlog through the latency window, so this ceiling rarely engages there.
 
 Recovery rules:
 
-- If hidden or recovery backlog grows too far, the plugin trims old buffered chunks before they become audible. This is the only trim path.
-- Once audio is audible, the plugin never trims old chunks just to chase the target buffer. Extra delay is preferable to an audible skip, pop, or cadence discontinuity.
+- Startup backlog is trimmed before playback primes (nothing was audible yet, so the trim is free). This is the only trim path.
+- Once audio is audible, the plugin never trims old chunks. Extra delay is preferable to an audible skip, pop, or cadence discontinuity.
 - If the buffer underruns, the pump emits concealment silence that decays from the last played sample, and the first real chunk after the dropout gets a short fade-in.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
@@ -118,7 +120,8 @@ If the computed timestamp drifts too far from wall clock, it is clamped rather t
 | Stable connection | Works fine, but adds seconds of latency | Buffered mode adds the target buffer plus a fixed output lead (about 200ms total at defaults), low-latency mode keeps the source much closer to real time |
 | Brief packet loss (< 70ms) | Audio pop, possible stutter | Interpolated silently, inaudible |
 | Cell tower handoff (100-500ms gap) | Loud click, audio jumps ahead | Silence inserted, smooth transition |
-| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Buffered mode keeps native audio rate and lets audible-path latency float rather than trimming good audio |
+| Sender clock drift / slow latency creep | Buffer grows forever, latency increases | Bounded speed correction drains the creep gradually while video stays synced to audio |
+| RTMP congestion with a buffering encoder | Stream skips ahead or dies | Stream pauses, resumes exactly where it stopped, and bleeds the extra delay off at up to +5% speed |
 | Connection drops and reconnects | Loud click on disconnect, possibly corrupted frames on reconnect | Fade out, clean reconnect, keyframe gate, fade in |
 | Decoder corruption | Gray/corrupt flicker until manual restart | Timestamped damaged frames are passed through to preserve cadence; decoder state is flushed only on repeated hard errors |
 | Long stream (hours) | Timestamp epoch causes OBS sync issues | Timestamps are repaired and anchored to system clock |

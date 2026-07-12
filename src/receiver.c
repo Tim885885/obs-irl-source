@@ -71,6 +71,25 @@ void *irl_receiver_thread(void *data)
 			irl_prepare_new_connection(ctx);
 		}
 
+		/* Backlog backpressure: above the fill ceiling, stop
+		 * reading so the transport holds the excess and playback
+		 * bleeds it off via speed. Bounded by buffer capacity
+		 * so a burst between checks can never force the ring
+		 * buffer to drop audible data. */
+		if (ctx->audio_stream_idx >= 0 &&
+		    !ctx->config.low_latency_audio) {
+			int pace_ms = ctx->config.buffer_max_ms * 3;
+			if (pace_ms > IRL_BLEED_PACE_FILL_MS)
+				pace_ms = IRL_BLEED_PACE_FILL_MS;
+			while (os_atomic_load_bool(&ctx->thread_active) &&
+			       audio_buffer_fill_ms_locked(&ctx->audio_buf) >
+				       pace_ms) {
+				os_sleep_ms(5);
+			}
+			if (!os_atomic_load_bool(&ctx->thread_active))
+				break;
+		}
+
 		int ret = av_read_frame(ctx->fmt_ctx, pkt);
 		if (ret < 0) {
 			irl_handle_stream_read_error(ctx, ret);

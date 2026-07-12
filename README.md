@@ -28,7 +28,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | | Media Source | IRL Source |
 |---|---|---|
 | **Audio jitter buffer** | None. Plays audio as fast as it arrives, so unstable connections give you stuttering or speedups | Configurable ring buffer (default 120ms) that absorbs network jitter, or a low-latency mode if you prefer |
-| **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps audio near native rate with bounded speed correction; trims only hidden/recovery backlog |
+| **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps audio near native rate with bounded speed correction; post-stall backlog is played back slightly sped up (up to +5%) instead of skipped |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
 | **Audio fade on disconnect** | Abrupt cutoff, loud click/pop | 50ms linear fade-out on disconnect, fade-in on reconnect |
 | **Keyframe gating** | Starts decoding immediately, so you get corrupted frames until a keyframe arrives | Waits for the first keyframe before outputting video. Drops pre-keyframe audio so the decoder does not warm up with garbage |
@@ -95,9 +95,9 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Reconnect Delay | 2s | Seconds between reconnect attempts |
 | Network Buffer | 2 MB | Transport-level buffer size (higher = more resilient, more latency) |
 | Target Buffer | 120ms | Audio jitter buffer target fill level |
-| Min Buffer | 60ms | Minimum buffer before playback starts |
-| Max Buffer | 300ms | Recovery sizing hint; steady-state audible audio is not trimmed just to enforce this value |
-| Adaptive Latency Control | On | Keeps audio near native rate with bounded speed correction; old-buffer trimming is reserved for recovery/hidden backlog before it becomes audible |
+| Min Buffer | 60ms | Low watermark; playback slows toward -2% as fill approaches this level |
+| Max Buffer | 300ms | High watermark; playback reaches its maximum drain speed at this level. Audible audio is never trimmed to enforce it |
+| Adaptive Latency Control | On | Keeps audio near native rate with bounded speed correction (-2% build, +5% drain); backlog trimming happens only before playback starts |
 | Small Gap | 70ms | PTS gaps below this are interpolated silently |
 | Large Gap | 2000ms | PTS gaps above this trigger a full reset |
 | FFmpeg Options | — | Extra demuxer options (`key1=val1 key2=val2` format) |
@@ -110,7 +110,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 
 `Low Latency Audio` changes plugin behavior, not just an OBS flag.
 
-- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback near native 1.0x with bounded speed correction, inserts silence on underruns or real medium PTS gaps, and trims old buffered audio only while recovery/hidden backlog means those chunks are not yet audible.
+- Buffered mode is the default IRL path. It uses the configured `Target/Min/Max Buffer` values as a jitter cushion, keeps normal playback near native 1.0x with bounded speed correction, and conceals underruns or real medium PTS gaps with shaped silence. Backlog that builds up during a stall is played back sped up (never skipped); only startup backlog before playback begins gets trimmed.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.
 - `Decoupled Audio` only applies when low-latency mode is enabled.
 

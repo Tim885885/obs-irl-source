@@ -95,7 +95,18 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		ctx->thread_count = 1;
 		ctx->thread_type = 0;
 	} else {
-		ctx->thread_count = 0;
+		/* Low-delay decode: don't hold frames for B-frame
+		 * reordering. IRL encoders essentially never emit
+		 * B-frames, so that buffer is pure latency; if a stream
+		 * does contain them, frames come out in decode order
+		 * and video may judder slightly instead of lagging.
+		 *
+		 * Frame threading adds thread_count-1 frames of
+		 * pipeline latency on software decode, so cap it
+		 * instead of letting FFmpeg use every core. Hardware
+		 * decode ignores both settings. */
+		ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+		ctx->thread_count = 4;
 	}
 
 	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {

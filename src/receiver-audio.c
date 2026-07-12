@@ -30,9 +30,10 @@
  *      real audio or shaped concealment silence — and keep a fixed
  *      lead ahead of wall clock.
  *
- * Buffer regulation is done by playback speed only (bounded,
- * inaudible drift), never by audible trims; backlog is trimmed only
- * while the output is hidden (pre-prime or during concealment).
+ * Buffer regulation is done by playback speed only, never by audible
+ * trims. Backlog is trimmed only before playback primes; after that,
+ * content is preserved: the read loop applies transport backpressure
+ * above a fill ceiling and playback bleeds the excess at up to +5%.
  */
 
 #include <limits.h>
@@ -57,11 +58,13 @@
  * the clock line instead of letting OBS add permanent buffering. */
 #define AUDIO_OUT_MAX_LAG_MS 150
 
-/* Playback speed authority for buffer regulation. ±2% is inaudible
- * to most listeners in speech and drains/builds 20ms of buffer per
- * second, which covers IRL jitter without audible trims. */
+/* Playback speed authority for buffer regulation. Asymmetric,
+ * IRLToolkit-style: draining a post-stall backlog runs up to +5%
+ * (mild chipmunk, but every sample is preserved instead of skipped),
+ * while the build direction stays at an inaudible -2%. Draining
+ * 1s of backlog takes ~20s at full authority. */
 #define AUDIO_SPEED_MIN 0.98f
-#define AUDIO_SPEED_MAX 1.02f
+#define AUDIO_SPEED_MAX 1.05f
 #define AUDIO_SPEED_DEADBAND_MS 20
 #define AUDIO_SPEED_SMOOTHING 0.05f
 
@@ -451,15 +454,14 @@ static void finalize_audio_output(struct irl_source *ctx,
 
 static bool should_hide_audio_backlog(const struct irl_source *ctx)
 {
-	return !ctx->config.low_latency_audio &&
-	       (!ctx->audio_out_primed || ctx->fade_in_pending ||
-		irl_audio_recovery_active(ctx));
+	return !ctx->config.low_latency_audio && !ctx->audio_out_primed;
 }
 
-/* While the output is hidden (pre-prime, reconnect fade, or dropout
- * concealment) the buffer content is not audible yet, so excess
- * backlog can be dropped for free. This is the only trim path; once
- * audio is live, backlog bleeds off via playback speed instead. */
+/* Before playback primes, nothing has been audible yet, so excess
+ * startup backlog can be dropped for free. This is the only trim
+ * path. Once audio is live, content is never skipped: the read loop
+ * stops ingesting above a fill ceiling (transport backpressure) and
+ * playback bleeds the backlog off at up to AUDIO_SPEED_MAX. */
 static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 					    int chunk_count)
 {
@@ -479,13 +481,13 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	if (chunk_ms <= 0)
 		chunk_ms = 21;
 
+	/* Keep enough to satisfy the prime threshold, which includes
+	 * the OBS-side lead. */
+	int chunk_samples = ctx->decoded_frame_samples > 0
+				    ? ctx->decoded_frame_samples
+				    : 960;
 	int keep_ms = ctx->config.buffer_target_ms + chunk_ms;
-	if (!ctx->audio_out_primed && out_rate > 0) {
-		/* Keep enough to satisfy the prime threshold, which
-		 * includes the OBS-side lead. */
-		int chunk_samples = ctx->decoded_frame_samples > 0
-					    ? ctx->decoded_frame_samples
-					    : 960;
+	if (out_rate > 0) {
 		keep_ms += (int)(audio_output_lead_ns(ctx, chunk_samples,
 						      out_rate) /
 				 1000000ULL);

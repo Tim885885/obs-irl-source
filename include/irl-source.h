@@ -55,6 +55,14 @@ struct irl_source;
  * avoids AAC/decoder warm-up artifacts without adding steady-state delay. */
 #define IRL_STARTUP_AUDIO_WARMUP_MS 150
 
+/* Full-bleed backlog policy: once the local jitter buffer holds this
+ * much audio, the receiver stops reading and lets the transport hold
+ * the rest (TCP/RTMP backpressure; SRT bounds its own backlog via the
+ * latency window). Playback bleeds the excess at up to +5% speed, so
+ * nothing audible is ever skipped. Must stay well under the ring
+ * buffer capacity (4x buffer_max_ms) or writes would drop old data. */
+#define IRL_BLEED_PACE_FILL_MS 1000
+
 /* ── Source configuration ─────────────────────────────────── */
 
 struct irl_config {
