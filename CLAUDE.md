@@ -21,7 +21,7 @@ cmake --build build --parallel
 ### Windows (MSVC)
 
 ```powershell
-cmake -B build -G "Visual Studio 17 2022" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
 cmake --build build --config RelWithDebInfo
 ```
 
@@ -97,7 +97,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 
 ## CI
 
-GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 24.04), Windows x64 (VS 2022), macOS ARM64 (macos-15). The Windows and macOS jobs clone OBS source, patch it to build only libobs, and link against that. No release automation — artifacts are uploaded only.
+GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). The Windows and macOS jobs clone OBS source, patch it to build only libobs, and link against that. No release automation — artifacts are uploaded only.
 
 ## Contributing
 

@@ -6,12 +6,12 @@ Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live 
 
 ## Viewer-quality policy
 
-The plugin optimizes for the stream viewers hear and see, not for preserving every damaged packet.
+The plugin optimizes for what viewers hear and see, not for preserving every damaged packet.
 
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
 - Audio content is never skipped once playback has started. Backlog from a stall is played back slightly sped up (up to +5%) until latency returns to target, the same approach used by dedicated IRL ingest players.
 - Video should stay temporally smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
-- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2-3 second live delay often seen with OBS Media Source.
+- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2 to 3 second live delay often seen with OBS Media Source.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and playback mode are tracked separately.
 
 ## Why open source?
@@ -37,7 +37,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **Decoder recovery** | Decoder gets stuck in a bad state during SRT bitrate starvation. Audio breaks permanently until you restart the source | Flushes the decoder on repeated send/receive errors, resets bad timing state, and preserves video cadence through timestamped damaged frames |
 | **Reconnection** | Reconnect exists but uses general-purpose defaults | 2-second default reconnect, tuned for how often IRL streams drop |
 | **Hardware decoding** | Supported | Auto-detects D3D11VA, CUDA/NVDEC, VAAPI. Works on NVIDIA, Intel, AMD, with automatic fallback |
-| **Resolution changes** | May crash or freeze on adaptive bitrate resolution changes | Handles mid-stream resolution changes gracefully (phone rotation, adaptive bitrate) |
+| **Resolution changes** | May crash or freeze on adaptive bitrate resolution changes | Detects mid-stream resolution changes (phone rotation, adaptive bitrate) and keeps playing without a source restart |
 | **Network buffer** | Configurable but not optimized for live | 2MB default transport buffer tuned for SRT live streaming |
 | **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, silence insertions, stream delay, reconnect count, and low-latency mode flag via `proc_handler` |
 
@@ -57,7 +57,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 - Audio fade in and out on disconnect/reconnect, and shaped concealment silence on dropouts (no clicks).
 - Hardware decoding with auto-detection of NVDEC, D3D11VA, VAAPI, and automatic software fallback.
 - Decoder auto-recovery: flushes the decoder on repeated decode errors (including receive-frame failures), audio self-heals.
-- Graceful mid-stream resolution changes for adaptive bitrate and phone rotation.
+- Mid-stream resolution changes (adaptive bitrate, phone rotation) handled without a source restart.
 - Configurable network buffer (default 2MB) to absorb network-level jitter.
 - Native 10-bit passthrough for YUV420P10LE (I010) and P010.
 - FFmpeg option passthrough, so you can override any demuxer option (latency, probesize, etc.) from the UI.
@@ -104,7 +104,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Wait for Keyframe | On | Hold video packets from the decoder until a keyframe arrives |
 | Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of building the jitter cushion |
 
-Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and Decoupled Audio as settings. Those are now derived or fixed internally (the PTS thresholds are 70ms and 2000ms, the transport buffer is 2MB and overridable through FFmpeg Options), so old scene collections keep working and simply ignore the stored values.
+Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and Decoupled Audio as settings. Those are now derived or fixed internally (the PTS thresholds are 70ms and 2000ms, the transport buffer is 2MB and overridable through FFmpeg Options), so old scene collections keep working and ignore the stored values.
 
 ### Buffered vs low-latency audio mode
 
