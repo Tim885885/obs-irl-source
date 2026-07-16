@@ -1,6 +1,6 @@
-# Viewer-quality plan
+# Viewer-quality policy
 
-The plugin should optimize for what viewers hear and see during bad IRL signal.
+The plugin optimizes for what viewers hear and see during bad IRL signal.
 Latency matters, but it is secondary to avoiding audio artifacts, gray frames,
 and video cadence freezes.
 
@@ -12,52 +12,54 @@ and video cadence freezes.
 - Prefer bounded latency movement over continuous audio stretching, while
   preserving the plugin's latency advantage over multi-second Media Source
   buffering.
-- Keep recovery behavior visible in logs and stats before tuning thresholds.
+- Keep recovery behavior visible in logs and stats.
 
-## Phase 1: Make recovery observable
+## Recovery is observable
 
-- Split aggregate PTS repair telemetry into normalization, interpolation,
-  silence, reset, last gap, and max gap counters.
-- Keep the old `pts_repairs` counter for script compatibility.
-- Log buffer fill, underruns, trims, OBS lead, timestamp drift,
-  and the split PTS repair counters together.
+PTS repair telemetry is split into separate counters (normalization,
+interpolation, silence, reset, last gap, max gap) so each recovery mechanism
+can be tuned independently. The aggregate `pts_repairs` counter is kept for
+script compatibility. The periodic stats log line reports buffer fill,
+underruns, trims, OBS lead, timing state, and the split PTS counters together,
+so a single log line describes the health of the whole path.
 
-## Phase 2: Tune audio for viewer quality
+## Audio behavior
 
-- Treat small timestamp jitter as timestamp repair, not inserted silence.
-- Treat real medium gaps as silence, not time compression.
-- Keep buffered audio near native rate by default; speed correction must be
-  bounded, smoothed, and less audible than skips or pops.
-- If latency needs recovery, prefer hidden-backlog trimming or silence over
-  continuous rate correction. Do not trim audible buffered audio just to reduce
-  delay.
-- Insert silence on underrun so OBS timestamps remain monotonic.
+- Small timestamp jitter is treated as timestamp repair (interpolation), not
+  inserted silence.
+- Real medium gaps get silence insertion, not time compression.
+- Buffered audio stays near native rate by default. Steady-state latency
+  recovery is done with bounded speed correction (build at -2%, drain at up to
+  +5%), which is smoothed and less audible than skips or pops.
+- Audible buffered audio is never trimmed just to reduce delay. Hidden-backlog
+  trimming runs only before playback primes (nothing was audible yet).
+- Underruns emit shaped concealment silence so OBS timestamps remain monotonic.
 
-## Phase 3: Tune video for viewer quality
+## Video behavior
 
-- Keep first-keyframe gating on by default.
-- Pass through timestamped damaged frames during decoder corruption so video
-  cadence stays smooth.
-- Flush damaged decoder state conservatively so one bad packet does not cause a
-  reset storm.
-- Prefer smooth frame cadence over last-good-frame freezes; avoid gray frame
-  output.
+- First-keyframe gating is on by default.
+- Timestamped damaged frames are passed through during decoder corruption so
+  video cadence stays smooth.
+- Damaged decoder state is flushed conservatively (only after repeated
+  consecutive errors, with a cooldown) so one bad packet does not cause a reset
+  storm.
+- Smooth frame cadence is preferred over last-good-frame freezes; gray frame
+  output is avoided.
 
-## Phase 4: Validate with bad-signal logs
+## Reading bad-signal logs
 
-Use live lossy SRT logs to check:
+When validating against live lossy SRT logs:
 
-- `silence_insertions` rises only when there are real medium audio gaps or
-  underruns.
-- `pts_normalizations` can be high without audible artifacts.
-- `pts_interpolations` should be watched together with gap size and audio
-  quality.
-- `pts_resets` stays rare.
+- `silence_insertions` should rise only on real medium audio gaps or underruns.
+- `pts_normalizations` can be high without audible artifacts (frame-sized
+  cadence smoothing).
+- `pts_interpolations` should be read together with gap size and audio quality.
+- `pts_resets` should stay rare.
 - `speed` stays near 1.000 in buffered mode; any deviation should be smooth and
   correlated with high/low fill.
 - `resync_skips` happens only during low-latency resync or hidden/recovery
   backlog cleanup.
 - `Audio trim` logs are hidden/recovery cleanup only, before old chunks become
   audible.
-- Video corruption logs do not imply audio corruption unless audio decoder or PTS
-  diagnostics also show damage.
+- Video corruption logs do not imply audio corruption unless audio decoder or
+  PTS diagnostics also show damage.

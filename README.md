@@ -103,6 +103,7 @@ For a deeper look at how the jitter buffer, adaptive latency control, PTS repair
 | Hardware Decode | Auto | GPU decoding (Auto tries D3D11VA/CUDA/VAAPI, Off forces software) |
 | Wait for Keyframe | On | Hold video packets from the decoder until a keyframe arrives |
 | Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of building the jitter cushion |
+| Close Stream When Inactive | Off | Stops receiving when the source is neither showing nor active (clears the last frame to black), and reconnects when it becomes visible again |
 
 Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and Decoupled Audio as settings. Those are now derived or fixed internally (the PTS thresholds are 70ms and 2000ms, the transport buffer is 2MB and overridable through FFmpeg Options), so old scene collections keep working and ignore the stored values.
 

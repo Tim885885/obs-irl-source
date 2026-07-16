@@ -76,9 +76,9 @@ The PTS repair system classifies gaps into three tiers:
 |---|---|---|
 | < 70ms | **Interpolate** — replace the PTS with the expected value (last PTS + last duration). The gap was probably just jitter. | Brief audio stutter or pop |
 | 70ms – 2s | **Silence insertion** — keep the PTS but insert the appropriate duration of silence before the frame. Something was actually lost. | Loud click followed by audio jump |
-| > 2s | **Full reset** — flush the buffer, re-arm the keyframe gate, restart from scratch. The stream has fundamentally changed. | Extended silence, possibly wrong audio |
+| > 2s | **Full reset** — flush the buffer, reset timing state, and re-enter playback from scratch. The stream has fundamentally changed. | Extended silence, possibly wrong audio |
 
-Thresholds are configurable (Small Gap and Large Gap settings in the UI).
+The thresholds are fixed constants (`IRL_SMALL_GAP_MS` 70ms, `IRL_LARGE_GAP_MS` 2000ms). They were once exposed as Small Gap and Large Gap settings, but nobody could reason about them without reading the source and the defaults are principled, so they are no longer user-facing.
 
 `pts_repairs` tracks non-normal PTS discontinuities. For tuning, use the split diagnostics: `pts_normalizations`, `pts_interpolations`, `silence_insertions`, `pts_resets`, `pts_last_gap_ms`, and `pts_max_gap_ms`. A high normalization count with low silence usually means frame-sized timestamp cadence smoothing, not packet-loss concealment.
 
@@ -111,7 +111,7 @@ Video uses a rebasing approach: the first frame's stream PTS is anchored to `os_
 
 Instead of a fixed audio offset, video is delayed by the current buffered-audio age when audio exists. That tracks the real state of the audio path better than always adding the configured target buffer.
 
-If the computed timestamp drifts too far from wall clock, it is clamped rather than fully re-anchored. That avoids visible jumps while still preventing long freezes if the stream sends a bad future timestamp.
+When there is no audio playout mapping yet (audio-less start), video falls back to the rebased timestamp, and if that drifts too far from wall clock (over 500ms) it is clamped rather than fully re-anchored. That avoids visible jumps while still preventing long freezes if the stream sends a bad future timestamp.
 
 ## What this means in practice
 

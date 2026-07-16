@@ -44,11 +44,15 @@ Single OBS MODULE shared library. All source is C11.
 ### Data flow
 
 ```
-FFmpeg URL, [receiver thread]: demux, decode, PTS repair
-  audio: resample, jitter buffer
-  video: keyframe gate, format conversion, OBS async video output
+[receiver thread]: FFmpeg URL, demux, decode, PTS repair
+  audio: resample, write to jitter buffer
+  video: keyframe gate, push decoded frame (PTS in ns) onto video queue
 
-[audio thread]: jitter buffer, speed correction, concealment, OBS audio output
+[video thread]: pop video queue, HW frame transfer, format conversion,
+                OBS async video output
+
+[audio thread]: drain jitter buffer, speed correction, concealment,
+                OBS audio output
 ```
 
 ### Audio output contract (verified against libobs source)
@@ -64,8 +68,9 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 ### Source files
 
 - **`src/plugin.c`**: OBS module entry point. Registers `irl_source_info` with callbacks.
-- **`src/irl-source.c`**: Source lifecycle (create, destroy, update, tick). Loads config, manages threads, registers `proc_handler` for stats.
+- **`src/irl-source.c`**: Source lifecycle (create, destroy, update, tick, activate/deactivate/show/hide). Loads config, manages threads, registers `proc_handler` for stats. When "Close Stream When Inactive" is enabled, the show/activate callbacks start the receiver and hide/deactivate stop it (and clear the frame to black); otherwise those callbacks are no-ops and the stream runs from create to destroy.
 - **`src/receiver.c`**: thread entry points. The receiver thread runs the `av_read_frame()` loop, the audio thread runs the output pump.
+- **`src/receiver-internal.h`**: internal declarations shared across the `receiver-*.c` translation units (stream open/close, packet/frame handlers, the audio pump, the video thread, timing-state resets). Not part of the public `include/` API.
 - **`src/receiver-stream.c`**: stream open/close, demuxer options, reconnection, disconnect fade out, periodic stats logging.
 - **`src/receiver-decode.c`**: packet to decoder plumbing with corruption burst handling and throttled decoder flushes.
 - **`src/receiver-audio.c`**: the audio core. Intake side (receiver thread): PTS repair, resample to interleaved float, write to the PTS aware jitter buffer. Pre-keyframe audio is discarded (not staged) to avoid decoder warm-up artifacts. Output side (audio thread): sample counter output clock, constant rate submission, swr based speed correction, dropout concealment, hidden backlog trims.
@@ -83,7 +88,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 
 ### Threading model
 
-- **Main/OBS thread**: calls create, destroy, update, tick, get_properties
+- **Main/OBS thread**: calls create, destroy, update, tick, get_properties, and the activate/deactivate/show/hide callbacks (used only when "Close Stream When Inactive" is on)
 - **Receiver thread**: owns demux/decode FFmpeg state. Writes to the audio buffer (mutex protected) and pushes decoded video frames (PTS pre-converted to nanoseconds) onto the video queue. Never blocks on GPU or OBS video delivery.
 - **Video thread**: pops the video queue, does the HW frame transfer and format conversion (owns sws_ctx), and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`).
 - **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
@@ -108,3 +113,6 @@ The initial version of this plugin was heavily built with LLM assistance. The au
 ## Other files
 
 - **`irl-stats.lua`** - Example OBS Lua script that reads plugin stats via proc_handler and updates a text source overlay.
+- **`docs/audio-pipeline.md`** - Deep dive on the buffered vs low-latency audio paths, jitter buffer, adaptive latency control, PTS repair tiers, and timestamp handling.
+- **`docs/viewer-quality-plan.md`** - The viewer-quality policy and the recovery/diagnostics behavior that implements it (what stats to watch and what healthy looks like).
+- **`AGENTS.md`**, **`GEMINI.md`** - Symlinks to this file (`CLAUDE.md`).
