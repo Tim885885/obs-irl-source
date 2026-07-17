@@ -220,6 +220,13 @@ jobs:
           # Allow Homebrew paths (OBS blocks them by default)
           sed -i '' '/CMAKE_IGNORE_PREFIX_PATH/d' obs-src/cmake/macos/defaults.cmake
 
+          # Relax OBS's SDK/Xcode floor. OBS gates the whole app on a very
+          # recent SDK (32.2 wants macOS 26.5 / Xcode 26.5), but we only build
+          # libobs with the UI off, which compiles on the runner's SDK. No-op
+          # on lines whose floor the runner already satisfies.
+          sed -i '' -E 's/set\(obs_macos_minimum_sdk [0-9.]+\)/set(obs_macos_minimum_sdk 1.0)/' obs-src/cmake/macos/compilerconfig.cmake
+          sed -i '' -E 's/set\(obs_macos_minimum_xcode [0-9.]+\)/set(obs_macos_minimum_xcode 1.0)/' obs-src/cmake/macos/compilerconfig.cmake
+
       - name: Configure OBS
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: >
