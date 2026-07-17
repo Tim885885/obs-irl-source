@@ -33,10 +33,26 @@ jobs:
           path: build/obs-irl-source.so
 
   windows-x64:
+    name: windows-x64 (obs ${{ matrix.obs_line }})
     runs-on: windows-2025-vs2026
-    env:
-      OBS_VERSION: "32.1.2"
-      OBS_DEPS_VERSION: "2026-06-25"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # OBS 32.1.x bundles FFmpeg 7 (avcodec-61) via obs-deps 2025-08-23.
+          # A plugin linked against this loads on 32.1.x and, thanks to the
+          # forward-compatible libobs module gate, on newer lines too, but only
+          # where FFmpeg 7 DLLs are present.
+          - obs_line: "32.1"
+            obs_version: "32.1.2"
+            obs_deps_version: "2025-08-23"
+          # OBS 32.2.x bundles FFmpeg 8.1 (avcodec-62) via obs-deps 2026-07-15.
+          # FFmpeg's major bump (obsproject/obs-deps 2025-12-23) changes the DLL
+          # sonames, so this artifact is a separate binary that only resolves
+          # against 32.2.x. Bump obs_version to 32.2.0 once the final tag ships.
+          - obs_line: "32.2"
+            obs_version: "32.2.0-rc2"
+            obs_deps_version: "2026-07-15"
     steps:
       - uses: actions/checkout@v4
 
@@ -52,20 +68,20 @@ jobs:
           path: |
             obs-src
             obs-deps
-          key: obs-build-${{ env.OBS_VERSION }}-${{ env.OBS_DEPS_VERSION }}-v2
+          key: obs-build-${{ matrix.obs_version }}-${{ matrix.obs_deps_version }}-v2
 
       - name: Download OBS dependencies
         if: steps.cache-obs.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest `
-            -Uri "https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/windows-deps-${{ env.OBS_DEPS_VERSION }}-x64.zip" `
+            -Uri "https://github.com/obsproject/obs-deps/releases/download/${{ matrix.obs_deps_version }}/windows-deps-${{ matrix.obs_deps_version }}-x64.zip" `
             -OutFile obs-deps.zip
           Expand-Archive obs-deps.zip -DestinationPath obs-deps
 
       - name: Clone OBS source
         if: steps.cache-obs.outputs.cache-hit != 'true'
-        run: git clone --depth 1 --branch ${{ env.OBS_VERSION }} https://github.com/obsproject/obs-studio.git obs-src
+        run: git clone --depth 1 --branch ${{ matrix.obs_version }} https://github.com/obsproject/obs-studio.git obs-src
 
       - name: Patch OBS to build only libobs
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -142,31 +158,55 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: obs-irl-source-windows-x64
+          name: obs-irl-source-windows-x64-obs${{ matrix.obs_line }}
           path: |
             build/RelWithDebInfo/obs-irl-source.dll
             build/RelWithDebInfo/w32-pthreads.dll
 
   macos-arm64:
+    name: macos-arm64 (obs ${{ matrix.obs_line }})
     runs-on: macos-15
-    env:
-      OBS_VERSION: "32.1.2"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - obs_line: "32.1"
+            obs_version: "32.1.2"
+            obs_deps_version: "2025-08-23"
+          - obs_line: "32.2"
+            obs_version: "32.2.0-rc2"
+            obs_deps_version: "2026-07-15"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: brew install cmake pkg-config ffmpeg simde uthash jansson
+      # ffmpeg is intentionally NOT installed from Homebrew. The plugin must
+      # link the same FFmpeg that OBS bundles (from obs-deps), so its runtime
+      # dylib references resolve against OBS.app's Frameworks. Homebrew ffmpeg
+      # has a different soname per OBS line and absolute (non-@rpath) install
+      # names, so a brew-linked plugin only loads where brew's FFmpeg matches.
+      - name: Install build tools
+        run: brew install cmake pkg-config simde uthash jansson
 
       - name: Cache OBS build
         id: cache-obs
         uses: actions/cache@v4
         with:
-          path: obs-src
-          key: obs-macos-arm64-${{ env.OBS_VERSION }}-v1
+          path: |
+            obs-src
+            obs-deps
+          key: obs-macos-arm64-${{ matrix.obs_version }}-${{ matrix.obs_deps_version }}-v2
+
+      - name: Download OBS dependencies
+        if: steps.cache-obs.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o macos-deps.tar.xz \
+            "https://github.com/obsproject/obs-deps/releases/download/${{ matrix.obs_deps_version }}/macos-deps-${{ matrix.obs_deps_version }}-arm64.tar.xz"
+          mkdir -p obs-deps
+          tar -xf macos-deps.tar.xz -C obs-deps
 
       - name: Clone OBS source
         if: steps.cache-obs.outputs.cache-hit != 'true'
-        run: git clone --depth 1 --branch ${{ env.OBS_VERSION }} https://github.com/obsproject/obs-studio.git obs-src
+        run: git clone --depth 1 --branch ${{ matrix.obs_version }} https://github.com/obsproject/obs-studio.git obs-src
 
       - name: Patch OBS to build only libobs
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -187,17 +227,23 @@ jobs:
           -G Xcode
           -DENABLE_UI=OFF
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
-          -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+          -DCMAKE_PREFIX_PATH="$PWD/obs-deps;$(brew --prefix)"
 
       - name: Build OBS (libobs only)
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: cmake --build obs-src/build --config Release --target libobs --parallel
 
+      # Force the manual FFmpeg discovery path (FFMPEG_DIR) instead of
+      # pkg-config. This links obs-deps' FFmpeg directly by library, preserving
+      # its @rpath install names, and avoids picking up any FFmpeg .pc files
+      # that the runner image or a relocated obs-deps prefix might expose.
       - name: Configure
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DOBS_SOURCE_DIR=$PWD/obs-src
+          -DFFMPEG_DIR=$PWD/obs-deps
+          -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
           -DCMAKE_C_FLAGS="-I$(brew --prefix)/include"
 
       - name: Build
@@ -206,5 +252,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: obs-irl-source-macos-arm64
+          name: obs-irl-source-macos-arm64-obs${{ matrix.obs_line }}
           path: build/obs-irl-source.so
