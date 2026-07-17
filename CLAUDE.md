@@ -35,6 +35,8 @@ cmake --build build --parallel
 
 Output: `build/obs-irl-source.so` (Linux/macOS) or `build/RelWithDebInfo/obs-irl-source.dll` (Windows).
 
+These snippets compile the plugin, but a binary that actually loads in an installed OBS must link the same FFmpeg major that OBS bundles. The macOS snippet uses Homebrew FFmpeg for convenience, which is fine for a compile check but produces a binary that will not load inside OBS.app (wrong soname and non `@rpath` install names). For a distributable per OBS line build, follow what CI does (see the CI section): link obs-deps FFmpeg matching the target line.
+
 There are no tests.
 
 ## Architecture
@@ -102,7 +104,11 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 
 ## CI
 
-GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). The Windows and macOS jobs clone OBS source, patch it to build only libobs, and link against that. No release automation — artifacts are uploaded only.
+GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). The Windows and macOS jobs clone OBS source, patch it to build only libobs, and link against that. No release automation. Artifacts are uploaded only.
+
+The Windows and macOS jobs run a `matrix.include` over the supported OBS lines, one row per line. Each row pins both the OBS source tag (`obs_version`) and the matching obs-deps release (`obs_deps_version`). This split exists because the plugin dynamically links FFmpeg from obs-deps, and OBS bumped FFmpeg 7 (`avcodec-61`) to 8.1 (`avcodec-62`) between the 32.1 and 32.2 lines. A binary linked against one FFmpeg major will not load where the other is present, so each line produces its own artifact (suffixed `-obs32.1` / `-obs32.2`). The libobs module gate is forward compatible on its own (a plugin loads on its build version and any newer host), so it is FFmpeg, not libobs, that forces the per-line builds. macOS links obs-deps FFmpeg instead of Homebrew's (via `FFMPEG_DIR` plus `CMAKE_DISABLE_FIND_PACKAGE_PkgConfig`) so the plugin's dylib references carry `@rpath` install names that resolve inside OBS.app.
+
+To add or move a supported line, edit the `matrix.include` rows: set `obs_version` to a tag on that line and `obs_deps_version` to the obs-deps release that the line's `CMakePresets.json` pins under `dependencies.prebuilt.version`. Verify the two FFmpeg majors differ by checking `avcodec-*.dll` (Windows) or `libavcodec.*.dylib` (macOS) in each target OBS install; if they match, one build covers both lines.
 
 ## Contributing
 
