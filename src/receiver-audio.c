@@ -58,6 +58,15 @@
  * the clock line instead of letting OBS add permanent buffering. */
 #define AUDIO_OUT_MAX_LAG_MS 150
 
+/* Concealment inflates the audio->OBS playout offset with no bounded
+ * recovery once primed (see the offset-reanchor logic below). This
+ * far past the primed baseline the accumulated latency is treated as
+ * unrecoverable by the speed-drain and reclaimed with one declared
+ * re-anchor. Set above the worst normal buffer swing (buffer_max is
+ * only ~200ms over target) so ordinary adaptive-speed excursions
+ * never trip it; only a real outage's worth of concealment does. */
+#define AUDIO_OFFSET_REANCHOR_MARGIN_MS 400
+
 /* Playback speed authority for buffer regulation. Asymmetric,
  * IRLToolkit-style: draining a post-stall backlog runs up to +5%
  * (mild chipmunk, but every sample is preserved instead of skipped),
@@ -100,6 +109,8 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_conceal_fade_pending = false;
 	ctx->audio_out_last_valid = false;
 	ctx->audio_out_last_channels = 0;
+	ctx->audio_playout_offset_baseline_ns = 0;
+	ctx->audio_playout_offset_baseline_set = false;
 	ctx->audio_last_obs_lead_ns = 0;
 	ctx->audio_last_chunk_stream_duration_ns = 0;
 	ctx->audio_last_chunk_obs_duration_ns = 0;
@@ -552,6 +563,79 @@ static bool emit_concealment_silence(struct irl_source *ctx, int frames)
 	return true;
 }
 
+/* ── Offset re-anchor ─────────────────────────────────────── */
+
+/* The audio->OBS playout offset is (obs clock end) - (stream PTS end)
+ * of the latest chunk handed to OBS; the video path adds this same
+ * offset to every frame PTS for lip sync. Concealment freezes the
+ * stream-PTS side while advancing the obs side, so a delivery stall
+ * inflates the offset by the outage length. Once primed the only
+ * recovery is the speed-drain bleeding buffer backlog, which does
+ * nothing when the concealed audio was dropped rather than delayed:
+ * the latency then sticks and every later blip stacks onto it.
+ *
+ * When the offset drifts too far past its primed baseline AND the
+ * buffer has already drained back to target, reclaim it with one
+ * declared re-anchor: restart the output clock line and drop the
+ * stale mapping so the next chunk rebuilds it fresh. This costs a
+ * single concealed splice but caps the latency instead of letting it
+ * ratchet up without bound. */
+static void irl_audio_maybe_reanchor_offset(struct irl_source *ctx,
+					    uint64_t now, uint64_t chunk_ns)
+{
+	if (ctx->latest_audio_obs_end_ts_ns == 0 ||
+	    ctx->latest_audio_buffered_end_pts_ns <= 0)
+		return;
+
+	int64_t offset_ns = (int64_t)ctx->latest_audio_obs_end_ts_ns -
+			    ctx->latest_audio_buffered_end_pts_ns;
+
+	/* The offset's absolute value is arbitrary (it carries the
+	 * stream's PTS epoch); only its drift from the primed baseline is
+	 * meaningful, so anchor the comparison the first time we see a
+	 * valid offset after priming. */
+	if (!ctx->audio_playout_offset_baseline_set) {
+		ctx->audio_playout_offset_baseline_ns = offset_ns;
+		ctx->audio_playout_offset_baseline_set = true;
+		return;
+	}
+
+	int64_t margin_ns = (int64_t)AUDIO_OFFSET_REANCHOR_MARGIN_MS * 1000000LL;
+	int64_t excess_ns = offset_ns - ctx->audio_playout_offset_baseline_ns;
+	if (excess_ns <= margin_ns)
+		return;
+
+	/* Only reclaim latency the speed-drain cannot. While backlog is
+	 * queued the inflation is real buffered audio, and draining it at
+	 * up to +5% preserves every sample, so leave it entirely to the
+	 * speed controller (content is never skipped). We step in only
+	 * once the buffer is back at/below target, where the residual
+	 * offset is phantom -- concealment silence with no backing audio
+	 * (the concealed packets were dropped, not merely late) -- which
+	 * no speed-up can ever recover. Re-anchoring here skips nothing. */
+	if (audio_buffer_fill_ms_locked(&ctx->audio_buf) >
+	    ctx->audio_buf.target_ms)
+		return;
+
+	/* Lock order note: fill query above takes and releases the buffer
+	 * mutex on its own; the state lock below is never held across it. */
+	pthread_mutex_lock(&ctx->audio_state_lock);
+	ctx->audio_out_anchor_ns = now + chunk_ns;
+	ctx->audio_out_samples = 0;
+	ctx->latest_audio_obs_end_ts_ns = 0;
+	ctx->latest_audio_buffered_end_pts_ns = 0;
+	ctx->audio_playout_offset_baseline_set = false;
+	ctx->audio_conceal_fade_pending = true;
+	pthread_mutex_unlock(&ctx->audio_state_lock);
+
+	ctx->audio_offset_reanchors++;
+	ctx->audio_quality_events++;
+	blog(LOG_WARNING,
+	     "[irl-source] Audio latency drifted +%lldms past baseline (>%dms) with buffer at/below target; re-anchoring output clock",
+	     (long long)(excess_ns / 1000000LL),
+	     AUDIO_OFFSET_REANCHOR_MARGIN_MS);
+}
+
 /* ── Pump ─────────────────────────────────────────────────── */
 
 bool irl_pump_audio_once(struct irl_source *ctx)
@@ -574,6 +658,12 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	uint64_t now = os_gettime_ns();
 
 	if (ctx->audio_out_primed) {
+		/* Cap runaway concealment latency before it desyncs A/V.
+		 * Runs even on a healthy-lead cycle: the offset inflates
+		 * from past outages, not from the current queue depth. */
+		if (!low_latency)
+			irl_audio_maybe_reanchor_offset(ctx, now, chunk_ns);
+
 		uint64_t next_ts = audio_output_next_ts(ctx, out_rate);
 
 		/* Enough queued ahead of wall clock — nothing to do. */

@@ -440,6 +440,20 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 		return;
 
 	ctx->last_stats_time = now;
+
+	/* Drift of the audio->OBS playout offset from its primed baseline.
+	 * Stays near 0 when healthy; a climbing value is concealment
+	 * inflating the video lip-sync mapping (see receiver-audio.c). */
+	int64_t av_drift_ms = 0;
+	if (ctx->audio_playout_offset_baseline_set &&
+	    ctx->latest_audio_obs_end_ts_ns != 0 &&
+	    ctx->latest_audio_buffered_end_pts_ns > 0) {
+		av_drift_ms = ((int64_t)ctx->latest_audio_obs_end_ts_ns -
+			       ctx->latest_audio_buffered_end_pts_ns -
+			       ctx->audio_playout_offset_baseline_ns) /
+			      1000000LL;
+	}
+
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
 	     "buf=%dms target=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
@@ -449,7 +463,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "audio_flushes=%llu video_flushes=%llu vq_drops=%llu "
 	     "obs_lead=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
-	     "restarts=%llu res=%dx%d",
+	     "restarts=%llu av_drift=%lldms reanchors=%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
@@ -476,5 +490,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)(ctx->audio_last_chunk_obs_duration_ns /
 				  1000000ULL),
 	     (unsigned long long)ctx->audio_output_restarts,
+	     (long long)av_drift_ms,
+	     (unsigned long long)ctx->audio_offset_reanchors,
 	     ctx->last_video_width, ctx->last_video_height);
 }

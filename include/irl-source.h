@@ -187,6 +187,17 @@ struct irl_source {
 	uint64_t audio_out_samples;
 	uint64_t audio_output_restarts;
 
+	/* Concealment during a delivery stall advances the OBS output
+	 * clock while the stream PTS it maps against stays frozen, so the
+	 * audio->OBS playout offset (and the video lip-sync mapping built
+	 * on it) inflates by the outage length with no bounded recovery
+	 * once primed. Capture the offset at prime as a baseline; the pump
+	 * re-anchors when it drifts too far past it, instead of letting
+	 * latency ratchet up permanently on every connection blip. */
+	int64_t audio_playout_offset_baseline_ns;
+	bool audio_playout_offset_baseline_set;
+	uint64_t audio_offset_reanchors;
+
 	/* Output-side speed resampler (audio thread).  Playback speed
 	 * is applied here via swr compensation because changing the
 	 * samples_per_sec submitted to OBS forces libobs to rebuild
