@@ -9,9 +9,9 @@ Third-party plugin for [OBS Studio](https://obsproject.com/) that receives live 
 The plugin optimizes for what viewers hear and see, not for preserving every damaged packet.
 
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
-- Audio content is never skipped once playback has started. Backlog from a stall is played back slightly sped up (up to +5%) until latency returns to target, the same approach used by dedicated IRL ingest players.
-- Video should stay temporally smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
-- Latency is allowed to move within reason if that protects viewer quality, but the plugin should still stay far below the 2 to 3 second live delay often seen with OBS Media Source.
+- Audio content is never skipped once playback has started. Backlog from a stall is played back slightly sped up (up to +5%) until latency returns to target.
+- Video cadence should stay smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
+- Latency may drift if that protects viewer quality, but it should stay far below the 2 to 3 second live delay typical of OBS Media Source.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and playback mode are tracked separately.
 
 ## Why open source?
@@ -28,7 +28,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 
 | | Media Source | IRL Source |
 |---|---|---|
-| **Audio timing** | Delivers audio just in time with no lead, so decode jitter makes OBS "detect" problems and silently add up to a second of global audio buffering that is never removed | Perfectly contiguous timestamps at a constant sample rate with a fixed lead, engineered around how libobs actually consumes source audio. OBS never rebuilds its resampler and never adds hidden buffering |
+| **Audio timing** | Delivers audio just in time with no lead, so decode jitter makes OBS "detect" problems and silently add up to a second of global audio buffering that is never removed | Contiguous timestamps at a constant sample rate with a fixed lead, derived from a sample counter instead of the wall clock. OBS never rebuilds its resampler and never adds hidden buffering |
 | **Audio jitter buffer** | None. Plays audio as fast as it arrives, so unstable connections give you stuttering or speedups | Configurable ring buffer (default 120ms) that absorbs network jitter, or a low-latency mode if you prefer |
 | **Adaptive latency control** | Fixed 1x. Buffer grows unbounded on slow connections and latency keeps climbing | Keeps audio near native rate with bounded speed correction; post-stall backlog is played back slightly sped up (up to +5%) instead of skipped |
 | **PTS discontinuity repair** | Passes through raw timestamps. Gaps in the stream (cell tower handoff, packet loss) cause audio pops and video freezes | Three tiers: small gaps get interpolated, medium gaps get silence insertion, large gaps trigger a clean reset |
@@ -41,7 +41,7 @@ OBS ships with a Media Source (`ffmpeg_source`) that can play SRT streams. It wo
 | **Network buffer** | Configurable but not optimized for live | 2MB default transport buffer tuned for SRT live streaming |
 | **Stats API** | None accessible to scripts | Exposes buffer fill level, playback speed, frame counts, PTS repairs, silence insertions, stream delay, reconnect count, and low-latency mode flag via `proc_handler` |
 
-For a deeper look at how the jitter buffer, adaptive latency control, PTS repair, and timestamp handling work together, see [Audio pipeline](docs/audio-pipeline.md).
+The jitter buffer, adaptive latency control, PTS repair, and timestamp handling are covered in detail in [Audio pipeline](docs/audio-pipeline.md).
 
 ## Features
 
@@ -109,7 +109,7 @@ Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and
 
 ### Buffered vs low-latency audio mode
 
-`Low Latency Audio` changes plugin behavior, not just an OBS flag.
+`Low Latency Audio` is not only an OBS flag. It changes how the plugin buffers.
 
 - Buffered mode is the default IRL path. It uses `Target Buffer` as the jitter cushion, keeps normal playback near native 1.0x with bounded speed correction, and conceals underruns or real medium PTS gaps with shaped silence. Backlog that builds up during a stall is played back sped up (never skipped); only startup backlog before playback begins gets trimmed.
 - Low-latency mode drains audio as soon as chunks are available and turns off plugin-side buffered correction. It matches OBS async unbuffered timing better. Use it when absolute latency matters more than having a jitter cushion.

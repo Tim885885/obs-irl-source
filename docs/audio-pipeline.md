@@ -9,17 +9,17 @@ The output policy is viewer-first:
 - Prefer short silence over jittery, glitchy, metallic, or artifacty audio.
 - Prefer smooth video cadence; timestamped damaged frames are better than freezes, while gray/blank frames and decoder reset storms should be avoided.
 - Prefer bounded latency movement over aggressive time-stretching.
-- Make every recovery mechanism visible in stats so tuning is evidence-driven.
+- Expose every recovery mechanism in stats, so tuning runs off counters instead of guesswork.
 
 ## The problem with big buffers
 
-Media Source handles network jitter the simple way: buffer a lot of data, play it back with a delay. If the network hiccups, the buffer absorbs it. This works, but every millisecond of buffer is a millisecond of extra latency. For IRL streaming — where you're reading chat and reacting live — a 2-3 second buffer means a 2-3 second delay on top of everything else.
+Media Source handles network jitter the simple way: buffer a lot of data, play it back with a delay. If the network hiccups, the buffer absorbs it. This works, but every millisecond of buffer is a millisecond of extra latency. For IRL streaming, where you're reading chat and reacting live, a 2-3 second buffer means a 2-3 second delay on top of everything else.
 
-The plugin takes the opposite approach: keep the buffer as small as possible and actively compensate for the problems that a small buffer exposes.
+The plugin takes the opposite approach: keep the buffer as small as possible and compensate for the problems that a small buffer exposes.
 
 ## How it works
 
-The normal buffered audio pipeline has four layers that work together:
+The buffered audio pipeline has four stages:
 
 ```
 decode -> PTS repair -> jitter buffer -> adaptive latency control -> OBS output
@@ -43,9 +43,9 @@ A ring buffer sized in milliseconds, not bytes. Only the target is a user settin
 | Min | target / 2 | Low watermark. The speed controller slows playback as fill approaches this level |
 | Max | target + 200ms | High watermark. The speed controller reaches maximum drain speed at this level |
 
-The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in; smooth PCM comes out.
+The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in, PCM comes out.
 
-Playback primes once, when the buffer first reaches the target plus the fixed output lead. After priming, the output pump always emits: real audio when the buffer has data, shaped concealment silence when it does not. There is no fill level below which the pump simply stops feeding OBS. Starving the OBS mixer produces a tick of silence plus a splice discontinuity (crackle) and can cause OBS to permanently add global audio buffering, so continuous submission is non-negotiable.
+Playback primes once, when the buffer first reaches the target plus the fixed output lead. After priming, the output pump always emits: real audio when the buffer has data, shaped concealment silence when it does not. There is no fill level below which the pump stops feeding OBS: starving the OBS mixer produces a tick of silence plus a splice discontinuity (crackle) and can cause OBS to permanently add global audio buffering.
 
 ### 2. Adaptive latency control (prevents latency creep)
 
@@ -55,7 +55,7 @@ Speed is applied inside the plugin with a persistent swresample compensation (th
 
 The controller is proportional with a deadband and asymmetric authority: near the target it plays at exactly 1.0x, below the target it slows toward 0.98x (building buffer, inaudible), above the target it speeds toward 1.05x (draining backlog, a mild chipmunk effect). Draining 1s of backlog takes about 20s at full authority.
 
-Backlog is never skipped once playback has primed. When a stall ends and delayed data floods back in, everything gets played, sped up, until latency returns to the target. Above a fill ceiling (about 1s) the receiver simply stops reading from the transport, so the excess buffers at the sender or in the TCP path instead of overflowing the local ring buffer. With an RTMP encoder that buffers during congestion, the stream pauses and resumes exactly where it stopped, then bleeds the extra delay off over the following minutes. SRT bounds its own backlog through the latency window, so this ceiling rarely engages there.
+Backlog is never skipped once playback has primed. When a stall ends and delayed data floods back in, everything gets played, sped up, until latency returns to the target. Above a fill ceiling (about 1s) the receiver stops reading from the transport, so the excess buffers at the sender or in the TCP path instead of overflowing the local ring buffer. With an RTMP encoder that buffers during congestion, the stream pauses and resumes exactly where it stopped, then bleeds the extra delay off over the following minutes. SRT bounds its own backlog through the latency window, so this ceiling rarely engages there.
 
 Recovery rules:
 
@@ -64,21 +64,21 @@ Recovery rules:
 - If the buffer underruns, the pump emits concealment silence that decays from the last played sample, and the first real chunk after the dropout gets a short fade-in.
 - If timestamps or decoder state go bad, the plugin flushes damaged state and re-enters playback cleanly instead of trying to stretch through corruption.
 
-The result should be transparent on stable links and non-artifacty on unstable links. If the source cannot make damaged audio sound natural, silence is preferred.
+On stable links the correction should be inaudible; on unstable links it should not add artifacts of its own. If damaged audio cannot be made to sound natural, silence is preferred.
 
 ### 3. PTS repair (handles timestamp discontinuities)
 
-Mobile connections drop packets. Cell tower handoffs cause gaps. SRT retransmissions arrive late. All of these produce gaps or jumps in the audio PTS (presentation timestamp) that confuse the decoder and cause audible artifacts.
+Mobile connections drop packets, cell tower handoffs cause gaps, and SRT retransmissions arrive late. Each produces a gap or jump in the audio PTS (presentation timestamp) that confuses the decoder and causes audible artifacts.
 
 The PTS repair system classifies gaps into three tiers:
 
 | Gap size | Action | What it sounds like without repair |
 |---|---|---|
-| < 70ms | **Interpolate** — replace the PTS with the expected value (last PTS + last duration). The gap was probably just jitter. | Brief audio stutter or pop |
-| 70ms – 2s | **Silence insertion** — keep the PTS but insert the appropriate duration of silence before the frame. Something was actually lost. | Loud click followed by audio jump |
-| > 2s | **Full reset** — flush the buffer, reset timing state, and re-enter playback from scratch. The stream has fundamentally changed. | Extended silence, possibly wrong audio |
+| < 70ms | **Interpolate**: replace the PTS with the expected value (last PTS + last duration). The gap was probably just jitter. | Brief audio stutter or pop |
+| 70ms to 2s | **Silence insertion**: keep the PTS but insert the appropriate duration of silence before the frame. Something was actually lost. | Loud click followed by audio jump |
+| > 2s | **Full reset**: flush the buffer, reset timing state, and re-enter playback from scratch. The stream has fundamentally changed. | Extended silence, possibly wrong audio |
 
-The thresholds are fixed constants (`IRL_SMALL_GAP_MS` 70ms, `IRL_LARGE_GAP_MS` 2000ms). They were once exposed as Small Gap and Large Gap settings, but nobody could reason about them without reading the source and the defaults are principled, so they are no longer user-facing.
+The thresholds are fixed constants (`IRL_SMALL_GAP_MS` 70ms, `IRL_LARGE_GAP_MS` 2000ms). They were once exposed as Small Gap and Large Gap settings, but nobody could reason about them without reading the source. Each threshold marks a real boundary: below 70ms is decoder timestamp wobble, above 2s the stream has changed underneath the plugin.
 
 `pts_repairs` tracks non-normal PTS discontinuities. For tuning, use the split diagnostics: `pts_normalizations`, `pts_interpolations`, `silence_insertions`, `pts_resets`, `pts_last_gap_ms`, and `pts_max_gap_ms`. A high normalization count with low silence usually means frame-sized timestamp cadence smoothing, not packet-loss concealment.
 
