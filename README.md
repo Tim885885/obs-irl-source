@@ -105,6 +105,8 @@ The jitter buffer, adaptive latency control, PTS repair, and timestamp handling 
 | Low Latency Audio | Off | Uses OBS async unbuffered audio mode and drains audio immediately instead of building the jitter cushion |
 | Close Stream When Inactive | Off | Stops receiving when the source is neither showing nor active (clears the last frame to black), and reconnects when it becomes visible again |
 
+Target Buffer, Reconnect Delay, Adaptive Latency Control, Wait for Keyframe, and Close Stream When Inactive apply to a running stream without dropping the connection or resetting the stats counters. Retuning Target Buffer mid-stream keeps every buffered sample: the speed controller walks the fill to the new target at up to +5% (draining) or -2% (building), so latency moves without an audible seam. Changing the URL, FFmpeg Options, Hardware Decode, or Low Latency Audio reconnects, because those are consumed when the stream is opened.
+
 Earlier versions exposed Min/Max Buffer, PTS gap thresholds, Network Buffer, and Decoupled Audio as settings. Those are now derived or fixed internally (the PTS thresholds are 70ms and 2000ms, the transport buffer is 2MB and overridable through FFmpeg Options), so old scene collections keep working and ignore the stored values.
 
 ### Buffered vs low-latency audio mode

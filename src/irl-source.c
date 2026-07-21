@@ -9,6 +9,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "../include/irl-source.h"
 #include "receiver-internal.h"
@@ -61,6 +62,63 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 		obs_data_get_bool(settings, "low_latency_audio");
 	cfg->close_when_inactive =
 		obs_data_get_bool(settings, "close_when_inactive");
+}
+
+static bool str_differs(const char *a, const char *b)
+{
+	if (!a || !b)
+		return a != b;
+	return strcmp(a, b) != 0;
+}
+
+/* Which settings force a reconnect. url and ffmpeg_options are consumed
+ * by avformat_open_input (and config_load frees the strings the receiver
+ * thread is still reading), hw_decode picks the decoder at open, and
+ * low_latency_audio latches priming/pump semantics across all three
+ * threads. Everything else is re-read live every cycle, so it can be
+ * swapped in place: a restart costs an SRT handshake and wipes every
+ * stat counter via reset_runtime_state(). */
+static bool config_requires_restart(const struct irl_config *cur,
+				    const struct irl_config *next)
+{
+	return str_differs(cur->url, next->url) ||
+	       str_differs(cur->ffmpeg_options, next->ffmpeg_options) ||
+	       cur->hw_decode != next->hw_decode ||
+	       cur->low_latency_audio != next->low_latency_audio;
+}
+
+static void config_apply_hot(struct irl_source *ctx,
+			     const struct irl_config *next)
+{
+	pthread_mutex_lock(&ctx->audio_state_lock);
+
+	/* Grow the ring before publishing the new watermarks, and publish
+	 * only if that succeeded: the receiver's backpressure ceiling is 3x
+	 * buffer_max_ms and must never exceed ring capacity, or a burst
+	 * between fill checks would push writes past the end and drop
+	 * audio. On allocation failure the old target stays in force. */
+	if (ctx->config.buffer_target_ms != next->buffer_target_ms) {
+		if (audio_buffer_resize(&ctx->audio_buf,
+					next->buffer_target_ms,
+					next->buffer_min_ms,
+					next->buffer_max_ms)) {
+			ctx->config.buffer_target_ms = next->buffer_target_ms;
+			ctx->config.buffer_min_ms = next->buffer_min_ms;
+			ctx->config.buffer_max_ms = next->buffer_max_ms;
+		} else {
+			blog(LOG_WARNING,
+			     "[irl-source] Could not resize jitter buffer to %dms; keeping %dms",
+			     next->buffer_target_ms,
+			     ctx->config.buffer_target_ms);
+		}
+	}
+
+	ctx->config.reconnect_delay = next->reconnect_delay;
+	ctx->config.adaptive_speed = next->adaptive_speed;
+	ctx->config.wait_for_keyframe = next->wait_for_keyframe;
+	ctx->config.close_when_inactive = next->close_when_inactive;
+
+	pthread_mutex_unlock(&ctx->audio_state_lock);
 }
 
 static void apply_async_audio_mode(struct irl_source *ctx)
@@ -342,8 +400,23 @@ void irl_source_update(void *data, obs_data_t *settings)
 {
 	struct irl_source *ctx = data;
 
+	struct irl_config next = {0};
+	config_load(&next, settings);
+
+	if (os_atomic_load_bool(&ctx->thread_active) &&
+	    !config_requires_restart(&ctx->config, &next)) {
+		config_apply_hot(ctx, &next);
+		config_free(&next);
+		/* close_when_inactive may have just turned on while the
+		 * source is hidden. */
+		if (!should_run_receiver(ctx))
+			stop_receiver(ctx, true);
+		return;
+	}
+
 	stop_receiver(ctx, false);
-	config_load(&ctx->config, settings);
+	config_free(&ctx->config);
+	ctx->config = next; /* takes ownership of the loaded strings */
 	apply_async_audio_mode(ctx);
 
 	start_receiver(ctx);

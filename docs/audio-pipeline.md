@@ -45,6 +45,8 @@ A ring buffer sized in milliseconds, not bytes. Only the target is a user settin
 
 The buffer holds decoded audio (interleaved float PCM) regardless of the input codec. AAC, Opus, or anything else goes in, PCM comes out.
 
+The target can be retuned while the stream is live. Ring storage grows if the new maximum needs more room (it is never shrunk, since that would mean discarding queued audio), the watermarks move, and the fill is left alone for the speed controller to walk to the new target. Nothing is dropped and the connection is not restarted.
+
 Playback primes once, when the buffer first reaches the target plus the fixed output lead. After priming, the output pump always emits: real audio when the buffer has data, shaped concealment silence when it does not. There is no fill level below which the pump stops feeding OBS: starving the OBS mixer produces a tick of silence plus a splice discontinuity (crackle) and can cause OBS to permanently add global audio buffering.
 
 ### 2. Adaptive latency control (prevents latency creep)

@@ -232,6 +232,60 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 	return true;
 }
 
+bool audio_buffer_resize(struct audio_buffer *buf, int target_ms, int min_ms,
+			 int max_ms)
+{
+	if (!buf)
+		return false;
+	/* Not initialised yet: the first decoded frame sizes the ring from
+	 * the config values, so there is nothing to move. */
+	if (!buf->data)
+		return true;
+
+	/* Storage only ever grows.  Shrinking would mean knowing the fill
+	 * before allocating, which forces either an allocation with the ring
+	 * locked or discarding queued audio that does not fit (forbidden
+	 * once playback has primed).  The ring is pure headroom above the
+	 * watermarks, so leaving it oversized until the next reconnect costs
+	 * nothing but memory.
+	 *
+	 * The allocation is done before the ring lock so the audio pump is
+	 * never blocked on the allocator.  The caller's serialisation is
+	 * what keeps this from racing a format-change reconfigure. */
+	size_t wanted = ms_to_bytes(buf, max_ms * 4);
+	uint8_t *grown = NULL;
+
+	if (wanted > buf->capacity) {
+		grown = bzalloc(wanted);
+		if (!grown)
+			return false;
+	}
+
+	pthread_mutex_lock(&buf->lock);
+	if (grown) {
+		/* Linearise into the new allocation.  Chunk metadata is
+		 * relative (size/consumed, no ring offsets), so the PTS
+		 * queue survives the move untouched. */
+		size_t first = buf->capacity - buf->tail;
+		if (first >= buf->fill) {
+			memcpy(grown, buf->data + buf->tail, buf->fill);
+		} else {
+			memcpy(grown, buf->data + buf->tail, first);
+			memcpy(grown + first, buf->data, buf->fill - first);
+		}
+		bfree(buf->data);
+		buf->data = grown;
+		buf->capacity = wanted;
+		buf->tail = 0;
+		buf->head = buf->fill % buf->capacity;
+	}
+	buf->target_ms = target_ms;
+	buf->min_ms = min_ms;
+	buf->max_ms = max_ms;
+	pthread_mutex_unlock(&buf->lock);
+	return true;
+}
+
 void audio_buffer_free(struct audio_buffer *buf)
 {
 	/* sample_rate is the canonical "init was called" marker. capacity

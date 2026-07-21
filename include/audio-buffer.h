@@ -88,6 +88,16 @@ bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
 			      int channels, int bytes_per_sample,
 			      int target_ms, int min_ms, int max_ms);
 
+/**
+ * Move the watermarks while the stream is live, keeping every queued
+ * sample.  Storage grows if the new max needs more room and is left
+ * alone otherwise.  Same serialisation requirement as
+ * audio_buffer_reconfigure().  Returns false only on allocation failure,
+ * in which case the buffer is untouched.
+ */
+bool audio_buffer_resize(struct audio_buffer *buf, int target_ms, int min_ms,
+			 int max_ms);
+
 /** Release all resources. */
 void audio_buffer_free(struct audio_buffer *buf);
 
