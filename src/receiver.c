@@ -78,7 +78,10 @@ void *irl_receiver_thread(void *data)
 		 * buffer to drop audible data. */
 		if (ctx->audio_stream_idx >= 0 &&
 		    !ctx->config.low_latency_audio) {
-			int pace_ms = ctx->config.buffer_max_ms * 3;
+			int pace_ms =
+				(int)os_atomic_load_long(
+					&ctx->config.buffer_max_ms) *
+				3;
 			if (pace_ms > IRL_BLEED_PACE_FILL_MS)
 				pace_ms = IRL_BLEED_PACE_FILL_MS;
 			while (os_atomic_load_bool(&ctx->thread_active) &&

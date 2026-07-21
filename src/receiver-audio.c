@@ -313,14 +313,15 @@ static uint64_t audio_output_lead_ns(const struct irl_source *ctx,
 
 static float compute_buffered_output_speed(struct irl_source *ctx, int fill_ms)
 {
-	if (!ctx->config.adaptive_speed || ctx->config.low_latency_audio) {
+	if (!os_atomic_load_bool(&ctx->config.adaptive_speed) ||
+	    ctx->config.low_latency_audio) {
 		ctx->current_speed = 1.0f;
 		return 1.0f;
 	}
 
-	int target_ms = ctx->config.buffer_target_ms;
-	int min_ms = ctx->config.buffer_min_ms;
-	int max_ms = ctx->config.buffer_max_ms;
+	int target_ms = (int)os_atomic_load_long(&ctx->config.buffer_target_ms);
+	int min_ms = (int)os_atomic_load_long(&ctx->config.buffer_min_ms);
+	int max_ms = (int)os_atomic_load_long(&ctx->config.buffer_max_ms);
 	int low_edge = target_ms - AUDIO_SPEED_DEADBAND_MS;
 	int high_edge = target_ms + AUDIO_SPEED_DEADBAND_MS;
 	float target_speed = 1.0f;
@@ -476,7 +477,7 @@ static bool should_hide_audio_backlog(const struct irl_source *ctx)
 static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 					    int chunk_count)
 {
-	if (!ctx->config.adaptive_speed)
+	if (!os_atomic_load_bool(&ctx->config.adaptive_speed))
 		return false;
 	if (!should_hide_audio_backlog(ctx))
 		return false;
@@ -497,7 +498,8 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	int chunk_samples = ctx->decoded_frame_samples > 0
 				    ? ctx->decoded_frame_samples
 				    : 960;
-	int keep_ms = ctx->config.buffer_target_ms + chunk_ms;
+	int target_ms = (int)os_atomic_load_long(&ctx->config.buffer_target_ms);
+	int keep_ms = target_ms + chunk_ms;
 	if (out_rate > 0) {
 		keep_ms += (int)(audio_output_lead_ns(ctx, chunk_samples,
 						      out_rate) /
@@ -518,8 +520,7 @@ static bool maybe_trim_hidden_audio_backlog(struct irl_source *ctx, int fill_ms,
 	ctx->audio_hidden_trimmed_chunks += (uint64_t)trimmed;
 	blog(LOG_INFO,
 	     "[irl-source] Audio trim: dropped %d hidden buffered chunk%s before playback (fill=%dms target=%dms)",
-	     trimmed, trimmed == 1 ? "" : "s", post_fill_ms,
-	     ctx->config.buffer_target_ms);
+	     trimmed, trimmed == 1 ? "" : "s", post_fill_ms, target_ms);
 	return true;
 }
 
@@ -770,7 +771,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	uint8_t *emit_buf = in_buf;
 	uint32_t frames_out = (uint32_t)in_frames;
 
-	if (!low_latency && ctx->config.adaptive_speed) {
+	if (!low_latency && os_atomic_load_bool(&ctx->config.adaptive_speed)) {
 		uint8_t *speed_buf = NULL;
 		int speed_frames = apply_output_speed(ctx, in_buf, in_frames,
 						      out_rate, out_channels,
@@ -839,20 +840,21 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (ctx->audio_buf.sample_rate != out_rate ||
 	    ctx->audio_buf.channels != out_channels) {
 		pthread_mutex_lock(&ctx->audio_state_lock);
+		int target_ms = (int)os_atomic_load_long(
+			&ctx->config.buffer_target_ms);
+		int min_ms =
+			(int)os_atomic_load_long(&ctx->config.buffer_min_ms);
+		int max_ms =
+			(int)os_atomic_load_long(&ctx->config.buffer_max_ms);
 		bool reconfigured = true;
 		if (ctx->audio_buf.data) {
 			reconfigured = audio_buffer_reconfigure(
 				&ctx->audio_buf, out_rate, out_channels,
-				bytes_per_sample,
-				ctx->config.buffer_target_ms,
-				ctx->config.buffer_min_ms,
-				ctx->config.buffer_max_ms);
+				bytes_per_sample, target_ms, min_ms, max_ms);
 		} else {
 			audio_buffer_init(&ctx->audio_buf, out_rate,
 					  out_channels, bytes_per_sample,
-					  ctx->config.buffer_target_ms,
-					  ctx->config.buffer_min_ms,
-					  ctx->config.buffer_max_ms);
+					  target_ms, min_ms, max_ms);
 		}
 		ctx->audio_out_primed = false;
 		ctx->audio_out_anchor_ns = 0;
@@ -1026,8 +1028,8 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 	if (inserted_silence)
 		audio_apply_fade_in(interleaved, out_samples, out_channels,
 				    out_rate);
-	if (ctx->config.wait_for_keyframe && ctx->video_stream_idx >= 0 &&
-	    !ctx->first_keyframe_received) {
+	if (os_atomic_load_bool(&ctx->config.wait_for_keyframe) &&
+	    ctx->video_stream_idx >= 0 && !ctx->first_keyframe_received) {
 		return;
 	}
 

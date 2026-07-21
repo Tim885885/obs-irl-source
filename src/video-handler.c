@@ -179,7 +179,8 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 			audio_lead_ns = (int64_t)startup_warmup_ms * 1000000LL;
 			if (!ctx->config.low_latency_audio) {
 				audio_lead_ns +=
-					(int64_t)ctx->config.buffer_target_ms *
+					os_atomic_load_long(
+						&ctx->config.buffer_target_ms) *
 					1000000LL;
 			}
 		}

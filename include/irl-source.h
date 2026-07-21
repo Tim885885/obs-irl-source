@@ -81,18 +81,22 @@ struct irl_source;
 
 /* ── Source configuration ─────────────────────────────────── */
 
+/* Fields marked hot are swapped in place by irl_source_update() while the
+ * worker threads are running, so every cross-thread access goes through
+ * os_atomic_*. The rest are only written while the threads are stopped;
+ * pthread_create/pthread_join supply the happens-before edge for those. */
 struct irl_config {
 	/* General */
 	char *url;
-	int reconnect_delay;
+	volatile long reconnect_delay; /* hot */
 	int network_buffer_mb;
 
 	/* Audio buffer. Only target_ms is a user setting; min/max are
 	 * derived from it in config_load(). */
-	int buffer_target_ms;
-	int buffer_min_ms;
-	int buffer_max_ms;
-	bool adaptive_speed;
+	volatile long buffer_target_ms; /* hot */
+	volatile long buffer_min_ms;    /* hot */
+	volatile long buffer_max_ms;    /* hot */
+	volatile bool adaptive_speed;   /* hot */
 
 	/* PTS repair (constants, kept here so pts_repair_init has one
 	 * source of truth) */
@@ -102,9 +106,9 @@ struct irl_config {
 	/* Advanced */
 	char *ffmpeg_options;
 	int hw_decode;
-	bool wait_for_keyframe;
+	volatile bool wait_for_keyframe; /* hot */
 	bool low_latency_audio;
-	bool close_when_inactive;
+	bool close_when_inactive; /* hot, but OBS-thread only */
 };
 
 /* ── Main source context ──────────────────────────────────── */

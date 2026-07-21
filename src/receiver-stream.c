@@ -339,11 +339,12 @@ bool irl_wait_for_reconnect(struct irl_source *ctx)
 {
 	os_atomic_store_bool(&ctx->reconnecting, true);
 	ctx->reconnect_count++;
-	blog(LOG_INFO, "[irl-source] Reconnecting in %ds...",
-	     ctx->config.reconnect_delay);
-	for (int i = 0;
-	     i < ctx->config.reconnect_delay * 10 &&
-	     os_atomic_load_bool(&ctx->thread_active);
+	/* Sampled once: a delay edited mid-wait should apply to the next
+	 * attempt, not stretch or truncate the one already counting down. */
+	int delay_s = (int)os_atomic_load_long(&ctx->config.reconnect_delay);
+	blog(LOG_INFO, "[irl-source] Reconnecting in %ds...", delay_s);
+	for (int i = 0; i < delay_s * 10 &&
+			os_atomic_load_bool(&ctx->thread_active);
 	     i++) {
 		av_usleep(100000);
 	}
@@ -467,9 +468,9 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
-	     ctx->config.buffer_target_ms,
+	     (int)os_atomic_load_long(&ctx->config.buffer_target_ms),
 	     (double)ctx->current_speed,
-	     ctx->config.adaptive_speed ? "on" : "off",
+	     os_atomic_load_bool(&ctx->config.adaptive_speed) ? "on" : "off",
 	     (unsigned long long)ctx->pts_repairs,
 	     (unsigned long long)ctx->pts_normalizations,
 	     (unsigned long long)ctx->pts_interpolations,

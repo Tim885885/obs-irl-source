@@ -124,8 +124,8 @@ void irl_handle_video_packet(struct irl_source *ctx, AVPacket *pkt,
 	 * frame-level gate discards anyway. The timeout covers demuxers
 	 * that never set AV_PKT_FLAG_KEY; the decoder then finds the
 	 * keyframe itself. */
-	if (ctx->config.wait_for_keyframe && !ctx->first_keyframe_received &&
-	    !ctx->video_pkt_gate_open) {
+	if (os_atomic_load_bool(&ctx->config.wait_for_keyframe) &&
+	    !ctx->first_keyframe_received && !ctx->video_pkt_gate_open) {
 		if (pkt->flags & AV_PKT_FLAG_KEY) {
 			ctx->video_pkt_gate_open = true;
 		} else {

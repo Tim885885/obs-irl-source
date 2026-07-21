@@ -99,23 +99,29 @@ static void config_apply_hot(struct irl_source *ctx,
 	 * audio. On allocation failure the old target stays in force. */
 	if (ctx->config.buffer_target_ms != next->buffer_target_ms) {
 		if (audio_buffer_resize(&ctx->audio_buf,
-					next->buffer_target_ms,
-					next->buffer_min_ms,
-					next->buffer_max_ms)) {
-			ctx->config.buffer_target_ms = next->buffer_target_ms;
-			ctx->config.buffer_min_ms = next->buffer_min_ms;
-			ctx->config.buffer_max_ms = next->buffer_max_ms;
+					(int)next->buffer_target_ms,
+					(int)next->buffer_min_ms,
+					(int)next->buffer_max_ms)) {
+			os_atomic_set_long(&ctx->config.buffer_target_ms,
+					   next->buffer_target_ms);
+			os_atomic_set_long(&ctx->config.buffer_min_ms,
+					   next->buffer_min_ms);
+			os_atomic_set_long(&ctx->config.buffer_max_ms,
+					   next->buffer_max_ms);
 		} else {
 			blog(LOG_WARNING,
-			     "[irl-source] Could not resize jitter buffer to %dms; keeping %dms",
+			     "[irl-source] Could not resize jitter buffer to %ldms; keeping %ldms",
 			     next->buffer_target_ms,
 			     ctx->config.buffer_target_ms);
 		}
 	}
 
-	ctx->config.reconnect_delay = next->reconnect_delay;
-	ctx->config.adaptive_speed = next->adaptive_speed;
-	ctx->config.wait_for_keyframe = next->wait_for_keyframe;
+	os_atomic_set_long(&ctx->config.reconnect_delay,
+			   next->reconnect_delay);
+	os_atomic_store_bool(&ctx->config.adaptive_speed,
+			     next->adaptive_speed);
+	os_atomic_store_bool(&ctx->config.wait_for_keyframe,
+			     next->wait_for_keyframe);
 	ctx->config.close_when_inactive = next->close_when_inactive;
 
 	pthread_mutex_unlock(&ctx->audio_state_lock);
@@ -259,7 +265,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	calldata_set_int(cd, "buffer_fill_ms", buffer_fill_ms);
 	calldata_set_float(cd, "current_speed", (double)current_speed);
 	calldata_set_bool(cd, "adaptive_latency_control",
-			  ctx->config.adaptive_speed);
+			  os_atomic_load_bool(&ctx->config.adaptive_speed));
 	calldata_set_bool(cd, "reconnecting",
 			  os_atomic_load_bool(&ctx->reconnecting));
 	calldata_set_int(cd, "total_audio_frames",
