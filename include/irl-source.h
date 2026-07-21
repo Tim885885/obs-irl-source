@@ -51,9 +51,9 @@ struct irl_source;
 #define IRL_BUFFER_MAX_EXTRA_MS 200
 
 /* PTS repair thresholds (formerly settings; nobody could reason
- * about them without reading the source, and the defaults are
- * principled: below small_gap is decoder timestamp wobble, above
- * large_gap the stream fundamentally changed). */
+ * about them without reading the source). Below small_gap is
+ * decoder timestamp wobble, above large_gap the stream
+ * fundamentally changed. */
 #define IRL_SMALL_GAP_MS 70
 #define IRL_LARGE_GAP_MS 2000
 

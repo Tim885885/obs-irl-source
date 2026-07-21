@@ -297,7 +297,6 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int reconnect_count)",
 		irl_source_get_stats, ctx);
 
-	/* Start the receiver thread if we have a URL */
 	if (ctx->config.url) {
 		blog(LOG_INFO, "[irl-source] Created with URL: %s",
 		     ctx->config.url);
@@ -343,10 +342,7 @@ void irl_source_update(void *data, obs_data_t *settings)
 {
 	struct irl_source *ctx = data;
 
-	/* Stop existing receiver */
 	stop_receiver(ctx, false);
-
-	/* Reload config */
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
 

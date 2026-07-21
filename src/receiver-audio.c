@@ -610,8 +610,8 @@ static void irl_audio_maybe_reanchor_offset(struct irl_source *ctx,
 	 * up to +5% preserves every sample, so leave it entirely to the
 	 * speed controller (content is never skipped). We step in only
 	 * once the buffer is back at/below target, where the residual
-	 * offset is phantom -- concealment silence with no backing audio
-	 * (the concealed packets were dropped, not merely late) -- which
+	 * offset is phantom: concealment silence with no backing audio
+	 * (the concealed packets were dropped, not merely late), which
 	 * no speed-up can ever recover. Re-anchoring here skips nothing. */
 	if (audio_buffer_fill_ms_locked(&ctx->audio_buf) >
 	    ctx->audio_buf.target_ms)

@@ -98,11 +98,9 @@ enum pts_action pts_repair_evaluate(struct pts_repair *r, int64_t pts,
 		return PTS_ACTION_PASS;
 	}
 
-	/* Expected PTS = last_pts + last_duration */
 	int64_t expected = r->last_pts + r->last_duration;
 	int64_t gap = pts - expected;
 
-	/* Convert gap to milliseconds for threshold comparison */
 	int gap_ms = ts_to_ms(r, gap >= 0 ? gap : -gap);
 	bool is_backward = gap < 0;
 	r->last_action_gap_ms = gap_ms;
