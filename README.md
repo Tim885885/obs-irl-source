@@ -58,6 +58,7 @@ The jitter buffer, adaptive latency control, PTS repair, and timestamp handling 
 - Hardware decoding with auto-detection of NVDEC, D3D11VA, VAAPI, and automatic software fallback.
 - Decoder auto-recovery: flushes the decoder on repeated decode errors (including receive-frame failures), audio self-heals.
 - Mid-stream resolution changes (adaptive bitrate, phone rotation) handled without a source restart.
+- Newly added sources fit themselves to the canvas on the first frame, so there is no manual Fit to screen step after adding one.
 - Configurable network buffer (default 2MB) to absorb network-level jitter.
 - Native 10-bit passthrough for YUV420P10LE (I010) and P010.
 - FFmpeg option passthrough, so you can override any demuxer option (latency, probesize, etc.) from the UI.
@@ -90,6 +91,8 @@ The jitter buffer, adaptive latency control, PTS repair, and timestamp handling 
 1. Add a new source: **IRL Source (irlserver.com)**
 2. Enter your stream URL (e.g. `srt://your-server:4000?streamid=play/stream/key`)
 3. Adjust buffer settings if needed (defaults work well for most cases)
+
+A source you just added sizes itself to the canvas when its first frame arrives, with the same result as Edit > Transform > Fit to screen (aspect preserved, nothing cropped). This happens once. A source loaded from a saved scene collection is never touched, and once you move or resize it the plugin leaves it alone.
 
 ### Settings
 

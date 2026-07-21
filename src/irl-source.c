@@ -134,6 +134,60 @@ static void apply_async_audio_mode(struct irl_source *ctx)
 	obs_source_set_async_decoupled(ctx->source, false);
 }
 
+/* ── Fit to canvas ────────────────────────────────────────── */
+
+struct fit_request {
+	obs_source_t *source;
+	struct obs_transform_info info;
+};
+
+static bool fit_scene_item(obs_scene_t *scene, obs_sceneitem_t *item,
+			   void *param)
+{
+	UNUSED_PARAMETER(scene);
+	struct fit_request *req = param;
+
+	if (obs_sceneitem_get_source(item) == req->source &&
+	    !obs_sceneitem_locked(item)) {
+		req->info.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
+		obs_sceneitem_set_info2(item, &req->info);
+	}
+	return true;
+}
+
+static bool fit_scene(void *param, obs_source_t *scene_source)
+{
+	obs_scene_t *scene = obs_scene_from_source(scene_source);
+	if (scene)
+		obs_scene_enum_items(scene, fit_scene_item, param);
+	return true;
+}
+
+/* Size a newly added source to the canvas exactly the way the Fit to
+ * Screen menu action does (same obs_transform_info, so the result is
+ * indistinguishable from pressing it by hand). Fires once, and only for
+ * a source that was created without a URL: anything restored from a
+ * scene collection already has one, so saved layouts are never touched
+ * and upgrading cannot move an existing scene item. */
+static void fit_to_canvas(struct irl_source *ctx)
+{
+	struct obs_video_info ovi;
+	if (!obs_get_video_info(&ovi))
+		return;
+
+	struct fit_request req = {.source = ctx->source};
+	vec2_set(&req.info.pos, 0.0f, 0.0f);
+	vec2_set(&req.info.scale, 1.0f, 1.0f);
+	req.info.rot = 0.0f;
+	req.info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+	vec2_set(&req.info.bounds, (float)ovi.base_width,
+		 (float)ovi.base_height);
+	req.info.bounds_type = OBS_BOUNDS_SCALE_INNER;
+	req.info.bounds_alignment = OBS_ALIGN_CENTER;
+
+	obs_enum_scenes(fit_scene, &req);
+}
+
 static void reset_runtime_state(struct irl_source *ctx)
 {
 	ctx->first_keyframe_received = false;
@@ -339,6 +393,10 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
 
+	/* A source the user just added has no URL yet; one restored from a
+	 * scene collection always does. See fit_to_canvas(). */
+	ctx->fit_pending = ctx->config.url == NULL;
+
 	/* Register stats proc_handler so scripts/overlays can query state */
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(
@@ -477,6 +535,12 @@ void irl_source_tick(void *data, float seconds)
 	struct irl_source *ctx = data;
 
 	/* Reconnection is handled inside the receiver thread via
-	 * sleep + retry, so there's nothing to poll here. */
-	UNUSED_PARAMETER(ctx);
+	 * sleep + retry, so the only polled work is the one-shot fit.
+	 * Waiting for a non-zero source size means the scene item exists
+	 * and the stream resolution is known. */
+	if (ctx->fit_pending && obs_source_get_width(ctx->source) > 0 &&
+	    obs_source_get_height(ctx->source) > 0) {
+		ctx->fit_pending = false;
+		fit_to_canvas(ctx);
+	}
 }

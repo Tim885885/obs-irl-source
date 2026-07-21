@@ -301,6 +301,10 @@ struct irl_source {
 	int last_video_width;
 	int last_video_height;
 
+	/* One-shot fit-to-canvas for a freshly added source (OBS thread
+	 * only: set at create, consumed in tick). */
+	bool fit_pending;
+
 	/* Statistics */
 	uint64_t total_audio_frames;
 	uint64_t total_video_frames;
