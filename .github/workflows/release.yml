@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches CMake project version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cmake_version="$(sed -nE 's/^project\(obs-irl-source VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)"
+          echo "tag: ${tag_version}  CMakeLists.txt: ${cmake_version}"
+          if [ "${tag_version}" != "${cmake_version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match project(VERSION ${cmake_version}) in CMakeLists.txt. Bump the version, commit, then re-tag."
+            exit 1
+          fi
+
+  build:
+    needs: check-version
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Package layouts mirror where each platform expects plugins, so a
+      # release archive is extracted straight into place with no renaming.
+      # The per-OBS-line loop globs the artifact names instead of hardcoding
+      # lines, so editing the matrix in build.yml is the only change needed
+      # to add or drop a line.
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+
+          # Linux: extract into ~/.config/obs-studio/plugins/
+          staging="$(mktemp -d)"
+          mkdir -p "${staging}/obs-irl-source/bin/64bit"
+          cp artifacts/obs-irl-source-linux-x64/obs-irl-source.so \
+            "${staging}/obs-irl-source/bin/64bit/"
+          tar -C "${staging}" -czf "dist/obs-irl-source-${version}-linux-x64.tar.gz" obs-irl-source
+          rm -rf "${staging}"
+
+          # Windows: extract into the OBS Studio install folder
+          # (the DLLs land in obs-plugins\64bit)
+          for dir in artifacts/obs-irl-source-windows-x64-obs*; do
+            line="${dir##*-}"
+            staging="$(mktemp -d)"
+            mkdir -p "${staging}/obs-plugins/64bit"
+            cp "${dir}"/*.dll "${staging}/obs-plugins/64bit/"
+            (cd "${staging}" && zip -r \
+              "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-windows-x64-${line}.zip" \
+              obs-plugins)
+            rm -rf "${staging}"
+          done
+
+          # macOS: extract into ~/Library/Application Support/obs-studio/plugins/
+          for dir in artifacts/obs-irl-source-macos-arm64-obs*; do
+            line="${dir##*-}"
+            staging="$(mktemp -d)"
+            mkdir -p "${staging}/obs-irl-source/bin"
+            cp "${dir}/obs-irl-source.so" "${staging}/obs-irl-source/bin/"
+            (cd "${staging}" && zip -r \
+              "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-macos-arm64-${line}.zip" \
+              obs-irl-source)
+            rm -rf "${staging}"
+          done
+
+          (cd dist && sha256sum ./* > sha256sums.txt)
+          ls -l dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" --jq .body > generated-notes.md
+          cat .github/release-notes-header.md generated-notes.md > notes.md
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --draft \
+            --title "obs-irl-source ${version}" \
+            --notes-file notes.md

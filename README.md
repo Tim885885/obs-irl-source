@@ -68,23 +68,29 @@ The jitter buffer, adaptive latency control, PTS repair, and timestamp handling 
 
 ## Installation
 
+Download from [Releases](../../releases). Windows and macOS archives are built per OBS release line (the file name says which, for example `obs32.1`), because OBS lines bundle different FFmpeg majors. Pick the archive matching your installed OBS version.
+
 ### Windows
 
-1. Download `obs-irl-source.dll` from [Releases](../../releases)
-2. Copy to `C:\Program Files\obs-studio\obs-plugins\64bit\`
-3. Restart OBS
+1. Close OBS
+2. Extract the zip into your OBS Studio install folder (usually `C:\Program Files\obs-studio`), so the DLLs land in `obs-plugins\64bit`
+3. Start OBS
 
 ### macOS (Apple Silicon)
 
-1. Download `obs-irl-source.so` from [Releases](../../releases) (macOS ARM64 build)
-2. Copy to `~/Library/Application Support/obs-studio/plugins/obs-irl-source/bin/`
-3. Restart OBS
+1. Close OBS
+2. Extract the zip into `~/Library/Application Support/obs-studio/plugins/`
+3. The binary is unsigned, so clear the quarantine flag once:
+   `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-irl-source"`
+4. Start OBS
 
 ### Linux
 
-1. Download `obs-irl-source.so` from [Releases](../../releases)
-2. Copy to `/usr/lib/obs-plugins/` (or `~/.obs-studio/plugins/obs-irl-source/bin/64bit/`)
-3. Restart OBS
+The release binary is built on Ubuntu against distribution libobs and FFmpeg. On other distributions, build from source instead (see below).
+
+1. Close OBS
+2. Extract the tarball into `~/.config/obs-studio/plugins/`
+3. Start OBS
 
 ## Usage
 
