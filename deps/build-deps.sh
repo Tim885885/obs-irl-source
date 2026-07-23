@@ -62,6 +62,21 @@ MINGW* | MSYS* | CYGWIN*) host=windows ;;
 	;;
 esac
 
+if [[ ${host} == windows ]]; then
+	# MSYS2 ships a coreutils /usr/bin/link.exe that shadows MSVC's linker.
+	# CMake is unaffected (it resolves the linker next to the compiler), but
+	# meson probes PATH and aborts with "Found GNU link.exe instead of MSVC
+	# link.exe". cl.exe and link.exe live in the same directory, so putting
+	# that directory first fixes it without modifying the MSYS2 install.
+	if ! command -v cl >/dev/null 2>&1; then
+		echo "cl.exe is not on PATH. Run this from an MSVC environment" >&2
+		echo "(the CI job uses ilammy/msvc-dev-cmd plus msys2 path-type: inherit)." >&2
+		exit 1
+	fi
+	PATH="$(dirname "$(command -v cl)"):${PATH}"
+	export PATH
+fi
+
 downloads="${work}/downloads"
 src="${work}/src"
 

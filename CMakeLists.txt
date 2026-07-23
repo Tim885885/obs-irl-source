@@ -126,22 +126,20 @@ else()
     endif()
 endif()
 
+# Headers only.  The plugin never calls jansson; it is reachable from the OBS
+# headers, so the include path is needed and the library is not.  Linking it
+# baked an absolute /opt/homebrew/opt/jansson/... path into the macOS artifact,
+# which made the shipped plugin require Homebrew on the user's machine.
 find_package(jansson QUIET)
 if(jansson_FOUND)
     list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${jansson_INCLUDE_DIR}")
-    list(APPEND _OBS_EXTRA_LIBS jansson::jansson)
 else()
     find_path(JANSSON_FALLBACK_INCLUDE_DIR
         NAMES jansson.h
         PATHS /usr/include /usr/local/include
     )
-    find_library(JANSSON_FALLBACK_LIBRARY
-        NAMES jansson
-        PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib
-    )
-    if(JANSSON_FALLBACK_INCLUDE_DIR AND JANSSON_FALLBACK_LIBRARY)
+    if(JANSSON_FALLBACK_INCLUDE_DIR)
         list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${JANSSON_FALLBACK_INCLUDE_DIR}")
-        list(APPEND _OBS_EXTRA_LIBS "${JANSSON_FALLBACK_LIBRARY}")
     endif()
 endif()
 

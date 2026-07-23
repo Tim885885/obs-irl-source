@@ -52,10 +52,19 @@ Linux*)
 
 Darwin*)
 	needed="$(otool -L "${module}" | tail -n +2 | awk '{print $1}')"
-	exports="$(nm -gU "${module}" | awk '{print $3}' | grep -v '^$')"
+	# -j prints just the symbol name. Column parsing is not viable here:
+	# nm renders an indirect symbol with an empty address column, which
+	# shifts every field and turns "(indirect" into an apparent export.
+	exports="$(nm -gUj "${module}" | grep -v '^$')"
 
 	echo "${needed}" | grep -qE '/lib(av|sw)[a-z]*\.' && r=1 || r=0
 	check ${r} "no libav*/libsw* in load commands (host FFmpeg not required)"
+
+	# Everything must resolve on a stock Mac: @rpath for libobs, /usr/lib
+	# and /System for the OS. An absolute path anywhere else (a Homebrew
+	# prefix, say) is a dependency the user does not have.
+	echo "${needed}" | grep -qvE '^(@rpath/|/usr/lib/|/System/Library/)' && r=1 || r=0
+	check ${r} "no non-system absolute paths in load commands"
 
 	echo "${exports}" | grep -vqE '^_obs_module_' && r=1 || r=0
 	check ${r} "exports limited to _obs_module_*"
