@@ -274,6 +274,21 @@ build_mbedtls() {
 	cmake --build "$(npath "${src}/mbedtls-${MBEDTLS_VERSION}/build")" --parallel "${jobs}"
 	cmake --install "$(npath "${src}/mbedtls-${MBEDTLS_VERSION}/build")"
 
+	# mbedTLS draws entropy from BCryptGenRandom on Windows but its generated
+	# .pc files do not declare bcrypt, so anything linking it statically via
+	# pkg-config fails on that one symbol. FFmpeg reports it as the wholly
+	# misleading "ERROR: mbedTLS not found".
+	if [[ ${host} == windows ]]; then
+		local pc
+		for pc in "${prefix}/lib/pkgconfig/mbedcrypto.pc" \
+			"${prefix}/lib/pkgconfig/mbedtls.pc"; do
+			[[ -f ${pc} ]] || continue
+			grep -q -- '-lbcrypt' "${pc}" && continue
+			sed -i.bak -E 's!^(Libs:.*)$!\1 -lbcrypt!' "${pc}"
+			rm -f "${pc}.bak"
+		done
+	fi
+
 	mark_built mbedtls "${MBEDTLS_VERSION}"
 }
 
@@ -483,6 +498,11 @@ build_ffmpeg() {
 			# cl.exe defaults to the static CRT; everything else here
 			# is /MD. See the meson_common comment above.
 			--extra-cflags=-MD
+			# Not every configure probe goes through pkg-config; the
+			# fallbacks link a bare -lmbedtls with no search path and
+			# fail with "cannot open input file mbedtls.lib".
+			--extra-cflags=-I"${native_prefix}/include"
+			--extra-ldflags=-libpath:"${native_prefix}/lib"
 			--enable-d3d11va
 			--enable-dxva2
 			--enable-ffnvcodec
