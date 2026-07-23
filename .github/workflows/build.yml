@@ -6,6 +6,16 @@ on:
   pull_request:
   workflow_call:
 
+# The plugin bundles its own static FFmpeg/libsrt, so the only remaining tie to
+# a specific OBS release is libobs itself. libobs gates a module on
+# (major, minor) <= host version and looks up nothing but obs_module_*, so
+# building against the OLDEST supported line produces one artifact that loads
+# on that line and every newer one. That is why there is no per-OBS-line matrix
+# here any more.
+env:
+  OBS_VERSION: "32.1.2"
+  OBS_DEPS_VERSION: "2025-08-23"
+
 jobs:
   linux-x64:
     runs-on: ubuntu-26.04
@@ -16,16 +26,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake pkg-config \
-            libobs-dev \
-            libavformat-dev libavcodec-dev libswresample-dev \
-            libavfilter-dev libswscale-dev libavutil-dev
+            build-essential cmake pkg-config nasm meson ninja-build \
+            libobs-dev libva-dev
+
+      # Only the install prefix is cached. The source and object trees are an
+      # order of magnitude larger and the build-marker files live inside the
+      # prefix, so a restored prefix alone is enough to skip every dep build.
+      - name: Cache bundled deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps/.build/prefix
+          key: irl-deps-linux-x64-${{ hashFiles('deps/versions.env', 'deps/build-deps.sh') }}
+
+      - name: Build bundled deps
+        run: ./deps/build-deps.sh
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Verify isolation
+        run: ./scripts/verify-plugin.sh build/obs-irl-source.so
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -34,26 +58,7 @@ jobs:
           path: build/obs-irl-source.so
 
   windows-x64:
-    name: windows-x64 (obs ${{ matrix.obs_line }})
     runs-on: windows-2025-vs2026
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # OBS 32.1.x bundles FFmpeg 7 (avcodec-61) via obs-deps 2025-08-23.
-          # A plugin linked against this loads on 32.1.x and, thanks to the
-          # forward-compatible libobs module gate, on newer lines too, but only
-          # where FFmpeg 7 DLLs are present.
-          - obs_line: "32.1"
-            obs_version: "32.1.2"
-            obs_deps_version: "2025-08-23"
-          # OBS 32.2.x bundles FFmpeg 8.1 (avcodec-62) via obs-deps 2026-07-15.
-          # FFmpeg's major bump (obsproject/obs-deps 2025-12-23) changes the DLL
-          # sonames, so this artifact is a separate binary that only resolves
-          # against 32.2.x. Bump obs_version to 32.2.0 once the final tag ships.
-          - obs_line: "32.2"
-            obs_version: "32.2.0-rc2"
-            obs_deps_version: "2026-07-15"
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +67,34 @@ jobs:
         with:
           arch: x64
 
+      # librist builds with meson. It has to be the Windows-native meson (so it
+      # detects cl.exe rather than looking for a POSIX toolchain), which
+      # path-type: inherit below then makes visible inside MSYS2.
+      - name: Install meson
+        shell: pwsh
+        run: pip install --disable-pip-version-check meson ninja
+
+      # FFmpeg's configure needs a POSIX shell even when it drives cl.exe.
+      # path-type: inherit keeps the MSVC environment visible inside MSYS2.
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          update: false
+          install: make nasm diffutils pkgconf
+
+      - name: Cache bundled deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps/.build/prefix
+          key: irl-deps-windows-x64-${{ hashFiles('deps/versions.env', 'deps/build-deps.sh') }}
+
+      - name: Build bundled deps
+        shell: msys2 {0}
+        run: ./deps/build-deps.sh
+
       - name: Cache OBS build
         id: cache-obs
         uses: actions/cache@v4
@@ -69,20 +102,22 @@ jobs:
           path: |
             obs-src
             obs-deps
-          key: obs-build-${{ matrix.obs_version }}-${{ matrix.obs_deps_version }}-v2
+          key: obs-build-${{ env.OBS_VERSION }}-${{ env.OBS_DEPS_VERSION }}-v3
 
+      # obs-deps is still needed here, but only to build libobs itself. The
+      # plugin no longer links its FFmpeg.
       - name: Download OBS dependencies
         if: steps.cache-obs.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest `
-            -Uri "https://github.com/obsproject/obs-deps/releases/download/${{ matrix.obs_deps_version }}/windows-deps-${{ matrix.obs_deps_version }}-x64.zip" `
+            -Uri "https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/windows-deps-${{ env.OBS_DEPS_VERSION }}-x64.zip" `
             -OutFile obs-deps.zip
           Expand-Archive obs-deps.zip -DestinationPath obs-deps
 
       - name: Clone OBS source
         if: steps.cache-obs.outputs.cache-hit != 'true'
-        run: git clone --depth 1 --branch ${{ matrix.obs_version }} https://github.com/obsproject/obs-studio.git obs-src
+        run: git clone --depth 1 --branch ${{ env.OBS_VERSION }} https://github.com/obsproject/obs-studio.git obs-src
 
       - name: Patch OBS to build only libobs
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -141,11 +176,35 @@ jobs:
           cmake -B build
           -G "Visual Studio 18 2026" -A x64
           -DOBS_SOURCE_DIR=%CD%\obs-src
-          -DFFMPEG_DIR=%CD%\obs-deps
 
       - name: Build
         shell: cmd
         run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Verify isolation
+        shell: pwsh
+        run: |
+          $dll = "build/RelWithDebInfo/obs-irl-source.dll"
+          $deps = (dumpbin /dependents $dll) -join "`n"
+          $exports = (dumpbin /exports $dll) -join "`n"
+
+          $fail = $false
+          if ($deps -match 'av(codec|format|util)-\d+\.dll|sws(cale)?-\d+\.dll|swresample-\d+\.dll') {
+            Write-Host "  FAIL  plugin still imports a host FFmpeg DLL"; $fail = $true
+          } else {
+            Write-Host "  ok    no FFmpeg DLL imports (host FFmpeg not required)"
+          }
+          if ($exports -match '\bav_|\bavcodec_|\bsrt_|\bmbedtls_') {
+            Write-Host "  FAIL  bundled stack symbols are exported"; $fail = $true
+          } else {
+            Write-Host "  ok    bundled stack symbols not exported"
+          }
+          if ($exports -match 'obs_module_load') {
+            Write-Host "  ok    obs_module_load exported"
+          } else {
+            Write-Host "  FAIL  obs_module_load missing"; $fail = $true
+          }
+          if ($fail) { Write-Host $deps; Write-Host $exports; exit 1 }
 
       - name: Collect runtime dependencies
         shell: pwsh
@@ -159,38 +218,33 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: obs-irl-source-windows-x64-obs${{ matrix.obs_line }}
+          name: obs-irl-source-windows-x64
           path: |
             build/RelWithDebInfo/obs-irl-source.dll
             build/RelWithDebInfo/w32-pthreads.dll
 
   macos-arm64:
-    name: macos-arm64 (obs ${{ matrix.obs_line }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - obs_line: "32.1"
-            obs_version: "32.1.2"
-            obs_deps_version: "2025-08-23"
-            runner: "macos-15"
-          # OBS 32.2 requires the macOS 26.5 SDK (Xcode 26.5); macos-15 ships
-          # only SDK 15.5, so this line needs the macos-26 image.
-          - obs_line: "32.2"
-            obs_version: "32.2.0-rc2"
-            obs_deps_version: "2026-07-15"
-            runner: "macos-26"
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 
-      # ffmpeg is intentionally NOT installed from Homebrew. The plugin must
-      # link the same FFmpeg that OBS bundles (from obs-deps), so its runtime
-      # dylib references resolve against OBS.app's Frameworks. Homebrew ffmpeg
-      # has a different soname per OBS line and absolute (non-@rpath) install
-      # names, so a brew-linked plugin only loads where brew's FFmpeg matches.
+      # ffmpeg is intentionally NOT installed from Homebrew. The plugin links
+      # the bundled static stack instead, which is what removes its dependency
+      # on whatever FFmpeg the host OBS ships.
       - name: Install build tools
-        run: brew install cmake pkg-config simde uthash jansson
+        run: brew install cmake pkg-config nasm meson ninja simde uthash jansson
+
+      - name: Cache bundled deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps/.build/prefix
+          key: irl-deps-macos-arm64-${{ hashFiles('deps/versions.env', 'deps/build-deps.sh') }}
+
+      - name: Build bundled deps
+        run: ./deps/build-deps.sh
 
       - name: Cache OBS build
         id: cache-obs
@@ -199,19 +253,19 @@ jobs:
           path: |
             obs-src
             obs-deps
-          key: obs-macos-arm64-${{ matrix.obs_version }}-${{ matrix.obs_deps_version }}-v2
+          key: obs-macos-arm64-${{ env.OBS_VERSION }}-${{ env.OBS_DEPS_VERSION }}-v3
 
       - name: Download OBS dependencies
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: |
           curl -L -o macos-deps.tar.xz \
-            "https://github.com/obsproject/obs-deps/releases/download/${{ matrix.obs_deps_version }}/macos-deps-${{ matrix.obs_deps_version }}-arm64.tar.xz"
+            "https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/macos-deps-${{ env.OBS_DEPS_VERSION }}-arm64.tar.xz"
           mkdir -p obs-deps
           tar -xf macos-deps.tar.xz -C obs-deps
 
       - name: Clone OBS source
         if: steps.cache-obs.outputs.cache-hit != 'true'
-        run: git clone --depth 1 --branch ${{ matrix.obs_version }} https://github.com/obsproject/obs-studio.git obs-src
+        run: git clone --depth 1 --branch ${{ env.OBS_VERSION }} https://github.com/obsproject/obs-studio.git obs-src
 
       - name: Patch OBS to build only libobs
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -226,9 +280,8 @@ jobs:
           sed -i '' '/CMAKE_IGNORE_PREFIX_PATH/d' obs-src/cmake/macos/defaults.cmake
 
           # Relax OBS's SDK/Xcode floor. OBS gates the whole app on a very
-          # recent SDK (32.2 wants macOS 26.5 / Xcode 26.5), but we only build
-          # libobs with the UI off, which compiles on the runner's SDK. No-op
-          # on lines whose floor the runner already satisfies.
+          # recent SDK, but we only build libobs with the UI off, which
+          # compiles on the runner's SDK.
           sed -i '' -E 's/set\(obs_macos_minimum_sdk [0-9.]+\)/set(obs_macos_minimum_sdk 1.0)/' obs-src/cmake/macos/compilerconfig.cmake
           sed -i '' -E 's/set\(obs_macos_minimum_xcode [0-9.]+\)/set(obs_macos_minimum_xcode 1.0)/' obs-src/cmake/macos/compilerconfig.cmake
 
@@ -245,24 +298,24 @@ jobs:
         if: steps.cache-obs.outputs.cache-hit != 'true'
         run: cmake --build obs-src/build --config Release --target libobs --parallel
 
-      # Force the manual FFmpeg discovery path (FFMPEG_DIR) instead of
-      # pkg-config. This links obs-deps' FFmpeg directly by library, preserving
-      # its @rpath install names, and avoids picking up any FFmpeg .pc files
-      # that the runner image or a relocated obs-deps prefix might expose.
+      # PkgConfig is disabled so a stray Homebrew or obs-deps FFmpeg .pc cannot
+      # shadow the bundled headers.
       - name: Configure
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DOBS_SOURCE_DIR=$PWD/obs-src
-          -DFFMPEG_DIR=$PWD/obs-deps
           -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
           -DCMAKE_C_FLAGS="-I$(brew --prefix)/include"
 
       - name: Build
         run: cmake --build build --parallel
 
+      - name: Verify isolation
+        run: ./scripts/verify-plugin.sh build/obs-irl-source.so
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: obs-irl-source-macos-arm64-obs${{ matrix.obs_line }}
+          name: obs-irl-source-macos-arm64
           path: build/obs-irl-source.so

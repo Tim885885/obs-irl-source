@@ -22,8 +22,8 @@ Releases are tag driven. Pushing a tag `vX.Y.Z` runs `.github/workflows/release.
 4. Wait for the Release workflow to finish. It creates a draft release containing:
 
    * `obs-irl-source-X.Y.Z-linux-x64.tar.gz` (extract into `~/.config/obs-studio/plugins/`)
-   * `obs-irl-source-X.Y.Z-windows-x64-obsNN.N.zip`, one per supported OBS line (extract into the OBS install folder)
-   * `obs-irl-source-X.Y.Z-macos-arm64-obsNN.N.zip`, one per supported OBS line (extract into `~/Library/Application Support/obs-studio/plugins/`)
+   * `obs-irl-source-X.Y.Z-windows-x64.zip` (extract into the OBS install folder)
+   * `obs-irl-source-X.Y.Z-macos-arm64.zip` (extract into `~/Library/Application Support/obs-studio/plugins/`)
    * `sha256sums.txt`
 
    The release body starts with install instructions (from `.github/release-notes-header.md`) followed by notes generated from the commit history.
@@ -43,7 +43,9 @@ git push -f origin vX.Y.Z
 
 ## Supported OBS lines
 
-The set of per line Windows and macOS packages comes from the `matrix.include` rows in `.github/workflows/build.yml`. The release packaging globs the artifact names, so adding or dropping a line there is the only change needed (see the CI section in `CLAUDE.md` for how to pick `obs_version` and `obs_deps_version`).
+One archive per platform covers every supported OBS line. The plugin bundles its own media stack, so the only version sensitive link left is libobs, and libobs gates a plugin on `(major, minor) <= host`. Building against the oldest supported line therefore produces a binary that also loads on every newer one.
+
+`OBS_VERSION` at the top of `.github/workflows/build.yml` pins that oldest line. Raise it only to drop support for older OBS releases, never to chase a newer one. See the CI section in `CLAUDE.md`.
 
 ## Not automated (yet)
 

@@ -8,34 +8,43 @@ IRL Source is a third-party OBS Studio plugin (C11, AGPL-3.0) for receiving live
 
 ## Build commands
 
+The plugin statically links its own FFmpeg, libsrt and mbedTLS (see `deps/README.md`), so the first step on every platform is building that stack. It is incremental, so this is a one time cost per version bump.
+
 ### Linux
 
 ```bash
-sudo apt install build-essential cmake pkg-config libobs-dev \
-    libavformat-dev libavcodec-dev libswresample-dev libavfilter-dev \
-    libswscale-dev libavutil-dev
+sudo apt install build-essential cmake pkg-config nasm libobs-dev libva-dev
+./deps/build-deps.sh
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
+./scripts/verify-plugin.sh build/obs-irl-source.so
 ```
 
 ### Windows (MSVC)
 
+`deps/build-deps.sh` runs inside MSYS2 with the MSVC environment active (FFmpeg's configure needs a POSIX shell even when driving `cl.exe`). See the `windows-x64` job in `.github/workflows/build.yml` for the exact setup.
+
 ```powershell
-cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src
 cmake --build build --config RelWithDebInfo
 ```
 
 ### macOS (Apple Silicon)
 
 ```bash
-brew install cmake pkg-config ffmpeg simde uthash jansson
-cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOBS_SOURCE_DIR=$PWD/obs-src
+brew install cmake pkg-config nasm simde uthash jansson
+./deps/build-deps.sh
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOBS_SOURCE_DIR=$PWD/obs-src \
+    -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
 cmake --build build --parallel
+./scripts/verify-plugin.sh build/obs-irl-source.so
 ```
 
 Output: `build/obs-irl-source.so` (Linux/macOS) or `build/RelWithDebInfo/obs-irl-source.dll` (Windows).
 
-These snippets compile the plugin, but a binary that actually loads in an installed OBS must link the same FFmpeg major that OBS bundles. The macOS snippet uses Homebrew FFmpeg for convenience, which is fine for a compile check but produces a binary that will not load inside OBS.app (wrong soname and non `@rpath` install names). For a distributable per OBS line build, follow what CI does (see the CI section): link obs-deps FFmpeg matching the target line.
+`-DIRL_BUNDLED_FFMPEG=OFF` falls back to linking a system or obs-deps FFmpeg. That path still works for a quick compile check, but it reintroduces the per OBS line binding the bundled stack exists to remove, so it is not what releases use.
+
+`scripts/verify-plugin.sh` is not optional polish. It asserts the two properties that make the bundled stack correct and that a successful compile does not prove: that the binary carries no `libav*` dependency, and that it exports nothing but `obs_module_*`. CI runs it (and a `dumpbin` equivalent on Windows) on every build.
 
 There are no tests.
 
@@ -106,13 +115,17 @@ Config fields marked `/* hot */` in `struct irl_config` are written by `irl_sour
 
 ## CI
 
-GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). The Windows and macOS jobs clone OBS source, patch it to build only libobs, and link against that. The workflow also exposes `workflow_call` so the release workflow reuses it.
+GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). Every job builds the bundled media stack first (cached on the hash of `deps/versions.env` plus `deps/build-deps.sh`), then the plugin, then runs the isolation checks. The Windows and macOS jobs also clone OBS source and patch it to build only libobs, which is the plugin's one remaining link against a specific OBS release. The workflow exposes `workflow_call` so the release workflow reuses it.
 
-Releases are tag driven (`.github/workflows/release.yml`, see `RELEASING.md`). Pushing `vX.Y.Z` verifies the tag against the `project(VERSION)` in CMakeLists.txt, runs the build workflow, repackages the artifacts into install layout archives (Linux tar.gz, per OBS line Windows and macOS zips, globbed from the artifact names so matrix edits flow through automatically), generates sha256sums.txt, and creates a draft GitHub release whose body is `.github/release-notes-header.md` plus commit generated notes. Publishing the draft is manual, after testing the artifacts.
+Releases are tag driven (`.github/workflows/release.yml`, see `RELEASING.md`). Pushing `vX.Y.Z` verifies the tag against the `project(VERSION)` in CMakeLists.txt, runs the build workflow, repackages the artifacts into install layout archives (one per platform: Linux tar.gz, Windows zip, macOS zip), generates sha256sums.txt, and creates a draft GitHub release whose body is `.github/release-notes-header.md` plus commit generated notes. Publishing the draft is manual, after testing the artifacts.
 
-The Windows and macOS jobs run a `matrix.include` over the supported OBS lines, one row per line. Each row pins both the OBS source tag (`obs_version`) and the matching obs-deps release (`obs_deps_version`). This split exists because the plugin dynamically links FFmpeg from obs-deps, and OBS bumped FFmpeg 7 (`avcodec-61`) to 8.1 (`avcodec-62`) between the 32.1 and 32.2 lines. A binary linked against one FFmpeg major will not load where the other is present, so each line produces its own artifact (suffixed `-obs32.1` / `-obs32.2`). The libobs module gate is forward compatible on its own (a plugin loads on its build version and any newer host), so it is FFmpeg, not libobs, that forces the per-line builds. macOS links obs-deps FFmpeg instead of Homebrew's (via `FFMPEG_DIR` plus `CMAKE_DISABLE_FIND_PACKAGE_PkgConfig`) so the plugin's dylib references carry `@rpath` install names that resolve inside OBS.app.
+### One artifact per platform
 
-To add or move a supported line, edit the `matrix.include` rows: set `obs_version` to a tag on that line and `obs_deps_version` to the obs-deps release that the line's `CMakePresets.json` pins under `dependencies.prebuilt.version`. Verify the two FFmpeg majors differ by checking `avcodec-*.dll` (Windows) or `libavcodec.*.dylib` (macOS) in each target OBS install; if they match, one build covers both lines.
+There used to be a `matrix.include` over OBS lines, producing `-obs32.1` and `-obs32.2` binaries. That existed purely because the plugin dynamically linked obs-deps' FFmpeg, and OBS bumped FFmpeg 7 (`avcodec-61`) to 8.1 (`avcodec-62`) between those lines, so a binary linked against one would not load where the other was present. Bundling FFmpeg statically removed that constraint and the matrix with it.
+
+libobs itself was never the problem. `obs_init_module` gates a plugin on `(mod.ver() & 0xFFFF0000) <= LIBOBS_API_VER`, so major and minor only, and it looks up nothing but `obs_module_*` symbols. Building against the oldest supported line therefore yields one binary that loads on that line and every newer one. `OBS_VERSION` and `OBS_DEPS_VERSION` at the top of `build.yml` pin that oldest line; raise them only to drop support for older OBS releases, never to chase a newer one.
+
+`OBS_DEPS_VERSION` still exists because libobs needs obs-deps to build. The plugin no longer touches it.
 
 ## Contributing
 

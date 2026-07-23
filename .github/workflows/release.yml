@@ -40,9 +40,8 @@ jobs:
 
       # Package layouts mirror where each platform expects plugins, so a
       # release archive is extracted straight into place with no renaming.
-      # The per-OBS-line loop globs the artifact names instead of hardcoding
-      # lines, so editing the matrix in build.yml is the only change needed
-      # to add or drop a line.
+      # One archive per platform: the plugin bundles its own FFmpeg, so there
+      # is no longer a per-OBS-line artifact to disambiguate.
       - name: Package
         run: |
           set -euo pipefail
@@ -59,28 +58,23 @@ jobs:
 
           # Windows: extract into the OBS Studio install folder
           # (the DLLs land in obs-plugins\64bit)
-          for dir in artifacts/obs-irl-source-windows-x64-obs*; do
-            line="${dir##*-}"
-            staging="$(mktemp -d)"
-            mkdir -p "${staging}/obs-plugins/64bit"
-            cp "${dir}"/*.dll "${staging}/obs-plugins/64bit/"
-            (cd "${staging}" && zip -r \
-              "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-windows-x64-${line}.zip" \
-              obs-plugins)
-            rm -rf "${staging}"
-          done
+          staging="$(mktemp -d)"
+          mkdir -p "${staging}/obs-plugins/64bit"
+          cp artifacts/obs-irl-source-windows-x64/*.dll "${staging}/obs-plugins/64bit/"
+          (cd "${staging}" && zip -r \
+            "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-windows-x64.zip" \
+            obs-plugins)
+          rm -rf "${staging}"
 
           # macOS: extract into ~/Library/Application Support/obs-studio/plugins/
-          for dir in artifacts/obs-irl-source-macos-arm64-obs*; do
-            line="${dir##*-}"
-            staging="$(mktemp -d)"
-            mkdir -p "${staging}/obs-irl-source/bin"
-            cp "${dir}/obs-irl-source.so" "${staging}/obs-irl-source/bin/"
-            (cd "${staging}" && zip -r \
-              "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-macos-arm64-${line}.zip" \
-              obs-irl-source)
-            rm -rf "${staging}"
-          done
+          staging="$(mktemp -d)"
+          mkdir -p "${staging}/obs-irl-source/bin"
+          cp artifacts/obs-irl-source-macos-arm64/obs-irl-source.so \
+            "${staging}/obs-irl-source/bin/"
+          (cd "${staging}" && zip -r \
+            "${GITHUB_WORKSPACE}/dist/obs-irl-source-${version}-macos-arm64.zip" \
+            obs-irl-source)
+          rm -rf "${staging}"
 
           (cd dist && sha256sum ./* > sha256sums.txt)
           ls -l dist
