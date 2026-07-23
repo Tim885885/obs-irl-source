@@ -222,6 +222,10 @@ jobs:
           path: |
             build/RelWithDebInfo/obs-irl-source.dll
             build/RelWithDebInfo/w32-pthreads.dll
+            # PDB ships in the CI artifact (not the release zip) so a crash
+            # log resolves obs-irl-source.dll frames to function names.
+            # OBS's crash handler reads it if it sits next to the DLL.
+            build/RelWithDebInfo/obs-irl-source.pdb
 
   macos-arm64:
     runs-on: macos-15
