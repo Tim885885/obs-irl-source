@@ -166,6 +166,39 @@ export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${prefix}/lib64/pkgconfig${PKG_C
 #
 # Rewriting the reference to plain -l flags, appended after the library's own
 # entry, fixes the ordering and pins it to the mbedTLS in this prefix.
+# FFmpeg's msvc toolchain rewrites the -lfoo it reads from a .pc file into
+# foo.lib, but neither CMake nor meson necessarily names its static output that
+# way: libsrt builds srt_static.lib, meson builds librist.a. The mismatch shows
+# up as "X not found using pkg-config" from a library that just installed
+# successfully. Provide the name the linker will ask for.
+#
+# Patching the .pc to an absolute path would also resolve it, and would also
+# reintroduce the link-ordering trap fix_mbedtls_pc exists to undo.
+ensure_msvc_lib_name() {
+	local want="$1"
+	[[ ${host} == windows ]] || return 0
+
+	local dst="${prefix}/lib/${want}.lib"
+	[[ -f ${dst} ]] && return 0
+
+	local cand
+	for cand in \
+		"${prefix}/lib/${want}_static.lib" \
+		"${prefix}/lib/lib${want}.a" \
+		"${prefix}/lib/lib${want}.lib" \
+		"${prefix}/lib/${want}.a"; do
+		if [[ -f ${cand} ]]; then
+			cp "${cand}" "${dst}"
+			echo "provided $(basename "${dst}") from $(basename "${cand}")"
+			return 0
+		fi
+	done
+
+	echo "no static library found for -l${want} in ${prefix}/lib" >&2
+	ls -1 "${prefix}/lib" >&2 || true
+	exit 1
+}
+
 fix_mbedtls_pc() {
 	local pc="$1" field="$2"
 	[[ -f ${pc} ]] || return 0
@@ -268,6 +301,7 @@ build_srt() {
 	cmake --install "$(npath "${src}/srt-${SRT_VERSION}/build")"
 
 	fix_mbedtls_pc "${prefix}/lib/pkgconfig/srt.pc" "Libs.private"
+	ensure_msvc_lib_name srt
 
 	mark_built srt "${SRT_VERSION}"
 }
@@ -310,14 +344,7 @@ build_librist() {
 
 	fix_mbedtls_pc "${prefix}/lib/pkgconfig/librist.pc" "Libs"
 
-	# meson names its static library librist.a even under MSVC, but FFmpeg's
-	# msvc toolchain rewrites the -lrist from librist.pc into rist.lib.
-	# Providing that name is less invasive than patching the .pc back to an
-	# absolute path, which is exactly the link-ordering trap fix_mbedtls_pc
-	# exists to undo.
-	if [[ ${host} == windows && -f "${prefix}/lib/librist.a" ]]; then
-		cp "${prefix}/lib/librist.a" "${prefix}/lib/rist.lib"
-	fi
+	ensure_msvc_lib_name rist
 
 	mark_built librist "${LIBRIST_VERSION}"
 }
