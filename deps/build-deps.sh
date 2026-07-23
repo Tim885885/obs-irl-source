@@ -284,6 +284,15 @@ build_librist() {
 
 	fix_mbedtls_pc "${prefix}/lib/pkgconfig/librist.pc" "Libs"
 
+	# meson names its static library librist.a even under MSVC, but FFmpeg's
+	# msvc toolchain rewrites the -lrist from librist.pc into rist.lib.
+	# Providing that name is less invasive than patching the .pc back to an
+	# absolute path, which is exactly the link-ordering trap fix_mbedtls_pc
+	# exists to undo.
+	if [[ ${host} == windows && -f "${prefix}/lib/librist.a" ]]; then
+		cp "${prefix}/lib/librist.a" "${prefix}/lib/rist.lib"
+	fi
+
 	mark_built librist "${LIBRIST_VERSION}"
 }
 
@@ -428,7 +437,16 @@ build_ffmpeg() {
 		;;
 	esac
 
-	(cd "${ff}" && ./configure "${args[@]}")
+	# configure prints only "X not found using pkg-config" on failure; the
+	# actual compiler and linker invocation lives in config.log, which is
+	# the only thing that distinguishes a missing library from one whose
+	# name or link order the toolchain got wrong.
+	if ! (cd "${ff}" && ./configure "${args[@]}"); then
+		echo
+		echo "---- tail of ffbuild/config.log ----" >&2
+		tail -60 "${ff}/ffbuild/config.log" >&2 || true
+		exit 1
+	fi
 
 	# config.mak marks a disabled component by prefixing it with '!'.
 	local missing=()
