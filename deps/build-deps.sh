@@ -282,6 +282,33 @@ build_zlib() {
 	# zlib's CMake calls its static output zlibstatic; FFmpeg asks for z.lib.
 	ensure_msvc_lib_name z zlibstatic zlib
 
+	# zconf.h.cmakein still carries an autoconf-era block:
+	#
+	#     #ifdef HAVE_UNISTD_H
+	#     #  define Z_HAVE_UNISTD_H
+	#     #endif
+	#
+	# CMake probes for unistd.h, does not find it under MSVC, and correctly
+	# leaves Z_HAVE_UNISTD_H undefined earlier in the file. That block then
+	# defines it anyway, because FFmpeg's config.h contains
+	# "#define HAVE_UNISTD_H 0" and #ifdef is true for a value of zero. The
+	# header goes on to include <unistd.h>, which MSVC does not have, and
+	# every FFmpeg source that touches zlib fails to compile.
+	#
+	# zlib's own ./configure rewrites this line for exactly this reason. The
+	# CMake path does not, so do it here.
+	local zconf="${prefix}/include/zconf.h"
+	if [[ -f ${zconf} ]]; then
+		sed -i.bak \
+			's!^#ifdef HAVE_UNISTD_H.*!#if 0 /* patched: MSVC has no unistd.h, and FFmpeg defines HAVE_UNISTD_H to 0 */!' \
+			"${zconf}"
+		rm -f "${zconf}.bak"
+		if grep -q '^#ifdef HAVE_UNISTD_H' "${zconf}"; then
+			echo "failed to patch HAVE_UNISTD_H out of ${zconf}" >&2
+			exit 1
+		fi
+	fi
+
 	mark_built zlib "${ZLIB_VERSION}"
 }
 
