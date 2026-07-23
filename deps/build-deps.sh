@@ -492,6 +492,31 @@ build_ffmpeg() {
 	extract "ffmpeg-${FFMPEG_VERSION}.tar.xz" "ffmpeg-${FFMPEG_VERSION}"
 
 	local ff="${src}/ffmpeg-${FFMPEG_VERSION}"
+
+	# Upstream bug. libavformat/tls_mbedtls.c calls gmtime_r without
+	# including libavutil/time_internal.h, which is where FFmpeg keeps the
+	# ff_gmtime_r fallback for platforms that lack the POSIX function.
+	# Everywhere except MSVC the real gmtime_r resolves and the missing
+	# include is invisible, so it surfaces only as a lone unresolved
+	# external when the plugin links.
+	#
+	# Applied on every platform: the include is a no-op where HAVE_GMTIME_R
+	# is set, and keeping one source state across platforms beats carrying a
+	# Windows-only divergence.
+	local tls="${ff}/libavformat/tls_mbedtls.c"
+	if [[ -f ${tls} ]] && ! grep -q 'libavutil/time_internal.h' "${tls}"; then
+		sed -i.bak \
+			's!^#include "libavutil/random_seed.h"!&\n#include "libavutil/time_internal.h"!' \
+			"${tls}"
+		rm -f "${tls}.bak"
+		if ! grep -q 'libavutil/time_internal.h' "${tls}"; then
+			echo "failed to patch gmtime_r include into ${tls}" >&2
+			echo "check whether the anchor include still exists upstream." >&2
+			exit 1
+		fi
+		echo "patched gmtime_r include into libavformat/tls_mbedtls.c"
+	fi
+
 	local args=(
 		--prefix="${prefix}"
 		--disable-shared
