@@ -174,24 +174,29 @@ export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${prefix}/lib64/pkgconfig${PKG_C
 #
 # Patching the .pc to an absolute path would also resolve it, and would also
 # reintroduce the link-ordering trap fix_mbedtls_pc exists to undo.
+# ensure_msvc_lib_name <-l name> [extra basename ...]
 ensure_msvc_lib_name() {
 	local want="$1"
+	shift
 	[[ ${host} == windows ]] || return 0
 
 	local dst="${prefix}/lib/${want}.lib"
 	[[ -f ${dst} ]] && return 0
 
-	local cand
-	for cand in \
-		"${prefix}/lib/${want}_static.lib" \
-		"${prefix}/lib/lib${want}.a" \
-		"${prefix}/lib/lib${want}.lib" \
-		"${prefix}/lib/${want}.a"; do
-		if [[ -f ${cand} ]]; then
-			cp "${cand}" "${dst}"
-			echo "provided $(basename "${dst}") from $(basename "${cand}")"
-			return 0
-		fi
+	local cand base
+	local candidates=(
+		"${want}_static"
+		"lib${want}"
+		"$@"
+	)
+	for base in "${candidates[@]}"; do
+		for cand in "${prefix}/lib/${base}.lib" "${prefix}/lib/${base}.a"; do
+			if [[ -f ${cand} ]]; then
+				cp "${cand}" "${dst}"
+				echo "provided $(basename "${dst}") from $(basename "${cand}")"
+				return 0
+			fi
+		done
 	done
 
 	echo "no static library found for -l${want} in ${prefix}/lib" >&2
@@ -251,6 +256,34 @@ meson_common=(--buildtype=release --default-library=static)
 if [[ ${host} == windows ]]; then
 	meson_common+=(-Db_vscrt=md)
 fi
+
+# ── zlib ─────────────────────────────────────────────────────────────────────
+# Windows only. Linux and macOS supply zlib as a system library, which the
+# builds there already link. Building it here rather than dropping
+# --enable-zlib on Windows keeps the FFmpeg feature set identical on all three
+# platforms; a capability that silently differs per platform is worse than a
+# short extra build step.
+build_zlib() {
+	[[ ${host} == windows ]] || return 0
+	built zlib "${ZLIB_VERSION}" && return
+	log "zlib ${ZLIB_VERSION}"
+
+	fetch "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" \
+		"zlib-${ZLIB_VERSION}.tar.gz" "${ZLIB_SHA256}"
+	extract "zlib-${ZLIB_VERSION}.tar.gz" "zlib-${ZLIB_VERSION}"
+
+	cmake -S "$(npath "${src}/zlib-${ZLIB_VERSION}")" \
+		-B "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" \
+		"${cmake_common[@]}" \
+		-DZLIB_BUILD_EXAMPLES=OFF
+	cmake --build "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" --parallel "${jobs}"
+	cmake --install "$(npath "${src}/zlib-${ZLIB_VERSION}/build")"
+
+	# zlib's CMake calls its static output zlibstatic; FFmpeg asks for z.lib.
+	ensure_msvc_lib_name z zlibstatic zlib
+
+	mark_built zlib "${ZLIB_VERSION}"
+}
 
 # ── mbedTLS ──────────────────────────────────────────────────────────────────
 # Supplies TLS for FFmpeg (https, rtmps) and AES for libsrt passphrases.
@@ -404,6 +437,7 @@ FFMPEG_REQUIRED_CONFIG="
 LIBSRT_PROTOCOL
 LIBRIST_PROTOCOL
 MBEDTLS
+ZLIB
 TLS_PROTOCOL
 RTMP_PROTOCOL
 HTTPS_PROTOCOL
@@ -694,6 +728,7 @@ emit_cmake() {
 }
 
 log "building bundled deps for ${host} into ${prefix}"
+build_zlib
 build_mbedtls
 build_srt
 build_librist
