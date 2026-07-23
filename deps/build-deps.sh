@@ -628,17 +628,29 @@ emit_cmake() {
 	# Link order matters for a single-pass static link.
 	local ordered=(avformat avcodec swscale swresample avutil srt rist mbedtls mbedx509 mbedcrypto)
 
+	# zlib is ours only on Windows; Linux and macOS pull the system one in
+	# through pkg-config as -lz. Listing it explicitly guarantees it reaches
+	# the link line: the Windows .pc chain does not surface it as a -l flag,
+	# so it would otherwise be dropped and show up as unresolved inflate and
+	# deflate at plugin link time. It goes last, after its consumers.
+	if [[ ${host} == windows ]]; then
+		ordered+=(z)
+	fi
+
 	local own=()
 	local name path
 	for name in "${ordered[@]}"; do
 		path=""
-		# FFmpeg's msvc toolchain keeps the .a suffix; CMake-built deps
-		# use .lib, and libsrt may keep its _static target name.
+		# .lib first so a Windows build picks the name the MSVC linker
+		# expects: meson emits librist.a even under MSVC, and both that
+		# and the rist.lib beside it would link, but mixing conventions
+		# in one link line is needless room for surprise. On Linux only
+		# the lib*.a form exists, so the order costs nothing there.
 		for candidate in \
-			"${libdir}/lib${name}.a" \
 			"${libdir}/${name}.lib" \
 			"${libdir}/lib${name}.lib" \
 			"${libdir}/${name}_static.lib" \
+			"${libdir}/lib${name}.a" \
 			"${libdir}/lib${name}_static.a"; do
 			[[ -f ${candidate} ]] && path="${candidate}" && break
 		done
@@ -674,9 +686,14 @@ emit_cmake() {
 		-framework)
 			pending_framework=1
 			;;
-		-L* | -Wl,-rpath*)
+		-L* | -Wl,-rpath* | -libpath:* | -LIBPATH:* | /libpath:* | /LIBPATH:*)
 			# Our libraries are absolute paths; search paths that
 			# point back into the prefix would only add ambiguity.
+			#
+			# The MSVC spellings must be matched here rather than
+			# left to the -l* arm below, which is greedy enough to
+			# read "-libpath:C:/x" as a library named "ibpath:C:/x"
+			# and emit "ibpath:C:/x.lib".
 			;;
 		-l*)
 			name="${tok#-l}"
@@ -691,11 +708,12 @@ emit_cmake() {
 			esac
 			# A prefix-local library we did not anticipate: keep it,
 			# by absolute path, rather than silently dropping it.
-			if [[ -f "${libdir}/lib${name}.a" ]]; then
-				own+=("${libdir}/lib${name}.a")
+			# .lib first, matching the candidate order above.
+			if [[ -f "${libdir}/${name}.lib" ]]; then
+				own+=("$(npath "${libdir}/${name}.lib")")
 				continue
-			elif [[ -f "${libdir}/${name}.lib" ]]; then
-				own+=("$(cygpath -m "${libdir}/${name}.lib")")
+			elif [[ -f "${libdir}/lib${name}.a" ]]; then
+				own+=("${libdir}/lib${name}.a")
 				continue
 			fi
 			if [[ ${host} == windows ]]; then
