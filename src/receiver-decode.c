@@ -97,12 +97,12 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 					avcodec_flush_buffers(ctx->audio_dec_ctx);
 					ctx->audio_decoder_flushes++;
 					ctx->audio_quality_events++;
-					pthread_mutex_lock(&ctx->audio_state_lock);
+					irl_mutex_lock(&ctx->audio_state_lock);
 					audio_buffer_flush(&ctx->audio_buf);
 					irl_reset_audio_timing_state(ctx);
 					irl_mark_audio_recovery(
 						ctx, 2500000ULL);
-					pthread_mutex_unlock(&ctx->audio_state_lock);
+					irl_mutex_unlock(&ctx->audio_state_lock);
 					reinit_audio_pts_repair(ctx);
 				}
 				ctx->audio_decode_errors = 0;

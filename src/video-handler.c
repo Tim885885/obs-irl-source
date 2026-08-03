@@ -138,11 +138,11 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	uint64_t audio_obs_end_ts_ns;
 	int64_t audio_buffered_end_pts_ns;
 	int startup_warmup_ms;
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
 	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
 	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
 	    audio_buffered_end_pts_ns > 0) {

@@ -22,7 +22,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <util/threading.h> /* OBS cross-platform pthread wrappers */
+#include "irl-threading.h" /* the plugin's own mutex/thread primitives */
 
 /* ── PTS chunk metadata ──────────────────────────────────── */
 
@@ -64,7 +64,7 @@ struct audio_buffer {
 	int min_ms;
 	int max_ms;
 
-	pthread_mutex_t lock;
+	irl_mutex_t lock;
 };
 
 /* ── API ──────────────────────────────────────────────────── */

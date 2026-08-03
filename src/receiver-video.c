@@ -34,7 +34,7 @@ void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 	}
 	clone->pts = pts_ns;
 
-	pthread_mutex_lock(&ctx->video_queue_lock);
+	irl_mutex_lock(&ctx->video_queue_lock);
 	if (ctx->video_queue_count >= IRL_VIDEO_QUEUE_SIZE) {
 		/* Video thread is stalled; keep the freshest frames and
 		 * never make the receiver (and therefore audio) wait. */
@@ -50,19 +50,19 @@ void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 		   IRL_VIDEO_QUEUE_SIZE;
 	ctx->video_queue[tail] = clone;
 	ctx->video_queue_count++;
-	pthread_cond_signal(&ctx->video_queue_cond);
-	pthread_mutex_unlock(&ctx->video_queue_lock);
+	irl_cond_signal(&ctx->video_queue_cond);
+	irl_mutex_unlock(&ctx->video_queue_lock);
 }
 
 void *irl_video_thread(void *data)
 {
 	struct irl_source *ctx = data;
 
-	pthread_mutex_lock(&ctx->video_queue_lock);
+	irl_mutex_lock(&ctx->video_queue_lock);
 	while (os_atomic_load_bool(&ctx->thread_active)) {
 		if (ctx->video_queue_count == 0) {
-			pthread_cond_wait(&ctx->video_queue_cond,
-					  &ctx->video_queue_lock);
+			irl_cond_wait(&ctx->video_queue_cond,
+				      &ctx->video_queue_lock);
 			continue;
 		}
 		AVFrame *f = ctx->video_queue[ctx->video_queue_head];
@@ -70,15 +70,15 @@ void *irl_video_thread(void *data)
 		ctx->video_queue_head =
 			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
 		ctx->video_queue_count--;
-		pthread_mutex_unlock(&ctx->video_queue_lock);
+		irl_mutex_unlock(&ctx->video_queue_lock);
 
 		irl_video_output_frame(ctx, f);
 		av_frame_free(&f);
 
-		pthread_mutex_lock(&ctx->video_queue_lock);
+		irl_mutex_lock(&ctx->video_queue_lock);
 	}
 	video_queue_drain_locked(ctx);
-	pthread_mutex_unlock(&ctx->video_queue_lock);
+	irl_mutex_unlock(&ctx->video_queue_lock);
 	return NULL;
 }
 
@@ -161,9 +161,9 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 			ctx->fmt_ctx->streams[ctx->video_stream_idx];
 		pts_ns = av_rescale_q(frame->pts, vs->time_base,
 				      (AVRational){1, 1000000000});
-		pthread_mutex_lock(&ctx->audio_state_lock);
+		irl_mutex_lock(&ctx->audio_state_lock);
 		ctx->latest_video_stream_pts_ns = pts_ns;
-		pthread_mutex_unlock(&ctx->audio_state_lock);
+		irl_mutex_unlock(&ctx->audio_state_lock);
 	}
 
 	irl_video_queue_push(ctx, frame, pts_ns);

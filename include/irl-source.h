@@ -25,6 +25,7 @@
 #include <libavutil/time.h>
 #include <libavutil/hwcontext.h>
 #include "audio-buffer.h"
+#include "irl-threading.h"
 #include "pts-repair.h"
 
 /* ── Forward declarations ─────────────────────────────────── */
@@ -84,7 +85,8 @@ struct irl_source;
 /* Fields marked hot are swapped in place by irl_source_update() while the
  * worker threads are running, so every cross-thread access goes through
  * os_atomic_*. The rest are only written while the threads are stopped;
- * pthread_create/pthread_join supply the happens-before edge for those. */
+ * irl_thread_create/irl_thread_join supply the happens-before edge for
+ * those. */
 struct irl_config {
 	/* General */
 	char *url;
@@ -118,10 +120,10 @@ struct irl_source {
 	struct irl_config config;
 
 	/* Receiver / demux thread */
-	pthread_t receiver_thread;
-	pthread_t audio_thread;
-	pthread_t video_thread;
-	pthread_mutex_t audio_state_lock;
+	irl_thread_t receiver_thread;
+	irl_thread_t audio_thread;
+	irl_thread_t video_thread;
+	irl_mutex_t audio_state_lock;
 	volatile bool thread_active;
 	volatile bool reconnecting;
 
@@ -134,8 +136,8 @@ struct irl_source {
 	 * receiver converts before queueing because it may close
 	 * fmt_ctx while frames are still in flight. */
 #define IRL_VIDEO_QUEUE_SIZE 4
-	pthread_mutex_t video_queue_lock;
-	pthread_cond_t video_queue_cond;
+	irl_mutex_t video_queue_lock;
+	irl_cond_t video_queue_cond;
 	AVFrame *video_queue[IRL_VIDEO_QUEUE_SIZE];
 	int video_queue_head;
 	int video_queue_count;

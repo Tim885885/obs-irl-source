@@ -29,9 +29,9 @@ void *irl_audio_thread(void *data)
 		bool pumped = false;
 		for (int i = 0; i < 16 && os_atomic_load_bool(&ctx->thread_active);
 		     i++) {
-			pthread_mutex_lock(&ctx->audio_state_lock);
+			irl_mutex_lock(&ctx->audio_state_lock);
 			bool ok = irl_pump_audio_once(ctx);
-			pthread_mutex_unlock(&ctx->audio_state_lock);
+			irl_mutex_unlock(&ctx->audio_state_lock);
 			if (!ok)
 				break;
 			pumped = true;
@@ -124,10 +124,10 @@ void irl_receiver_stop(struct irl_source *ctx)
 		return;
 
 	os_atomic_store_bool(&ctx->thread_active, false);
-	pthread_mutex_lock(&ctx->video_queue_lock);
-	pthread_cond_broadcast(&ctx->video_queue_cond);
-	pthread_mutex_unlock(&ctx->video_queue_lock);
-	pthread_join(ctx->video_thread, NULL);
-	pthread_join(ctx->audio_thread, NULL);
-	pthread_join(ctx->receiver_thread, NULL);
+	irl_mutex_lock(&ctx->video_queue_lock);
+	irl_cond_broadcast(&ctx->video_queue_cond);
+	irl_mutex_unlock(&ctx->video_queue_lock);
+	irl_thread_join(&ctx->video_thread);
+	irl_thread_join(&ctx->audio_thread);
+	irl_thread_join(&ctx->receiver_thread);
 }
