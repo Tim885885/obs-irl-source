@@ -25,6 +25,23 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
 
+	/*
+	 * FFmpeg 9.0 flipped tls_verify to default on. The bundled stack has
+	 * no OpenSSL, and the mbedTLS backend only ever loads the CA chain
+	 * named by ca_file — there is no system trust store fallback the way
+	 * tls_openssl.c gets one from SSL_CTX_set_default_verify_paths. On 9.0
+	 * that turns every https:// and rtmps:// ingest into a handshake
+	 * failure ("certificate not trusted") no matter how valid the cert is.
+	 *
+	 * Restoring the pre-9.0 default keeps working setups working, and it
+	 * is the honest one for this workload besides: IRL ingests are
+	 * routinely self-signed or addressed by bare IP. Users who do want
+	 * verification can turn it back on per source through FFmpeg Options
+	 * ("tls_verify=1 ca_file=/path/to/ca.pem"), which is parsed below and
+	 * therefore overwrites this.
+	 */
+	av_dict_set(opts, "tls_verify", "0", 0);
+
 	if (network_buffer_mb > 0) {
 		char buf_size[32];
 		snprintf(buf_size, sizeof(buf_size), "%d",

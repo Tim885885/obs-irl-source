@@ -72,6 +72,14 @@ build with `CONFIG_LIBSRT=yes` and no SRT protocol at all. `build-deps.sh`
 therefore asserts against the generated `ffbuild/config.mak` that every
 component the plugin depends on actually landed, and fails the build otherwise.
 
+FFmpeg 9.0 made `tls_verify` default to on. `tls_openssl.c` copes by falling
+back to `SSL_CTX_set_default_verify_paths()`, but this stack has no OpenSSL and
+`tls_mbedtls.c` loads a CA chain only from an explicit `ca_file`, so the default
+build would reject every `https://` and `rtmps://` peer. `apply_demuxer_options`
+in `src/receiver-stream.c` therefore sets `tls_verify=0`, which the user's
+FFmpeg Options can override per source. Do not "fix" that by dropping the
+option; without a bundled CA file it only turns the feature off entirely.
+
 `fix_mbedtls_pc` exists for a related trap. libsrt and librist both record their
 mbedTLS dependency as an absolute library path, which puts it in the wrong place
 on a single-pass static link and, in librist's case, pinned the *host's* shared
