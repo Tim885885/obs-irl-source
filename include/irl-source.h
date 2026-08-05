@@ -18,6 +18,17 @@
 
 #include <obs-module.h>
 #include <util/platform.h>
+/*
+ * For the os_atomic_* helpers that every cross-thread read of a hot config
+ * field goes through. This is NOT for libobs's pthread wrappers —
+ * irl-threading.h deliberately replaces those (see its header comment).
+ *
+ * The include used to arrive transitively via audio-buffer.h; when that
+ * switched to irl-threading.h the atomics lost their declarations and every
+ * translation unit touching a hot field failed to build on all three
+ * platforms. Keep it explicit here, where the atomics are actually used.
+ */
+#include <util/threading.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
