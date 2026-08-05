@@ -14,6 +14,155 @@
 
 #include "../include/irl-source.h"
 
+/* ── swscale backend selection ────────────────────────────── */
+
+/*
+ * FFmpeg 9.0 landed the swscale rewrite: conversions are decomposed into
+ * elementary ops compiled into kernel chains (memcpy fast paths, chained x86
+ * SIMD, AArch64 NEON, SPIR-V). The plugin's one swscale use is a same-size
+ * pixel-format conversion, which is exactly the shape those chains target.
+ *
+ * Reaching them takes more than a flag. sws_getContext() sets is_legacy_init,
+ * and sws_scale() refuses to run without it and calls straight into the legacy
+ * scaler — swscale.h is blunt about the consequence: "The stateful legacy API
+ * always implies SWS_BACKEND_LEGACY." Setting SWS_UNSTABLE on a getContext
+ * context is silently ignored. The new backends exist only behind the dynamic
+ * API: sws_alloc_context() with no sws_init_context(), driven by
+ * sws_scale_frame(), which is what irl_convert_to_nv12 below does.
+ *
+ * With that in place SWS_UNSTABLE makes ff_sws_enabled_backends() offer the
+ * new backends and prefer_ops_backend() route the conversion through the op
+ * chain, falling back to the legacy pass on AVERROR(ENOTSUP). Upstream calls
+ * the whole thing "for testing and debugging purposes only", with "semantics
+ * subject to change at any point in time".
+ *
+ * As of 9.0 that fallback is what actually happens here, every time. The op
+ * chain only builds a pass when the conversion needs no chroma resampling:
+ * yuv420p -> yuv420p compiles, but yuv420p -> nv12 (and -> rgba, -> gray8)
+ * all fail ff_sws_op_list_generate() with ENOTSUP, measured by pinning
+ * SwsContext.backends to each backend in turn so nothing could silently
+ * substitute the legacy scaler. Every format OBS makes us convert is
+ * subsampled, so the flag currently costs one failed pass-generation per
+ * format change and produces bit-identical output.
+ *
+ * It is wired up anyway because this is where upstream's work is going, and
+ * the day the op chain learns subsampled formats it wants to be one env var
+ * away rather than a refactor away. Opt in at runtime with IRL_SWS_UNSTABLE=1
+ * before starting OBS; a runtime switch is what makes the comparison worth
+ * anything, since the two paths can then be A/B'd against the same live
+ * stream in one session instead of across two streams that never match. The
+ * default stays on the legacy backend, so nothing built from here ships an
+ * experimental converter by accident.
+ */
+#if LIBSWSCALE_VERSION_MAJOR >= 10
+static bool sws_unstable_enabled(void)
+{
+	static int unstable = -1;
+
+	if (unstable < 0) {
+		const char *env = getenv("IRL_SWS_UNSTABLE");
+		unstable = (env && *env && *env != '0') ? 1 : 0;
+		blog(LOG_INFO, "[irl-source] swscale backend: %s",
+		     unstable ? "experimental (IRL_SWS_UNSTABLE=1)" : "legacy");
+	}
+
+	return unstable == 1;
+}
+#endif
+
+/*
+ * Convert frame to NV12 in ctx->sws_nv12_buf. Returns false if the scaler
+ * could not be built or the conversion failed.
+ *
+ * In dynamic mode the context carries no dimensions or formats — every
+ * property comes from the frames, and sws_scale_frame() reconfigures itself
+ * when they change. The src_w/src_h/src_fmt bookkeeping is kept anyway so the
+ * "Converting pixel format ..." line still fires once per format rather than
+ * once per frame.
+ */
+static bool irl_convert_to_nv12(struct irl_source *ctx, const AVFrame *frame,
+				uint8_t *const dst_planes[2],
+				const int dst_strides[2])
+{
+#if LIBSWSCALE_VERSION_MAJOR < 10
+	/*
+	 * Pre-9.0 fallback, reachable only through -DIRL_BUNDLED_FFMPEG=OFF
+	 * against an older system FFmpeg. SwsContext is opaque there and the
+	 * dynamic API predates the backends this exists to reach, so keep the
+	 * legacy scaler rather than partially emulating the new one.
+	 */
+	if (!ctx->sws_ctx) {
+		ctx->sws_ctx = sws_getContext(frame->width, frame->height,
+					      frame->format, frame->width,
+					      frame->height, AV_PIX_FMT_NV12,
+					      SWS_FAST_BILINEAR, NULL, NULL,
+					      NULL);
+		if (!ctx->sws_ctx)
+			return false;
+	}
+
+	sws_scale(ctx->sws_ctx, (const uint8_t *const *)frame->data,
+		  frame->linesize, 0, frame->height, dst_planes, dst_strides);
+	return true;
+#else
+	if (!ctx->sws_ctx) {
+		ctx->sws_ctx = sws_alloc_context();
+		if (!ctx->sws_ctx)
+			return false;
+		/* No sws_init_context(): that is what would mark the context
+		 * legacy and lock it to the legacy backend. */
+		ctx->sws_ctx->flags = sws_unstable_enabled() ? SWS_UNSTABLE : 0;
+	}
+
+	if (!ctx->sws_dst_frame) {
+		ctx->sws_dst_frame = av_frame_alloc();
+		if (!ctx->sws_dst_frame)
+			return false;
+	}
+
+	AVFrame *dst = ctx->sws_dst_frame;
+	dst->width = frame->width;
+	dst->height = frame->height;
+	dst->format = AV_PIX_FMT_NV12;
+	dst->data[0] = dst_planes[0];
+	dst->data[1] = dst_planes[1];
+	dst->data[2] = NULL;
+	dst->data[3] = NULL;
+	dst->linesize[0] = dst_strides[0];
+	dst->linesize[1] = dst_strides[1];
+	dst->linesize[2] = 0;
+	dst->linesize[3] = 0;
+
+	/*
+	 * dst->data[0] being set puts sws_scale_frame() on its user-provided
+	 * buffer path, so it neither allocates nor references anything here.
+	 *
+	 * The colour properties have to be copied across. Dynamic mode reads
+	 * them from the frames, so leaving the destination unspecified would
+	 * invite a colourspace conversion that the legacy path never did —
+	 * this is a pixel format change only. setup_color_params() reports the
+	 * same properties to OBS from the source frame, so matching them here
+	 * is also what keeps the two consistent.
+	 */
+	dst->colorspace = frame->colorspace;
+	dst->color_range = frame->color_range;
+	dst->color_primaries = frame->color_primaries;
+	dst->color_trc = frame->color_trc;
+	dst->chroma_location = frame->chroma_location;
+
+	int ret = sws_scale_frame(ctx->sws_ctx, dst, frame);
+	if (ret < 0) {
+		char err[AV_ERROR_MAX_STRING_SIZE];
+		av_strerror(ret, err, sizeof(err));
+		blog(LOG_WARNING, "[irl-source] swscale conversion failed: %s",
+		     err);
+		return false;
+	}
+
+	return true;
+#endif
+}
+
 /* ── Format mapping ───────────────────────────────────────── */
 
 static enum video_format avpixfmt_to_obs(enum AVPixelFormat fmt)
@@ -272,27 +421,17 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 
 	/* If format not directly supported, convert to NV12 via swscale */
 	if (obs_fmt == VIDEO_FORMAT_NONE) {
-		if (!ctx->sws_ctx || ctx->sws_src_w != frame->width ||
+		if (ctx->sws_src_w != frame->width ||
 		    ctx->sws_src_h != frame->height ||
 		    ctx->sws_src_fmt != frame->format) {
-			if (ctx->sws_ctx)
-				sws_freeContext(ctx->sws_ctx);
-
 			blog(LOG_INFO,
 			     "[irl-source] Converting pixel format %d to NV12 via swscale (%dx%d)",
 			     frame->format, frame->width, frame->height);
 
-			ctx->sws_ctx = sws_getContext(
-				frame->width, frame->height, frame->format,
-				frame->width, frame->height, AV_PIX_FMT_NV12,
-				SWS_FAST_BILINEAR, NULL, NULL, NULL);
 			ctx->sws_src_w = frame->width;
 			ctx->sws_src_h = frame->height;
 			ctx->sws_src_fmt = frame->format;
 		}
-
-		if (!ctx->sws_ctx)
-			return;
 
 		size_t y_size = (size_t)frame->width * frame->height;
 		size_t uv_size = y_size / 2;
@@ -312,9 +451,11 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 					  ctx->sws_nv12_buf + y_size};
 		int dst_strides[2] = {frame->width, frame->width};
 
-		sws_scale(ctx->sws_ctx, (const uint8_t *const *)frame->data,
-			  frame->linesize, 0, frame->height, dst_planes,
-			  dst_strides);
+		if (!irl_convert_to_nv12(ctx, frame, dst_planes, dst_strides)) {
+			if (sw_frame)
+				av_frame_free(&sw_frame);
+			return;
+		}
 
 		struct obs_source_frame obs_frame = {0};
 		obs_frame.width = frame->width;

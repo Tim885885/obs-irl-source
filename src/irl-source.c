@@ -449,8 +449,22 @@ void irl_source_destroy(void *data)
 		swr_free(&ctx->swr_ctx);
 	if (ctx->speed_swr)
 		swr_free(&ctx->speed_swr);
-	if (ctx->sws_ctx)
+	/* sws_free_context(), not sws_freeContext(): the scaler is built with
+	 * sws_alloc_context() and driven by sws_scale_frame(). The pre-9.0
+	 * fallback in video-handler.c still uses sws_getContext(), so the
+	 * teardown has to follow the same version split. */
+	if (ctx->sws_ctx) {
+#if LIBSWSCALE_VERSION_MAJOR >= 10
+		sws_free_context(&ctx->sws_ctx);
+#else
 		sws_freeContext(ctx->sws_ctx);
+		ctx->sws_ctx = NULL;
+#endif
+	}
+	/* Never owns pixel data — it only ever describes sws_nv12_buf, which
+	 * is freed above. */
+	if (ctx->sws_dst_frame)
+		av_frame_free(&ctx->sws_dst_frame);
 	if (ctx->hw_device_ctx)
 		av_buffer_unref(&ctx->hw_device_ctx);
 

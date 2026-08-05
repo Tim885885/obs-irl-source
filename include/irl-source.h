@@ -187,6 +187,9 @@ struct irl_source {
 	enum AVPixelFormat sws_src_fmt;
 	uint8_t *sws_nv12_buf;       /* receiver-thread-owned NV12 scratch */
 	size_t sws_nv12_buf_capacity;
+	/* Destination wrapper for sws_scale_frame(). Describes sws_nv12_buf;
+	 * never owns pixel data, so it is freed with av_frame_free() alone. */
+	AVFrame *sws_dst_frame;
 
 	/* Video timestamp sync (anchors stream PTS to system clock) */
 	bool video_ts_init;
