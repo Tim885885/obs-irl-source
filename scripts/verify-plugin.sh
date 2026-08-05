@@ -32,6 +32,22 @@ check() {
 
 echo "verifying ${module}"
 
+# Source-level, and checked on every platform because the failure it prevents
+# only shows up on Windows: librist's contrib/pthread-shim.c defines external
+# pthread_* symbols for MSVC builds, and librist.lib precedes w32-pthreads on
+# the link line. A direct pthread_mutex_init() call therefore runs librist's
+# CRITICAL_SECTION version against a w32-pthreads-sized field and corrupts the
+# struct around it. See include/irl-threading.h.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -d ${repo_root}/src ]]; then
+	stray="$(grep -rn --include='*.c' --include='*.h' -E '\bpthread_[a-z_]+\(' \
+		"${repo_root}/src" "${repo_root}/include" |
+		grep -v '/irl-threading\.h:' || true)"
+	[[ -n ${stray} ]] && r=1 || r=0
+	check ${r} "no direct pthread_* calls outside irl-threading.h"
+	[[ -n ${stray} ]] && echo "${stray}" | sed 's/^/        /'
+fi
+
 case "$(uname -s)" in
 Linux*)
 	needed="$(readelf -d "${module}" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"

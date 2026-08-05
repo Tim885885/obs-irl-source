@@ -620,14 +620,14 @@ static void irl_audio_maybe_reanchor_offset(struct irl_source *ctx,
 
 	/* Lock order note: fill query above takes and releases the buffer
 	 * mutex on its own; the state lock below is never held across it. */
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	ctx->audio_out_anchor_ns = now + chunk_ns;
 	ctx->audio_out_samples = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->audio_playout_offset_baseline_set = false;
 	ctx->audio_conceal_fade_pending = true;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->audio_offset_reanchors++;
 	ctx->audio_quality_events++;
@@ -839,7 +839,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 
 	if (ctx->audio_buf.sample_rate != out_rate ||
 	    ctx->audio_buf.channels != out_channels) {
-		pthread_mutex_lock(&ctx->audio_state_lock);
+		irl_mutex_lock(&ctx->audio_state_lock);
 		int target_ms = (int)os_atomic_load_long(
 			&ctx->config.buffer_target_ms);
 		int min_ms =
@@ -865,7 +865,7 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 		ctx->latest_audio_obs_end_ts_ns = 0;
 		ctx->startup_audio_warmup_remaining_ms =
 			IRL_STARTUP_AUDIO_WARMUP_MS;
-		pthread_mutex_unlock(&ctx->audio_state_lock);
+		irl_mutex_unlock(&ctx->audio_state_lock);
 		if (!reconfigured)
 			return;
 	}
@@ -936,12 +936,12 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			inserted_silence = true;
 		}
 	} else if (action == PTS_ACTION_RESET) {
-		pthread_mutex_lock(&ctx->audio_state_lock);
+		irl_mutex_lock(&ctx->audio_state_lock);
 		audio_buffer_flush(&ctx->audio_buf);
 		irl_reset_stream_timing_state(ctx);
 		irl_mark_audio_recovery(ctx, AUDIO_RECOVERY_HOLD_US);
 		ctx->audio_quality_events++;
-		pthread_mutex_unlock(&ctx->audio_state_lock);
+		irl_mutex_unlock(&ctx->audio_state_lock);
 	}
 
 	if (action != PTS_ACTION_PASS) {
@@ -1044,8 +1044,8 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 			     &ctx->audio_last_sample_channels,
 			     &ctx->audio_last_sample_valid);
 
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	ctx->latest_audio_stream_pts_ns = frame_pts_ns;
 	ctx->decoded_frame_samples = out_samples;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 }

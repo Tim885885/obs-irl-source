@@ -90,7 +90,7 @@ static bool config_requires_restart(const struct irl_config *cur,
 static void config_apply_hot(struct irl_source *ctx,
 			     const struct irl_config *next)
 {
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 
 	/* Grow the ring before publishing the new watermarks, and publish
 	 * only if that succeeded: the receiver's backpressure ceiling is 3x
@@ -124,7 +124,7 @@ static void config_apply_hot(struct irl_source *ctx,
 			     next->wait_for_keyframe);
 	ctx->config.close_when_inactive = next->close_when_inactive;
 
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 }
 
 static void apply_async_audio_mode(struct irl_source *ctx)
@@ -194,7 +194,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->video_pkt_gate_open = false;
 	ctx->video_pkt_gate_start_us = 0;
 	os_atomic_store_bool(&ctx->reconnecting, false);
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
 	pts_repair_reset(&ctx->pts_state);
 	irl_reset_stream_timing_state(ctx);
@@ -209,7 +209,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->fade_in_pending = false;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = 0;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 	ctx->total_audio_frames = 0;
 	ctx->total_video_frames = 0;
 	ctx->pts_repairs = 0;
@@ -242,31 +242,29 @@ static void start_receiver(struct irl_source *ctx)
 
 	reset_runtime_state(ctx);
 	os_atomic_store_bool(&ctx->thread_active, true);
-	if (pthread_create(&ctx->audio_thread, NULL, irl_audio_thread, ctx) !=
-	    0) {
+	if (irl_thread_create(&ctx->audio_thread, irl_audio_thread, ctx) != 0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create audio thread");
 		os_atomic_store_bool(&ctx->thread_active, false);
 		return;
 	}
-	if (pthread_create(&ctx->video_thread, NULL, irl_video_thread, ctx) !=
-	    0) {
+	if (irl_thread_create(&ctx->video_thread, irl_video_thread, ctx) != 0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create video thread");
 		os_atomic_store_bool(&ctx->thread_active, false);
-		pthread_join(ctx->audio_thread, NULL);
+		irl_thread_join(&ctx->audio_thread);
 		return;
 	}
-	if (pthread_create(&ctx->receiver_thread, NULL, irl_receiver_thread,
-			   ctx) != 0) {
+	if (irl_thread_create(&ctx->receiver_thread, irl_receiver_thread,
+			      ctx) != 0) {
 		blog(LOG_ERROR,
 		     "[irl-source] Failed to create receiver thread");
 		os_atomic_store_bool(&ctx->thread_active, false);
-		pthread_mutex_lock(&ctx->video_queue_lock);
-		pthread_cond_broadcast(&ctx->video_queue_cond);
-		pthread_mutex_unlock(&ctx->video_queue_lock);
-		pthread_join(ctx->video_thread, NULL);
-		pthread_join(ctx->audio_thread, NULL);
+		irl_mutex_lock(&ctx->video_queue_lock);
+		irl_cond_broadcast(&ctx->video_queue_cond);
+		irl_mutex_unlock(&ctx->video_queue_lock);
+		irl_thread_join(&ctx->video_thread);
+		irl_thread_join(&ctx->audio_thread);
 	}
 }
 
@@ -287,7 +285,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	/* Snapshot all shared mutable state under the lock so the stats
 	 * blob is internally consistent and we don't race the receiver
 	 * thread reconfiguring the audio buffer. */
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	int buffer_fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 	float current_speed = ctx->current_speed;
 	uint64_t total_audio_frames = ctx->total_audio_frames;
@@ -314,7 +312,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	uint64_t video_sys_base = ctx->video_sys_base;
 	int64_t video_pts_base = ctx->video_pts_base;
 	int64_t latest_video_stream_pts_ns = ctx->latest_video_stream_pts_ns;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	calldata_set_int(cd, "buffer_fill_ms", buffer_fill_ms);
 	calldata_set_float(cd, "current_speed", (double)current_speed);
@@ -386,9 +384,9 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	struct irl_source *ctx = bzalloc(sizeof(*ctx));
 	ctx->source = source;
 	ctx->current_speed = 1.0f;
-	pthread_mutex_init(&ctx->audio_state_lock, NULL);
-	pthread_mutex_init(&ctx->video_queue_lock, NULL);
-	pthread_cond_init(&ctx->video_queue_cond, NULL);
+	irl_mutex_init(&ctx->audio_state_lock);
+	irl_mutex_init(&ctx->video_queue_lock);
+	irl_cond_init(&ctx->video_queue_cond);
 
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);
@@ -438,9 +436,9 @@ void irl_source_destroy(void *data)
 
 	stop_receiver(ctx, false);
 	audio_buffer_free(&ctx->audio_buf);
-	pthread_mutex_destroy(&ctx->audio_state_lock);
-	pthread_cond_destroy(&ctx->video_queue_cond);
-	pthread_mutex_destroy(&ctx->video_queue_lock);
+	irl_mutex_destroy(&ctx->audio_state_lock);
+	irl_cond_destroy(&ctx->video_queue_cond);
+	irl_mutex_destroy(&ctx->video_queue_lock);
 
 	free(ctx->audio_pump_scratch);
 	free(ctx->audio_resample_scratch);

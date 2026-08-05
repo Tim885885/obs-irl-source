@@ -383,7 +383,10 @@ if(_OBS_EXTRA_LIBS)
 endif()
 
 if(WIN32 AND NOT _OBS_USE_FIND_PACKAGE)
-    # Link w32-pthreads from OBS source tree (plugin uses pthread API directly)
+    # Link w32-pthreads from OBS source tree. The plugin's own threading goes
+    # through include/irl-threading.h (Win32 primitives, deliberately not
+    # pthread — see that header), but libobs headers still declare against
+    # w32-pthreads, so the import stays available.
     target_link_libraries(obs-irl-source PRIVATE w32-pthreads)
 elseif(NOT WIN32)
     target_link_libraries(obs-irl-source PRIVATE pthread)

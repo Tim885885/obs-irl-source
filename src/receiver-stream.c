@@ -328,11 +328,11 @@ void irl_prepare_new_connection(struct irl_source *ctx)
 	ctx->video_pkt_gate_open = false;
 	ctx->video_pkt_gate_start_us = 0;
 	ctx->video_ts_init = false;
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	ctx->fade_in_pending = true;
 	ctx->fade_in_frames_remaining = 0;
 	ctx->startup_audio_warmup_remaining_ms = IRL_STARTUP_AUDIO_WARMUP_MS;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 }
 
 bool irl_wait_for_reconnect(struct irl_source *ctx)
@@ -406,13 +406,13 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 
 	irl_close_ffmpeg(ctx);
 	pts_repair_reset(&ctx->pts_state);
-	pthread_mutex_lock(&ctx->audio_state_lock);
+	irl_mutex_lock(&ctx->audio_state_lock);
 	fade_out_buffered_audio(ctx);
 	audio_buffer_flush(&ctx->audio_buf);
 	irl_reset_stream_timing_state(ctx);
 	irl_mark_audio_recovery(ctx, 2500000ULL);
 	ctx->fade_in_pending = true;
-	pthread_mutex_unlock(&ctx->audio_state_lock);
+	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->current_speed = 1.0f;
 	ctx->audio_output_restarts = 0;

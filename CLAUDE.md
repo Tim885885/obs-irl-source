@@ -96,6 +96,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 - **`irl-source.h`** — Central header. Defines `struct irl_source` (main context), `struct irl_config`, all `#define` defaults, and function declarations for every module.
 - **`audio-buffer.h`** — `struct audio_buffer` and ring buffer API.
 - **`pts-repair.h`** — `struct pts_repair`, `enum pts_action`, and repair API.
+- **`irl-threading.h`** — the plugin's mutex/condvar/thread primitives (`irl_mutex_*`, `irl_cond_*`, `irl_thread_*`). Win32 primitives on Windows, pthreads elsewhere. Plugin code must never call `pthread_*` directly: librist's bundled `contrib/pthread-shim.c` defines external `pthread_*` symbols for MSVC and wins the link ahead of w32-pthreads, so a `pthread_mutex_init` call wrote a 40-byte `CRITICAL_SECTION` into an 8-byte w32-pthreads field and corrupted the surrounding struct. `scripts/verify-plugin.sh` fails the build if a direct `pthread_*` call reappears.
 
 ### Threading model
 
@@ -104,7 +105,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 - **Video thread**: pops the video queue, does the HW frame transfer and format conversion (owns sws_ctx), and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`).
 - **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
 
-Config fields marked `/* hot */` in `struct irl_config` are written by `irl_source_update` while the worker threads run, so every cross-thread read goes through `os_atomic_load_long` / `os_atomic_load_bool` (not C11 `_Atomic`, which MSVC does not support without an experimental flag). The remaining fields are only written while the threads are stopped, where `pthread_create` and `pthread_join` supply the happens-before edge.
+Config fields marked `/* hot */` in `struct irl_config` are written by `irl_source_update` while the worker threads run, so every cross-thread read goes through `os_atomic_load_long` / `os_atomic_load_bool` (not C11 `_Atomic`, which MSVC does not support without an experimental flag). The remaining fields are only written while the threads are stopped, where `irl_thread_create` and `irl_thread_join` supply the happens-before edge.
 
 ### OBS API conventions
 
