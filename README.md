@@ -40,7 +40,7 @@ OBS ships with a Media Source that can play SRT. It works, but it was written fo
 
 ## Installation
 
-Download from [Releases](../../releases). Windows and macOS archives are built per OBS release line (the file name says which, for example `obs32.1`). Pick the one matching your installed OBS version.
+Download from [Releases](../../releases). There is one archive per platform and it works on OBS 32.1 and newer. Older releases of this plugin shipped a separate build per OBS version; that is no longer necessary.
 
 ### Windows
 
@@ -58,7 +58,7 @@ Download from [Releases](../../releases). Windows and macOS archives are built p
 
 ### Linux
 
-The release binary is built on Ubuntu against distribution libobs and FFmpeg. On other distributions, build from source instead (see [Building from source](#building-from-source)).
+The release binary bundles its own media stack but still links your distribution's libobs, so it is built against Ubuntu's. On other distributions, build from source instead (see [Building from source](#building-from-source)).
 
 1. Close OBS
 2. Extract the tarball into `~/.config/obs-studio/plugins/`
@@ -322,27 +322,29 @@ A healthy stream shows `speed=1.000`, `underruns=0`, `restarts=0`, and a constan
 
 ### Linux
 
+The plugin statically links its own FFmpeg, libsrt, librist and mbedTLS rather than using OBS's. Building that stack is the first step, and it only has to happen again when a version in `deps/versions.env` changes. See `deps/README.md` for the details.
+
 ```bash
-sudo apt install build-essential cmake pkg-config libobs-dev \
-    libavformat-dev libavcodec-dev libswresample-dev libavfilter-dev \
-    libswscale-dev libavutil-dev
+sudo apt install build-essential cmake pkg-config nasm meson ninja-build \
+    libobs-dev libva-dev
+./deps/build-deps.sh
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
 ```
 
 ### Windows (MSVC)
 
-Requires Visual Studio 2026 and OBS source plus obs-deps (see `.github/workflows/build.yml` for the exact versions CI uses):
+Requires Visual Studio 2026, plus OBS source and obs-deps to build libobs (see `.github/workflows/build.yml` for the exact versions CI uses). `deps/build-deps.sh` runs under MSYS2 with the MSVC environment active, because FFmpeg's configure needs a POSIX shell even when it is driving `cl.exe`.
 
 ```powershell
-# Clone OBS and download pre-built dependencies
+# Clone OBS and download pre-built dependencies (for libobs only)
 git clone --depth 1 --branch 32.1.2 https://github.com/obsproject/obs-studio.git obs-src
 # Download obs-deps from https://github.com/obsproject/obs-deps/releases
 # Install SIMDe headers or add them to CMAKE_PREFIX_PATH
 
 # Build
-cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src -DFFMPEG_DIR=obs-deps
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DOBS_SOURCE_DIR=obs-src
 cmake --build build --config RelWithDebInfo
 ```
 
-The plugin dynamically links the FFmpeg that OBS bundles, and OBS lines differ in FFmpeg major version, which is why release archives are built per OBS line.
+Earlier versions dynamically linked the FFmpeg that OBS bundles, and OBS lines differ in FFmpeg major version, which is why release archives used to be built per OBS line. Bundling removed that constraint. `-DIRL_BUNDLED_FFMPEG=OFF` restores the old behaviour for a quick compile check against a system FFmpeg.

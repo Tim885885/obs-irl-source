@@ -1,6 +1,7 @@
 build/
 cmake-build-*/
 .cache/
+deps/.build/
 *.o
 *.so
 *.dll

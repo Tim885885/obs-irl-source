@@ -126,22 +126,20 @@ else()
     endif()
 endif()
 
+# Headers only.  The plugin never calls jansson; it is reachable from the OBS
+# headers, so the include path is needed and the library is not.  Linking it
+# baked an absolute /opt/homebrew/opt/jansson/... path into the macOS artifact,
+# which made the shipped plugin require Homebrew on the user's machine.
 find_package(jansson QUIET)
 if(jansson_FOUND)
     list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${jansson_INCLUDE_DIR}")
-    list(APPEND _OBS_EXTRA_LIBS jansson::jansson)
 else()
     find_path(JANSSON_FALLBACK_INCLUDE_DIR
         NAMES jansson.h
         PATHS /usr/include /usr/local/include
     )
-    find_library(JANSSON_FALLBACK_LIBRARY
-        NAMES jansson
-        PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib
-    )
-    if(JANSSON_FALLBACK_INCLUDE_DIR AND JANSSON_FALLBACK_LIBRARY)
+    if(JANSSON_FALLBACK_INCLUDE_DIR)
         list(APPEND _OBS_EXTRA_INCLUDE_DIRS "${JANSSON_FALLBACK_INCLUDE_DIR}")
-        list(APPEND _OBS_EXTRA_LIBS "${JANSSON_FALLBACK_LIBRARY}")
     endif()
 endif()
 
@@ -159,22 +157,49 @@ else()
 endif()
 
 # ── Find FFmpeg ──────────────────────────────────────────────
+# Preferred: the bundled static stack from deps/build-deps.sh.  It pins
+# FFmpeg, libsrt and mbedTLS versions we control, so the plugin's media
+# pipeline no longer depends on which FFmpeg major the host OBS happens to
+# ship (that split is what forced per-OBS-line release artifacts) and no
+# longer inherits obs-deps' 2022-era libsrt.
+#
+# Set IRL_BUNDLED_FFMPEG=OFF to link a system/obs-deps FFmpeg instead.
+option(IRL_BUNDLED_FFMPEG "Link the bundled static FFmpeg/libsrt stack from deps/" ON)
+set(IRL_DEPS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/deps/.build/prefix"
+    CACHE PATH "Install prefix produced by deps/build-deps.sh")
+
+set(_FFMPEG_FOUND OFF)
+set(_IRL_BUNDLED OFF)
+
+if(IRL_BUNDLED_FFMPEG)
+    if(EXISTS "${IRL_DEPS_PREFIX}/irl-deps.cmake")
+        include("${IRL_DEPS_PREFIX}/irl-deps.cmake")
+        set(_FFMPEG_FOUND ON)
+        set(_IRL_BUNDLED ON)
+    else()
+        message(FATAL_ERROR
+            "Bundled FFmpeg requested but not built.\n"
+            "  Run:  ./deps/build-deps.sh\n"
+            "  (or pass -DIRL_DEPS_PREFIX=/path/to/prefix if you built it elsewhere,\n"
+            "   or -DIRL_BUNDLED_FFMPEG=OFF to link a system FFmpeg instead)")
+    endif()
+endif()
+
 # Try pkg-config first (Linux, MSYS2, macOS with Homebrew).
 # Fall back to find_path/find_library for MSVC + pre-built FFmpeg.
-set(_FFMPEG_FOUND OFF)
-
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LIBAV QUIET IMPORTED_TARGET
-        libavformat
-        libavcodec
-        libavfilter
-        libswresample
-        libswscale
-        libavutil
-    )
-    if(LIBAV_FOUND)
-        set(_FFMPEG_FOUND ON)
+if(NOT _FFMPEG_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBAV QUIET IMPORTED_TARGET
+            libavformat
+            libavcodec
+            libswresample
+            libswscale
+            libavutil
+        )
+        if(LIBAV_FOUND)
+            set(_FFMPEG_FOUND ON)
+        endif()
     endif()
 endif()
 
@@ -205,10 +230,6 @@ if(NOT _FFMPEG_FOUND)
         PATHS ${_FFMPEG_SEARCH_PATHS}
         PATH_SUFFIXES include
     )
-    find_path(AVFILTER_INCLUDE_DIR libavfilter/avfilter.h
-        PATHS ${_FFMPEG_SEARCH_PATHS}
-        PATH_SUFFIXES include
-    )
     find_path(SWSCALE_INCLUDE_DIR libswscale/swscale.h
         PATHS ${_FFMPEG_SEARCH_PATHS}
         PATH_SUFFIXES include
@@ -221,17 +242,15 @@ if(NOT _FFMPEG_FOUND)
     find_library(AVFORMAT_LIB NAMES avformat PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(AVCODEC_LIB  NAMES avcodec  PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(SWRESAMPLE_LIB NAMES swresample PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
-    find_library(AVFILTER_LIB NAMES avfilter PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(SWSCALE_LIB  NAMES swscale  PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
     find_library(AVUTIL_LIB   NAMES avutil   PATHS ${_FFMPEG_SEARCH_PATHS} PATH_SUFFIXES lib)
 
-    if(AVFORMAT_LIB AND AVCODEC_LIB AND SWRESAMPLE_LIB AND AVFILTER_LIB AND SWSCALE_LIB AND AVUTIL_LIB)
+    if(AVFORMAT_LIB AND AVCODEC_LIB AND SWRESAMPLE_LIB AND SWSCALE_LIB AND AVUTIL_LIB)
         set(_FFMPEG_FOUND ON)
         set(_FFMPEG_MANUAL_INCLUDE_DIRS
             ${AVFORMAT_INCLUDE_DIR}
             ${AVCODEC_INCLUDE_DIR}
             ${SWRESAMPLE_INCLUDE_DIR}
-            ${AVFILTER_INCLUDE_DIR}
             ${SWSCALE_INCLUDE_DIR}
             ${AVUTIL_INCLUDE_DIR}
         )
@@ -240,7 +259,6 @@ if(NOT _FFMPEG_FOUND)
             ${AVFORMAT_LIB}
             ${AVCODEC_LIB}
             ${SWRESAMPLE_LIB}
-            ${AVFILTER_LIB}
             ${SWSCALE_LIB}
             ${AVUTIL_LIB}
         )
@@ -250,8 +268,8 @@ endif()
 if(NOT _FFMPEG_FOUND)
     message(FATAL_ERROR
         "FFmpeg not found.  Either:\n"
-        "  - Install FFmpeg dev packages (apt install libavformat-dev libavfilter-dev ...)\n"
-        "  - Install via MSYS2 (pacman -S mingw-w64-ucrt-x86_64-ffmpeg)\n"
+        "  - Build the bundled stack: ./deps/build-deps.sh\n"
+        "  - Install FFmpeg dev packages (apt install libavformat-dev libswscale-dev ...)\n"
         "  - Pass -DFFMPEG_DIR=C:/path/to/ffmpeg (pre-built Windows SDK)\n"
     )
 endif()
@@ -294,7 +312,12 @@ if(_OBS_EXTRA_INCLUDE_DIRS)
     target_include_directories(obs-irl-source PRIVATE ${_OBS_EXTRA_INCLUDE_DIRS})
 endif()
 
-if(LIBAV_FOUND)
+if(_IRL_BUNDLED)
+    # BEFORE, so the bundled headers win over any FFmpeg dev package that the
+    # OBS include paths might also drag in. Mismatched headers and archives is
+    # the one way a static link can still fail at runtime.
+    target_include_directories(obs-irl-source BEFORE PRIVATE ${IRL_DEPS_INCLUDE_DIRS})
+elseif(LIBAV_FOUND)
     target_include_directories(obs-irl-source PRIVATE ${LIBAV_INCLUDE_DIRS})
 elseif(_FFMPEG_MANUAL_INCLUDE_DIRS)
     target_include_directories(obs-irl-source PRIVATE ${_FFMPEG_MANUAL_INCLUDE_DIRS})
@@ -316,10 +339,43 @@ else()
     set(_OBS_LINK_TARGET obs)
 endif()
 
-if(LIBAV_FOUND)
+if(_IRL_BUNDLED)
+    target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET}
+        ${IRL_DEPS_STATIC_LIBRARIES}
+        ${IRL_DEPS_SYSTEM_LIBRARIES}
+    )
+elseif(LIBAV_FOUND)
     target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} PkgConfig::LIBAV)
 else()
     target_link_libraries(obs-irl-source PRIVATE ${_OBS_LINK_TARGET} ${_FFMPEG_MANUAL_LIBS})
+endif()
+
+# ── Symbol isolation for the bundled stack ───────────────────
+#
+# Load-bearing, not cosmetic. The host OBS has already loaded its own
+# libavcodec/libavformat, which export the exact same symbol names as the
+# archives linked in here. On ELF, an exported avcodec_open2 in this module
+# would be resolved through the global scope to *OBS's* copy, so our calls
+# would run against a different library's structs. Hiding everything but the
+# obs_module_* entry points (the only symbols libobs looks up) binds every
+# internal call to our own copy at link time.
+if(_IRL_BUNDLED)
+    set_target_properties(obs-irl-source PROPERTIES
+        C_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+    if(APPLE)
+        target_link_options(obs-irl-source PRIVATE
+            "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/cmake/module-symbols.exp")
+        set_property(TARGET obs-irl-source APPEND PROPERTY
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/module-symbols.exp")
+    elseif(UNIX)
+        target_link_options(obs-irl-source PRIVATE
+            "-Wl,--exclude-libs,ALL"
+            "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/cmake/module-symbols.map")
+        set_property(TARGET obs-irl-source APPEND PROPERTY
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/module-symbols.map")
+    endif()
 endif()
 
 if(_OBS_EXTRA_LIBS)
@@ -353,8 +409,9 @@ endif()
 set_target_properties(obs-irl-source PROPERTIES PREFIX "")
 
 # ── Windows-specific ─────────────────────────────────────────
-if(WIN32)
-    # Copy FFmpeg DLLs next to the plugin for convenience
+if(WIN32 AND NOT _IRL_BUNDLED)
+    # Copy FFmpeg DLLs next to the plugin for convenience.  The bundled stack
+    # is static, so there is nothing to copy there.
     if(FFMPEG_DIR AND EXISTS "${FFMPEG_DIR}/bin")
         add_custom_command(TARGET obs-irl-source POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -388,10 +445,16 @@ if(_OBS_USE_FIND_PACKAGE)
 else()
     message(STATUS "  OBS dir:   ${OBS_SOURCE_DIR}")
 endif()
-if(LIBAV_FOUND)
-    message(STATUS "  FFmpeg:    pkg-config (${LIBAV_VERSION})")
+if(_IRL_BUNDLED)
+    message(STATUS "  FFmpeg:    bundled static ${IRL_DEPS_FFMPEG_VERSION}")
+    message(STATUS "  libsrt:    bundled static ${IRL_DEPS_SRT_VERSION}")
+    message(STATUS "  librist:   bundled static ${IRL_DEPS_LIBRIST_VERSION}")
+    message(STATUS "  mbedTLS:   bundled static ${IRL_DEPS_MBEDTLS_VERSION}")
+    message(STATUS "  Deps:      ${IRL_DEPS_PREFIX}")
+elseif(LIBAV_FOUND)
+    message(STATUS "  FFmpeg:    pkg-config (${LIBAV_VERSION}) — host-provided")
 else()
-    message(STATUS "  FFmpeg:    manual (${FFMPEG_DIR})")
+    message(STATUS "  FFmpeg:    manual (${FFMPEG_DIR}) — host-provided")
 endif()
 message(STATUS "  Install:   ${OBS_PLUGIN_DIR}")
 message(STATUS "")
