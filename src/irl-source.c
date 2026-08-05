@@ -395,7 +395,10 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	 * scene collection always does. See fit_to_canvas(). */
 	ctx->fit_pending = ctx->config.url == NULL;
 
-	/* Register stats proc_handler so scripts/overlays can query state */
+	/* Register stats proc_handler so scripts/overlays can query state.
+	 * The obs-websocket vendor extension calls this same proc, so a field
+	 * added here also belongs in irl_stat_fields[] (websocket-vendor.c)
+	 * to reach websocket clients. */
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(
 		ph,

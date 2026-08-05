@@ -41,7 +41,7 @@ echo "verifying ${module}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -d ${repo_root}/src ]]; then
 	stray="$(grep -rn --include='*.c' --include='*.h' -E '\bpthread_[a-z_]+\(' \
-		"${repo_root}/src" "${repo_root}/include" |
+		"${repo_root}/src" "${repo_root}/include" "${repo_root}/third_party" |
 		grep -v '/irl-threading\.h:' || true)"
 	[[ -n ${stray} ]] && r=1 || r=0
 	check ${r} "no direct pthread_* calls outside irl-threading.h"

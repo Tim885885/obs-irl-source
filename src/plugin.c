@@ -15,7 +15,7 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-irl-source", "en-US")
 
 static struct obs_source_info irl_source_info = {
-	.id = "irl_source",
+	.id = IRL_SOURCE_ID,
 	.type = OBS_SOURCE_TYPE_INPUT,
 	.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_ASYNC_VIDEO |
 			OBS_SOURCE_DO_NOT_DUPLICATE,
@@ -36,6 +36,14 @@ bool obs_module_load(void)
 {
 	obs_register_source(&irl_source_info);
 	return true;
+}
+
+/* Runs after every module's obs_module_load(), which is the only point at
+ * which obs-websocket is guaranteed to have published its API. See
+ * websocket-vendor.c. */
+void obs_module_post_load(void)
+{
+	irl_websocket_vendor_register();
 }
 
 const char *obs_module_description(void)

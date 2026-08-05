@@ -36,7 +36,7 @@ OBS ships with a Media Source that can play SRT. It works, but it was written fo
 | Reconnect | Exists, with general-purpose defaults | 2 second default, tuned for how often IRL streams drop |
 | Resolution changes | May freeze or crash on adaptive bitrate changes | Keeps playing |
 | Hardware decoding | Supported | Auto-detected on NVIDIA, Intel, AMD and Apple, with software fallback |
-| Stats | Nothing scripts can read | Buffer level, delay, frame counts, repairs and more, readable from a Lua or Python script |
+| Stats | Nothing scripts can read | Buffer level, delay, frame counts, repairs and more, readable from a Lua or Python script or over obs-websocket |
 
 ## Installation
 
@@ -161,6 +161,34 @@ end
 
 The full list of readable fields is in [Stats reference](#stats-reference).
 
+## Reading stats over obs-websocket
+
+The same stats are exposed as an [obs-websocket](https://github.com/obsproject/obs-websocket) vendor extension, so an overlay, a bot or a dashboard on another machine can read them without running a script inside OBS. obs-websocket ships with OBS; turn it on under Tools → WebSocket Server Settings. If it is disabled or missing, the plugin registers nothing and behaves exactly as before.
+
+Vendor name: `obs-irl-source`.
+
+| Request | Request data | Response |
+|---|---|---|
+| `GetStats` | `source_name`, optional when the scene collection has exactly one IRL source | `source_name` plus every field in [Stats reference](#stats-reference) |
+| `GetSourceList` | none | `sources`: array of `{source_name, active, showing}` |
+| `GetVersion` | none | `plugin_version`, `vendor_api_version`, `obs_websocket_api_version` |
+
+Every response carries `success`. When it is `false`, `error` says why: no source by that name, that source is not an IRL Source, no IRL Source at all, or more than one with no `source_name` given. Stream URLs are deliberately not exposed, because they can carry an SRT passphrase or a stream key and every connected client would see them.
+
+With [obs-websocket-js](https://github.com/obs-websocket-community-projects/obs-websocket-js):
+
+```js
+const { responseData } = await obs.call("CallVendorRequest", {
+    vendorName: "obs-irl-source",
+    requestType: "GetStats",
+    requestData: { source_name: "IRL Source" },
+});
+
+console.log(responseData.stream_delay_ms, responseData.buffer_fill_ms);
+```
+
+There is no event stream, so poll `GetStats` at whatever rate your overlay refreshes; once a second is plenty. The request reads the same snapshot the Lua path does, so both transports always report identical numbers.
+
 ## Why open source?
 
 We run a commercial streaming service (relay infrastructure and more), so yes, we have plenty of closed-source code. But OBS itself is GPL-2.0. It is free software built by its community. Paywalling the thing that keeps your stream from dropping frames, just to upsell a subscription, feels like the wrong move.
@@ -279,7 +307,7 @@ The first-keyframe line reports the ground truth from the actual decoded frame, 
 
 ## Stats reference
 
-Stats are exposed through OBS's `proc_handler` API under the `get_stats` call.
+Stats are exposed through OBS's `proc_handler` API under the `get_stats` call, and under the same names through the obs-websocket vendor `GetStats` request (see [Reading stats over obs-websocket](#reading-stats-over-obs-websocket)).
 
 | Field | Type | Description |
 |---|---|---|

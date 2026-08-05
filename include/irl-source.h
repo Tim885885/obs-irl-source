@@ -39,6 +39,10 @@
 #include "irl-threading.h"
 #include "pts-repair.h"
 
+/* The source id registered with OBS. Also what the obs-websocket vendor
+ * matches on to tell an IRL source from any other input. */
+#define IRL_SOURCE_ID "irl_source"
+
 /* ── Forward declarations ─────────────────────────────────── */
 
 struct irl_source;
@@ -368,3 +372,7 @@ bool irl_video_is_keyframe(const AVFrame *frame);
 
 /* ── PTS repair (pts-repair.c) ────────────────────────────── */
 /* See pts-repair.h */
+
+/* ── obs-websocket vendor (websocket-vendor.c) ────────────── */
+
+void irl_websocket_vendor_register(void);

@@ -287,6 +287,7 @@ set(PLUGIN_SOURCES
     src/video-handler.c
     src/pts-repair.c
     src/settings.c
+    src/websocket-vendor.c
 )
 
 add_library(obs-irl-source MODULE ${PLUGIN_SOURCES})

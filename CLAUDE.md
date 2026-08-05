@@ -90,6 +90,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 - **`src/video-handler.c`**: converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats. Maps video PTS through the audio playout offset for lip sync.
 - **`src/pts-repair.c`**: three tier PTS discontinuity repair. Small gaps interpolated, medium gaps get silence, large gaps trigger full reset.
 - **`src/settings.c`**: OBS properties UI and default values.
+- **`src/websocket-vendor.c`**: obs-websocket vendor extension (`obs-irl-source`), registered from `obs_module_post_load` because module load order between plugins is undefined and obs-websocket publishes its global proc from its own `obs_module_load`. Serves `GetStats`, `GetSourceList` and `GetVersion`. It does not read `struct irl_source`: it resolves a source by name (or the only IRL source present), calls that source's existing `get_stats` proc_handler and copies the calldata into the response, so the websocket and script transports cannot drift apart and the locked snapshot stays in `irl-source.c`. There is no teardown — the API has no vendor-unregister call, and the request-unregister proc would run at module unload when obs-websocket may already be gone. Vendored header in `third_party/obs-websocket-api.h`; nothing links against obs-websocket, and everything degrades to a log line when it is absent.
 
 ### Headers (`include/`)
 
@@ -111,7 +112,7 @@ Config fields marked `/* hot */` in `struct irl_config` are written by `irl_sour
 
 - Memory: use `bfree()`/`bstrdup()`/`bzalloc()` (OBS allocators), not stdlib malloc/free
 - Logging: `blog(LOG_INFO, "[irl-source] ...")` — always use the `[irl-source]` prefix
-- Stats are exposed via `proc_handler` ("get_stats" call) for Lua/Python script consumption
+- Stats are exposed via `proc_handler` ("get_stats" call) for Lua/Python script consumption, and over obs-websocket through the vendor extension. A new stat field belongs in three places: the proc declaration in `irl_source_create`, the `calldata_set_*` block above it, and `irl_stat_fields[]` in `src/websocket-vendor.c` (plus the table in README.md)
 - Source flags: `OBS_SOURCE_AUDIO | OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE`
 
 ## CI
@@ -137,6 +138,7 @@ The initial version of this plugin was heavily built with LLM assistance. The au
 ## Other files
 
 - **`irl-stats.lua`** - Example OBS Lua script that reads plugin stats via proc_handler and updates a text source overlay.
+- **`third_party/`** - Verbatim copies of files from other projects, under their own licenses. Currently just `obs-websocket-api.h`. See `third_party/README.md` for provenance and how to update it.
 - **`docs/audio-pipeline.md`** - Deep dive on the buffered vs low-latency audio paths, jitter buffer, adaptive latency control, PTS repair tiers, and timestamp handling.
 - **`docs/viewer-quality-plan.md`** - The viewer-quality policy and the recovery/diagnostics behavior that implements it (what stats to watch and what healthy looks like).
 - **`AGENTS.md`**, **`GEMINI.md`** - Symlinks to this file (`CLAUDE.md`).
