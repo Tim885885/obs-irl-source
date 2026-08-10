@@ -15,6 +15,17 @@
 
 #include "receiver-internal.h"
 
+/* Protocol test on the scheme itself, not a substring of the whole URL: a
+ * query parameter or a path segment must not decide which options apply. */
+static bool url_has_scheme(const char *url, const char *scheme)
+{
+	if (!url)
+		return false;
+	size_t len = strlen(scheme);
+	return strncmp(url, scheme, len) == 0 &&
+	       strncmp(url + len, "://", 3) == 0;
+}
+
 static void apply_demuxer_options(AVDictionary **opts, const char *url,
 				  const char *extra, int network_buffer_mb)
 {
@@ -42,22 +53,43 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	 */
 	av_dict_set(opts, "tls_verify", "0", 0);
 
+	/*
+	 * The receive buffer is a byte count, and FFmpeg 9.0 spells that two
+	 * different ways, so both names have to be set to cover the protocols
+	 * this plugin ingests.
+	 *
+	 * "buffer_size" is bytes for udp:// (setsockopt SO_RCVBUF), and for
+	 * rtp:// and rtsp://, which forward it verbatim to the udp:// they open.
+	 * librist is the one protocol that reuses the name for something else:
+	 * there it is the RIST recovery window in *milliseconds*, declared with
+	 * a max of 30000. A byte count therefore makes av_opt_set_dict() on the
+	 * URLContext fail with AVERROR(ERANGE) ("Result too large") and
+	 * avformat_open_input aborts before a socket is ever opened. rist://
+	 * keeps librist's own recovery default instead, which is tuned per
+	 * stream through the URL's buffer= parameter that rist_parse_address2()
+	 * reads.
+	 *
+	 * "recv_buffer_size" is bytes for tcp:// (SO_RCVBUF) and for libsrt
+	 * (SRTO_UDP_RCVBUF), and nothing else declares it. It reaches tcp://
+	 * from every protocol layered on top of it, because rtmp_open,
+	 * http_open_cnx and ff_tls_open_underlying each thread the caller's
+	 * option dictionary down into the transport they open — so this is what
+	 * gives the setting any effect at all on rtmp(s):// and http(s)://.
+	 *
+	 * Each name is ignored by the protocols that want the other one, so
+	 * neither needs a scheme test beyond the rist:// exclusion.
+	 */
 	if (network_buffer_mb > 0) {
-		char buf_size[32];
-		snprintf(buf_size, sizeof(buf_size), "%d",
+		char bytes[32];
+		snprintf(bytes, sizeof(bytes), "%d",
 			 network_buffer_mb * 1024 * 1024);
-		av_dict_set(opts, "buffer_size", buf_size, 0);
+		if (!url_has_scheme(url, "rist"))
+			av_dict_set(opts, "buffer_size", bytes, 0);
+		av_dict_set(opts, "recv_buffer_size", bytes, 0);
 	}
 
-	if (url && strstr(url, "srt://")) {
+	if (url_has_scheme(url, "srt"))
 		av_dict_set(opts, "latency", "200000", 0);
-		if (network_buffer_mb > 0) {
-			char recv_buf[32];
-			snprintf(recv_buf, sizeof(recv_buf), "%d",
-				 network_buffer_mb * 1024 * 1024);
-			av_dict_set(opts, "recv_buffer_size", recv_buf, 0);
-		}
-	}
 
 	if (extra && *extra) {
 		char *dup = av_strdup(extra);
