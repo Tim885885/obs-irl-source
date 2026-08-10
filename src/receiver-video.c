@@ -22,6 +22,19 @@ static void video_queue_drain_locked(struct irl_source *ctx)
 	}
 }
 
+/* Ask the video thread to blank the source. Queued frames are dropped
+ * here so nothing decoded before the disconnect can repaint after the
+ * clear; a frame already being converted is handled by the ordering in
+ * irl_video_thread(), which re-checks the flag after each output. */
+void irl_video_request_clear(struct irl_source *ctx)
+{
+	irl_mutex_lock(&ctx->video_queue_lock);
+	video_queue_drain_locked(ctx);
+	ctx->video_clear_pending = true;
+	irl_cond_signal(&ctx->video_queue_cond);
+	irl_mutex_unlock(&ctx->video_queue_lock);
+}
+
 void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 			  int64_t pts_ns)
 {
@@ -60,6 +73,13 @@ void *irl_video_thread(void *data)
 
 	irl_mutex_lock(&ctx->video_queue_lock);
 	while (os_atomic_load_bool(&ctx->thread_active)) {
+		if (ctx->video_clear_pending) {
+			ctx->video_clear_pending = false;
+			irl_mutex_unlock(&ctx->video_queue_lock);
+			obs_source_output_video(ctx->source, NULL);
+			irl_mutex_lock(&ctx->video_queue_lock);
+			continue;
+		}
 		if (ctx->video_queue_count == 0) {
 			irl_cond_wait(&ctx->video_queue_cond,
 				      &ctx->video_queue_lock);

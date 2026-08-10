@@ -33,6 +33,8 @@ void irl_source_get_defaults(obs_data_t *settings)
 				  IRL_DEFAULT_LOW_LATENCY_AUDIO);
 	obs_data_set_default_bool(settings, "close_when_inactive",
 				  IRL_DEFAULT_CLOSE_WHEN_INACTIVE);
+	obs_data_set_default_bool(settings, "clear_on_disconnect",
+				  IRL_DEFAULT_CLEAR_ON_DISCONNECT);
 }
 
 /* ── Properties ───────────────────────────────────────────── */
@@ -88,6 +90,9 @@ obs_properties_t *irl_source_get_properties(void *data)
 	obs_properties_add_bool(
 		props, "low_latency_audio",
 		obs_module_text("Use OBS Low-Latency Async Audio Mode"));
+	obs_properties_add_bool(
+		props, "clear_on_disconnect",
+		obs_module_text("Show Nothing When the Stream Ends"));
 	obs_properties_add_bool(props, "close_when_inactive",
 				obs_module_text("Close Stream When Inactive"));
 	obs_properties_add_text(
@@ -98,7 +103,10 @@ obs_properties_t *irl_source_get_properties(void *data)
 			"low-latency option enables OBS async unbuffered audio mode "
 			"for this source and makes the plugin drain immediately "
 			"instead of building the normal jitter cushion, so it is "
-			"faster but less tolerant of jitter. Close Stream "
+			"faster but less tolerant of jitter. Show Nothing When "
+			"the Stream Ends blanks the source as soon as the stream "
+			"drops, instead of leaving the last frame frozen on screen "
+			"until it reconnects. Close Stream "
 			"When Inactive stops receiving when the source is not active "
 			"and clears the last frame to black. FFmpeg Options can "
 			"override any demuxer option, for example buffer_size or "

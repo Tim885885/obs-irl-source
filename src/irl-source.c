@@ -62,6 +62,8 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 		obs_data_get_bool(settings, "low_latency_audio");
 	cfg->close_when_inactive =
 		obs_data_get_bool(settings, "close_when_inactive");
+	cfg->clear_on_disconnect =
+		obs_data_get_bool(settings, "clear_on_disconnect");
 }
 
 static bool str_differs(const char *a, const char *b)
@@ -122,6 +124,8 @@ static void config_apply_hot(struct irl_source *ctx,
 			     next->adaptive_speed);
 	os_atomic_store_bool(&ctx->config.wait_for_keyframe,
 			     next->wait_for_keyframe);
+	os_atomic_store_bool(&ctx->config.clear_on_disconnect,
+			     next->clear_on_disconnect);
 	ctx->config.close_when_inactive = next->close_when_inactive;
 
 	irl_mutex_unlock(&ctx->audio_state_lock);
@@ -193,6 +197,11 @@ static void reset_runtime_state(struct irl_source *ctx)
 	ctx->first_keyframe_received = false;
 	ctx->video_pkt_gate_open = false;
 	ctx->video_pkt_gate_start_us = 0;
+	/* Only reachable with the worker threads stopped, so this is the one
+	 * place the flag is touched without video_queue_lock. Dropping a clear
+	 * the video thread never got to is correct: the stop path decides for
+	 * itself whether the frame stays. */
+	ctx->video_clear_pending = false;
 	os_atomic_store_bool(&ctx->reconnecting, false);
 	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);
@@ -268,11 +277,15 @@ static void start_receiver(struct irl_source *ctx)
 	}
 }
 
+/* clear_video asks for the frame to be dropped because the stream stopped,
+ * so it is subject to clear_on_disconnect. Callers that stop the source
+ * outright (no URL, teardown) decide for themselves. */
 static void stop_receiver(struct irl_source *ctx, bool clear_video)
 {
 	irl_receiver_stop(ctx);
 	reset_runtime_state(ctx);
-	if (clear_video)
+	if (clear_video &&
+	    os_atomic_load_bool(&ctx->config.clear_on_disconnect))
 		clear_async_video(ctx);
 }
 
@@ -499,7 +512,13 @@ void irl_source_update(void *data, obs_data_t *settings)
 	apply_async_audio_mode(ctx);
 
 	start_receiver(ctx);
-	if (!should_run_receiver(ctx))
+
+	/* Either the source is not going to run at all, or a restart-forcing
+	 * edit just dropped the connection: both leave a frame on screen that
+	 * belongs to a stream that is gone. Clearing is decided against the
+	 * config that was just installed, not the one being replaced. */
+	if (!should_run_receiver(ctx) ||
+	    os_atomic_load_bool(&ctx->config.clear_on_disconnect))
 		clear_async_video(ctx);
 }
 

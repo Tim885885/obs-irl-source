@@ -57,6 +57,7 @@ struct irl_source;
 #define IRL_DEFAULT_WAIT_KEYFRAME true
 #define IRL_DEFAULT_LOW_LATENCY_AUDIO false
 #define IRL_DEFAULT_CLOSE_WHEN_INACTIVE false
+#define IRL_DEFAULT_CLEAR_ON_DISCONNECT true
 
 /* Min/max buffer are derived from the target rather than exposed as
  * settings: min is the speed controller's low watermark, max is where
@@ -126,6 +127,9 @@ struct irl_config {
 	volatile bool wait_for_keyframe; /* hot */
 	bool low_latency_audio;
 	bool close_when_inactive; /* hot, but OBS-thread only */
+	/* OBS's media source calls this clear_on_media_end and defaults it
+	 * on; same meaning here, minus the local-file cases. */
+	volatile bool clear_on_disconnect; /* hot */
 };
 
 /* ── Main source context ──────────────────────────────────── */
@@ -157,6 +161,11 @@ struct irl_source {
 	int video_queue_head;
 	int video_queue_count;
 	uint64_t video_queue_drops;
+	/* Set by the receiver thread on disconnect, consumed by the video
+	 * thread. Guarded by video_queue_lock. The clear has to run on the
+	 * video thread so it cannot be undone by a frame that was already
+	 * mid-conversion when the disconnect was noticed. */
+	bool video_clear_pending;
 
 	/* FFmpeg state (owned by receiver thread) */
 	AVFormatContext *fmt_ctx;
