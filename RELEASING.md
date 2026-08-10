@@ -26,11 +26,25 @@ Releases are tag driven. Pushing a tag `vX.Y.Z` runs `.github/workflows/release.
    * `obs-irl-source-X.Y.Z-macos-arm64.zip` (extract into `~/Library/Application Support/obs-studio/plugins/`)
    * `sha256sums.txt`
 
-   The release body starts with install instructions (from `.github/release-notes-header.md`) followed by notes generated from the commit history.
+   The release body starts with install instructions (from `.github/release-notes-header.md`) followed by a changelog built from the commits since the previous tag.
 
 5. Download and test every artifact on a real OBS install before publishing. At minimum: the plugin loads, a source connects, audio and video play.
 
-6. Edit the generated notes into a proper changelog, then publish the draft.
+6. Read over the changelog, edit anything that reads badly, then publish the draft.
+
+## The changelog
+
+`scripts/changelog.sh` groups every non-merge commit between the previous `v*` tag and the one being released, using the conventional commit type in the subject: `feat` becomes Features, `fix` becomes Bug fixes, then `perf`, `refactor`, `docs`, and `build`/`ci`. Anything with a `!` or a `BREAKING CHANGE:` body goes to the top under Breaking changes, along with the text after the marker. A subject that is not a conventional commit still shows up, under Other changes.
+
+Preview the notes before tagging:
+
+```
+scripts/changelog.sh HEAD
+```
+
+Commit subjects are the changelog, so they are worth writing carefully. Give a commit a scope (`fix(video): ...`) when it makes the entry clearer; the scope is printed in bold ahead of the subject, and a redundant `obs-irl-source` scope is dropped.
+
+This replaced GitHub's `generate-notes`, which only sees pull requests and so left out everything pushed straight to `master`.
 
 ## Fixing a bad tag
 

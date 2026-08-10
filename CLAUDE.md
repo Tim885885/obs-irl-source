@@ -119,7 +119,9 @@ Config fields marked `/* hot */` in `struct irl_config` are written by `irl_sour
 
 GitHub Actions (`.github/workflows/build.yml`) builds on three platforms: Linux x64 (Ubuntu 26.04), Windows x64 (VS 2026), macOS ARM64 (macos-15). Every job builds the bundled media stack first (cached on the hash of `deps/versions.env` plus `deps/build-deps.sh`), then the plugin, then runs the isolation checks. The Windows and macOS jobs also clone OBS source and patch it to build only libobs, which is the plugin's one remaining link against a specific OBS release. The workflow exposes `workflow_call` so the release workflow reuses it.
 
-Releases are tag driven (`.github/workflows/release.yml`, see `RELEASING.md`). Pushing `vX.Y.Z` verifies the tag against the `project(VERSION)` in CMakeLists.txt, runs the build workflow, repackages the artifacts into install layout archives (one per platform: Linux tar.gz, Windows zip, macOS zip), generates sha256sums.txt, and creates a draft GitHub release whose body is `.github/release-notes-header.md` plus commit generated notes. Publishing the draft is manual, after testing the artifacts.
+Releases are tag driven (`.github/workflows/release.yml`, see `RELEASING.md`). Pushing `vX.Y.Z` verifies the tag against the `project(VERSION)` in CMakeLists.txt, runs the build workflow, repackages the artifacts into install layout archives (one per platform: Linux tar.gz, Windows zip, macOS zip), generates sha256sums.txt, and creates a draft GitHub release whose body is `.github/release-notes-header.md` plus a changelog. Publishing the draft is manual, after testing the artifacts.
+
+`scripts/changelog.sh` builds that changelog by grouping the commits since the previous `v*` tag on their conventional commit type (breaking, feat, fix, perf, refactor, docs, build/ci, everything else). It replaced GitHub's `generate-notes`, which only reports pull requests and therefore missed every commit pushed straight to `master`. Commit subjects are the release notes, so write them as such. Run `scripts/changelog.sh HEAD` to preview.
 
 ### One artifact per platform
 
