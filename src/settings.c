@@ -107,8 +107,9 @@ obs_properties_t *irl_source_get_properties(void *data)
 			"the Stream Ends blanks the source as soon as the stream "
 			"drops, instead of leaving the last frame frozen on screen "
 			"until it reconnects. Close Stream "
-			"When Inactive stops receiving when the source is not active "
-			"and clears the last frame to black. FFmpeg Options can "
+			"When Inactive stops receiving when the source is not "
+			"active, clearing the frame if the option above is on. "
+			"FFmpeg Options can "
 			"override any demuxer option, for example buffer_size or "
 			"the SRT latency."),
 		OBS_TEXT_INFO);

@@ -511,15 +511,22 @@ void irl_source_update(void *data, obs_data_t *settings)
 	ctx->config = next; /* takes ownership of the loaded strings */
 	apply_async_audio_mode(ctx);
 
-	start_receiver(ctx);
-
 	/* Either the source is not going to run at all, or a restart-forcing
 	 * edit just dropped the connection: both leave a frame on screen that
 	 * belongs to a stream that is gone. Clearing is decided against the
-	 * config that was just installed, not the one being replaced. */
+	 * config that was just installed, not the one being replaced.
+	 *
+	 * Ordering matters: this has to happen before the receiver restarts,
+	 * or the NULL frame could land after the new stream delivered its
+	 * first one and blank a live picture. Safe to do directly rather than
+	 * via irl_video_request_clear() because the threads are stopped here
+	 * — the video thread drains the queue as it exits, and there is no
+	 * frame in flight to repaint over the clear. */
 	if (!should_run_receiver(ctx) ||
 	    os_atomic_load_bool(&ctx->config.clear_on_disconnect))
 		clear_async_video(ctx);
+
+	start_receiver(ctx);
 }
 
 void irl_source_activate(void *data)
