@@ -455,6 +455,14 @@ void irl_handle_stream_read_error(struct irl_source *ctx, int read_ret)
 
 	irl_close_ffmpeg(ctx);
 	pts_repair_reset(&ctx->pts_state);
+
+	/* Blank the source instead of leaving the last decoded frame frozen
+	 * on screen, matching what OBS's own media source does on media end
+	 * (its clear_on_media_end, likewise on by default). The audio fade-out
+	 * below is the same idea for the other half of the stream. */
+	if (os_atomic_load_bool(&ctx->config.clear_on_disconnect))
+		irl_video_request_clear(ctx);
+
 	irl_mutex_lock(&ctx->audio_state_lock);
 	fade_out_buffered_audio(ctx);
 	audio_buffer_flush(&ctx->audio_buf);

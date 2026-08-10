@@ -22,5 +22,6 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame);
 void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame);
 void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 			  int64_t pts_ns);
+void irl_video_request_clear(struct irl_source *ctx);
 void *irl_video_thread(void *data);
 void irl_log_receiver_stats(struct irl_source *ctx);
