@@ -14,7 +14,7 @@ An OBS source built for IRL streams. Point it at your SRT or RTMP pull URL and i
 
 **It recovers on its own.** When bitrate starvation jams the decoder, the built-in Media Source can lose audio permanently until you restart the source. This one flushes and self-heals. Phone rotations and adaptive bitrate resolution changes keep playing without a restart.
 
-**Lower delay.** Latency stays well under the 2 to 3 seconds you normally get from a Media Source pointed at SRT.
+**Lower delay.** An IRL SRT stream through a Media Source usually sits 2 to 3 seconds behind real life. This plugin stays well under that, and it does not creep: audio goes to OBS on a steady clock, so OBS never starts adding buffering of its own.
 
 **Less clicking around.** A source you just added sizes itself to your canvas on the first frame, so there is no manual Fit to screen step.
 
@@ -26,17 +26,18 @@ OBS ships with a Media Source that can play SRT. It works, but it was written fo
 
 | | Media Source | IRL Source |
 |---|---|---|
-| Unstable connection | Plays audio as fast as it arrives, so jitter becomes stuttering or speedups | Holds a configurable cushion (120ms default) and absorbs the jitter |
-| After a stall | Latency keeps climbing and never comes back down | Catches up at up to +5% speed until latency is back on target, without skipping audio |
-| Audio timing | Feeds OBS audio just in time, which makes OBS quietly add up to a second of extra buffering that never goes away | Feeds OBS on a steady clock with a fixed lead, so OBS never adds hidden delay |
+| Unstable connection | Relies on whatever cushion SRT itself provides, and holds nothing after it | Adds its own cushion (120ms default) behind SRT's |
+| After a stall | Latency climbs and stays there, with no way to catch up | Catches up at up to +5% speed until latency is back on target, without skipping audio |
+| Audio timing | Falls behind the mixer, so OBS adds up to a second of buffering that never goes away | Steady clock with a fixed lead, so OBS never adds hidden delay |
 | Timestamp jumps | Passed straight through, so you get pops and freezes | Repaired: small gaps smoothed, medium gaps filled with silence, large gaps get a clean reset |
 | Disconnect | Abrupt cutoff with a loud click | 50ms fade out, fade in on reconnect |
-| Joining a stream | Starts decoding immediately, so you see corrupted frames until a keyframe shows up | Waits for the first clean frame |
+| Joining a stream | Waits for a keyframe on video, but lets pre-keyframe audio through | Waits on both, and gates ahead of the decoder rather than after it |
 | Bitrate starvation | Decoder can get stuck and audio breaks until you restart the source | Flushes the decoder, resets timing, keeps video moving |
-| Reconnect | Exists, with general-purpose defaults | 2 second default, tuned for how often IRL streams drop |
-| Resolution changes | May freeze or crash on adaptive bitrate changes | Keeps playing |
-| Hardware decoding | Supported | Auto-detected on NVIDIA, Intel, AMD and Apple, with software fallback |
-| Stats | Nothing scripts can read | Buffer level, delay, frame counts, repairs and more, readable from a Lua or Python script or over obs-websocket |
+| Reconnect | 10 second default delay | 2 second default, tuned for how often IRL streams drop |
+| Resolution changes | Usually survives them, but breaks on streams that need pixel format conversion | Handled on both paths |
+| Stats | Duration, position and playback state | Buffer level, delay, frame counts, repairs and more, from a Lua or Python script or over obs-websocket |
+
+[Compared with the Media Source](#compared-with-the-media-source) in the technical section has the code behind each row.
 
 ## Installation
 
@@ -233,7 +234,7 @@ The plugin optimizes for what viewers hear and see, not for preserving every dam
 - Audio must not sound jittery, glitchy, metallic, or artifacty. If audio cannot be reconstructed cleanly, short silence is preferred over audible corruption.
 - Audio content is never skipped once playback has started. Backlog from a stall is played back slightly sped up (up to +5%) until latency returns to target.
 - Video cadence should stay smooth. During decoder damage, timestamped damaged frames are preferable to freezes; avoid gray/blank frames and decoder reset storms.
-- Latency may drift if that protects viewer quality, but it should stay far below the 2 to 3 second live delay typical of OBS Media Source.
+- Latency may drift if that protects viewer quality, but it should stay far below the 2 to 3 second live delay typical of an IRL SRT stream through the OBS Media Source. The source must never fall behind the OBS mix window, because that is what makes OBS add global audio buffering it never gives back.
 - Diagnostics should make the recovery path visible: interpolation, silence insertion, resets, trims, underruns, and playback mode are tracked separately.
 
 ## Audio pipeline
@@ -275,6 +276,20 @@ The 70ms and 2000ms thresholds are fixed internally and match the libobs behavio
 ## Decoder recovery
 
 Repeated send or receive errors trigger a throttled decoder flush and a reset of bad timing state, for both audio and video. This is what stops SRT bitrate starvation from permanently breaking audio, which is the failure mode the built-in Media Source hits.
+
+## Compared with the Media Source
+
+How the built-in Media Source actually behaves on a network stream, which is where the comparison table near the top comes from. Read against OBS Studio 32.2 and confirmed against 32.1, the oldest line this plugin supports. The code is in `plugins/obs-ffmpeg/obs-ffmpeg-source.c`, `shared/media-playback/`, and `libobs/obs-audio.c`.
+
+- No cushion of its own. SRT's TSBPD window absorbs jitter and retransmits before FFmpeg sees anything, which at a long IRL latency setting covers a lot. Nothing sits behind it: the "Network Buffering" slider (2MB default) sets the socket receive buffer, not a playout buffer, and a single thread demuxes, decodes and outputs, so a hiccup that outlasts the SRT window lands straight on the source.
+- No catch-up. Playback speed is pinned to 100% for network inputs and the speed slider is hidden for them, so lateness accumulated during a stall stays.
+- Audio timestamps are the stream PTS plus a fixed offset taken at open. Once a source's audio falls behind the mixer window, OBS adds global buffering, capped at 45 ticks (about 960ms at 48kHz), and that total only ever grows for the rest of the session. Past the cap OBS starts dropping the late source's audio instead.
+- No PTS repair. The 2s and 3s guards in the media thread only clamp its own sleep pacing; the timestamps OBS receives are unmodified.
+- Keyframe gating exists, but it runs on the decoded frame rather than the packet, and only on video. Pre-keyframe audio still reaches OBS while the audio decoder warms up on garbage.
+- Decode errors are ignored. The only flush sits on the seek path, which does nothing for network input, so a drained decoder stays drained. The readiness check then treats a drained decoder as satisfied, which is how video keeps playing over dead audio.
+- Resolution changes usually survive, because a plain H.264 or HEVC stream needs no pixel format conversion and the new size passes through. Streams that do need conversion break: the scaler and its output buffer are sized from the first frame and never rebuilt.
+- Hardware decoding is the same. It tries CUDA, D3D11VA, DXVA2, VAAPI, VDPAU, QSV and VideoToolbox in that order and falls back to software.
+- Stats are duration, frame count and playback state, through `proc_handler` and the media controls. Enough for a progress bar, nothing about connection or buffer health.
 
 ## Hardware decoding
 
