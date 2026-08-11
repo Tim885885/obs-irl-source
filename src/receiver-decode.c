@@ -47,6 +47,8 @@ void irl_handle_audio_packet(struct irl_source *ctx, AVPacket *pkt,
 			     AVFrame *frame)
 {
 	int ret = avcodec_send_packet(ctx->audio_dec_ctx, pkt);
+	if (ret == AVERROR(EAGAIN))
+		ctx->audio_pkt_eagain++;
 	if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
 		ctx->audio_decode_errors++;
 		if (ctx->audio_decode_errors >= 3) {
@@ -139,6 +141,8 @@ void irl_handle_video_packet(struct irl_source *ctx, AVPacket *pkt,
 	}
 
 	int ret = avcodec_send_packet(ctx->video_dec_ctx, pkt);
+	if (ret == AVERROR(EAGAIN))
+		ctx->video_pkt_eagain++;
 	if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
 		ctx->video_decode_errors++;
 		ctx->video_corrupted = true;

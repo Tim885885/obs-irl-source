@@ -22,6 +22,13 @@ static void video_queue_drain_locked(struct irl_source *ctx)
 	}
 }
 
+static void video_pinned_update_locked(struct irl_source *ctx)
+{
+	int pinned = ctx->video_queue_count + ctx->video_in_flight;
+	if (pinned > ctx->video_pinned_peak)
+		ctx->video_pinned_peak = pinned;
+}
+
 /* Ask the video thread to blank the source. Queued frames are dropped
  * here so nothing decoded before the disconnect can repaint after the
  * clear; a frame already being converted is handled by the ordering in
@@ -63,6 +70,7 @@ void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 		   IRL_VIDEO_QUEUE_SIZE;
 	ctx->video_queue[tail] = clone;
 	ctx->video_queue_count++;
+	video_pinned_update_locked(ctx);
 	irl_cond_signal(&ctx->video_queue_cond);
 	irl_mutex_unlock(&ctx->video_queue_lock);
 }
@@ -90,12 +98,16 @@ void *irl_video_thread(void *data)
 		ctx->video_queue_head =
 			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
 		ctx->video_queue_count--;
+		/* Still pinning f's surface until av_frame_free below. */
+		ctx->video_in_flight = 1;
+		video_pinned_update_locked(ctx);
 		irl_mutex_unlock(&ctx->video_queue_lock);
 
 		irl_video_output_frame(ctx, f);
 		av_frame_free(&f);
 
 		irl_mutex_lock(&ctx->video_queue_lock);
+		ctx->video_in_flight = 0;
 	}
 	video_queue_drain_locked(ctx);
 	irl_mutex_unlock(&ctx->video_queue_lock);

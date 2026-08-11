@@ -697,6 +697,8 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int chunk_count = 0;
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 						 &fill_ms, &chunk_count);
+	if (fill_ms > ctx->audio_fill_peak_ms)
+		ctx->audio_fill_peak_ms = fill_ms;
 
 	if (has_audio &&
 	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count))

@@ -524,7 +524,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
-	     "buf=%dms target=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
+	     "buf=%dms peak=%dms target=%dms speed=%.3f ctrl=%s pts_repairs=%llu "
 	     "norm=%llu interp=%llu silence=%llu resets=%llu "
 	     "last_gap=%dms max_gap=%dms underruns=%llu resync_skips=%llu "
 	     "hidden_trims=%llu quality_events=%llu "
@@ -532,10 +532,12 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "obs_lead=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "restarts=%llu av_drift=%lldms reanchors=%llu "
-	     "vlead=%lldms vlead_clamps=%llu vfps=%.1f res=%dx%d",
+	     "vlead=%lldms peak=%lldms clamps=%llu vfps=%.1f "
+	     "pinned_peak=%d/%d eagain=%llu/%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
+	     ctx->audio_fill_peak_ms,
 	     (int)os_atomic_load_long(&ctx->config.buffer_target_ms),
 	     (double)ctx->current_speed,
 	     os_atomic_load_bool(&ctx->config.adaptive_speed) ? "on" : "off",
@@ -562,9 +564,15 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (long long)av_drift_ms,
 	     (unsigned long long)ctx->audio_offset_reanchors,
 	     (long long)(ctx->video_lead_ns / 1000000LL),
+	     (long long)(ctx->video_lead_peak_ns / 1000000LL),
 	     (unsigned long long)ctx->video_lead_clamps,
 	     ctx->video_frame_interval_ns > 0
 		     ? 1000000000.0 / (double)ctx->video_frame_interval_ns
 		     : 0.0,
+	     /* peak pinned surfaces vs what extra_hw_frames budgeted;
+	      * the pool must cover peak + the decoder's own frame. */
+	     ctx->video_pinned_peak, IRL_VIDEO_QUEUE_SIZE + 2,
+	     (unsigned long long)ctx->video_pkt_eagain,
+	     (unsigned long long)ctx->audio_pkt_eagain,
 	     ctx->last_video_width, ctx->last_video_height);
 }

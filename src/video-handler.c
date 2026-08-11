@@ -300,6 +300,12 @@ static uint64_t video_apply_lead_cap(struct irl_source *ctx, int64_t ts,
 
 	irl_mutex_lock(&ctx->audio_state_lock);
 	ctx->video_lead_ns = lead_ns;
+	/* Keep the high-water mark too: stats are sampled every 30s, and an
+	 * excursion that drains in ~17s is very likely to fall between two
+	 * samples. The instantaneous value alone would read healthy on
+	 * exactly the streams this is meant to diagnose. */
+	if (lead_ns > ctx->video_lead_peak_ns)
+		ctx->video_lead_peak_ns = lead_ns;
 	if (lead_ns > cap_ns)
 		ctx->video_lead_clamps++;
 	irl_mutex_unlock(&ctx->audio_state_lock);

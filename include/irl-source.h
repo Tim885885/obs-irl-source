@@ -237,6 +237,17 @@ struct irl_source {
 	int video_queue_head;
 	int video_queue_count;
 	uint64_t video_queue_drops;
+	/* Decoder surfaces this plugin pins at once, for checking the
+	 * extra_hw_frames budget against reality rather than against a
+	 * reading of the code: frames sitting in the queue plus the one the
+	 * video thread has popped and is converting. The frame the decoder
+	 * has just handed the receiver thread is not counted (it lives on
+	 * the other thread and is unref'd immediately), so the pool
+	 * requirement is this peak plus one. Cumulative for the source —
+	 * a two-hour stream's high-water mark is the interesting number.
+	 * Both guarded by video_queue_lock. */
+	int video_in_flight;
+	int video_pinned_peak;
 	/* Set by the receiver thread on disconnect, consumed by the video
 	 * thread. Guarded by video_queue_lock. The clear has to run on the
 	 * video thread so it cannot be undone by a frame that was already
@@ -343,6 +354,7 @@ struct irl_source {
 	 * written by the video thread and read by the OBS thread. */
 	int64_t video_frame_interval_ns;
 	int64_t video_lead_ns;
+	int64_t video_lead_peak_ns;
 	uint64_t video_lead_clamps;
 
 	/* Latest audio already queued to OBS, in OBS clock domain.
@@ -390,6 +402,17 @@ struct irl_source {
 	 * not reset the decoder state (losing reference frames). */
 	int audio_decode_errors;
 	int video_decode_errors;
+	/* Jitter-buffer high-water mark, same sampling argument as
+	 * video_lead_peak_ns: the backlog excursion that drives everything
+	 * here is transient, and `buf` at log time usually misses it. */
+	int audio_fill_peak_ms;
+	/* avcodec_send_packet() returned EAGAIN, meaning the decoder did not
+	 * accept the packet and it must be resent after draining output.
+	 * Rare when the frame pool is adequately sized, which is exactly why
+	 * a non-zero count is worth seeing: it is the signal that decoder
+	 * surfaces are exhausted. */
+	uint64_t video_pkt_eagain;
+	uint64_t audio_pkt_eagain;
 	uint64_t audio_decoder_flushes;
 	uint64_t video_decoder_flushes;
 	uint64_t audio_last_decoder_flush_time_us;
