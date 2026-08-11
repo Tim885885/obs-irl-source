@@ -272,15 +272,35 @@ build_zlib() {
 		"zlib-${ZLIB_VERSION}.tar.gz" "${ZLIB_SHA256}"
 	extract "zlib-${ZLIB_VERSION}.tar.gz" "zlib-${ZLIB_VERSION}"
 
+	# ZLIB_BUILD_TESTING is what 1.3.2 renamed ZLIB_BUILD_EXAMPLES to; both
+	# are passed so either version builds only the library.
+	#
+	# ZLIB_BUILD_SHARED/STATIC are zlib's own switches and both default ON;
+	# it does not honour BUILD_SHARED_LIBS from cmake_common. Left alone it
+	# installs z.dll plus an *import* z.lib alongside the static library,
+	# and since that import lib already occupies the name FFmpeg links
+	# against, ensure_msvc_lib_name below would accept it and quietly give
+	# the plugin a runtime DLL dependency the bundled stack exists to avoid.
 	cmake -S "$(npath "${src}/zlib-${ZLIB_VERSION}")" \
 		-B "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" \
 		"${cmake_common[@]}" \
+		-DZLIB_BUILD_SHARED=OFF \
+		-DZLIB_BUILD_STATIC=ON \
+		-DZLIB_BUILD_TESTING=OFF \
 		-DZLIB_BUILD_EXAMPLES=OFF
 	cmake --build "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" --parallel "${jobs}"
 	cmake --install "$(npath "${src}/zlib-${ZLIB_VERSION}/build")"
 
-	# zlib's CMake calls its static output zlibstatic; FFmpeg asks for z.lib.
-	ensure_msvc_lib_name z zlibstatic zlib
+	# Belt and braces: if a future zlib renames those switches the way 1.3.2
+	# renamed its static target, fail here rather than link a DLL.
+	if [[ -f ${prefix}/bin/z.dll || -f ${prefix}/bin/zlib1.dll ]]; then
+		echo "zlib installed a DLL; the bundled stack must be static" >&2
+		exit 1
+	fi
+
+	# FFmpeg asks for z.lib. zlib 1.3.2 names the MSVC static output zs
+	# (1.3.1 called it zlibstatic), so both spellings are candidates.
+	ensure_msvc_lib_name z zs zlibstatic zlib
 
 	# zconf.h.cmakein still carries an autoconf-era block:
 	#
