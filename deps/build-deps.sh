@@ -624,9 +624,24 @@ build_ffmpeg() {
 	# the only thing that distinguishes a missing library from one whose
 	# name or link order the toolchain got wrong.
 	if ! (cd "${ff}" && ./configure "${args[@]}"); then
+		local cfglog="${ff}/ffbuild/config.log"
 		echo
+		# A tail alone is not enough. Autodetected libraries are probed
+		# early and configure only dies about them in a sweep at the very
+		# end ("$lib requested but not found"), so by the time it fails
+		# the probe that actually explains it is a thousand lines above
+		# the tail and nothing in the visible output names a cause.
+		echo "---- probes for the libraries we require ----" >&2
+		local l
+		for l in zlib mbedtls libsrt librist ffnvcodec; do
+			echo "== ${l} ==" >&2
+			grep -n -B2 -A25 \
+				-e "check_pkg_config ${l} " \
+				-e "check_lib ${l} " \
+				"${cfglog}" >&2 || echo "(no probe logged)" >&2
+		done
 		echo "---- tail of ffbuild/config.log ----" >&2
-		tail -60 "${ff}/ffbuild/config.log" >&2 || true
+		tail -60 "${cfglog}" >&2 || true
 		exit 1
 	fi
 
