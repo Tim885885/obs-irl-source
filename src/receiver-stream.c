@@ -533,7 +533,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "restarts=%llu av_drift=%lldms reanchors=%llu "
 	     "vlead=%lldms peak=%lldms clamps=%llu vfps=%.1f "
-	     "pinned_peak=%d/%d eagain=%llu/%llu res=%dx%d",
+	     "pinned_peak=%d/%d eagain=%llu/%llu pktdrop=%llu/%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
@@ -574,5 +574,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     ctx->video_pinned_peak, IRL_VIDEO_QUEUE_SIZE + 2,
 	     (unsigned long long)ctx->video_pkt_eagain,
 	     (unsigned long long)ctx->audio_pkt_eagain,
+	     (unsigned long long)ctx->video_pkt_dropped,
+	     (unsigned long long)ctx->audio_pkt_dropped,
 	     ctx->last_video_width, ctx->last_video_height);
 }

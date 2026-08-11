@@ -413,6 +413,11 @@ struct irl_source {
 	 * surfaces are exhausted. */
 	uint64_t video_pkt_eagain;
 	uint64_t audio_pkt_eagain;
+	/* Packets still refused after the drain-and-resend retry, and so
+	 * genuinely lost. This is the number that costs picture quality;
+	 * the eagain counters above only say the condition was hit. */
+	uint64_t video_pkt_dropped;
+	uint64_t audio_pkt_dropped;
 	uint64_t audio_decoder_flushes;
 	uint64_t video_decoder_flushes;
 	uint64_t audio_last_decoder_flush_time_us;
