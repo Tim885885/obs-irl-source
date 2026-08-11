@@ -697,8 +697,15 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int chunk_count = 0;
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 						 &fill_ms, &chunk_count);
+	/* The receiver thread reads this for the stats line, so publish it
+	 * under the shared timing lock like the rest of the cross-thread
+	 * state. peek_state released the buffer mutex before returning, so
+	 * nothing is nested here and the documented order (audio_state_lock
+	 * before the buffer mutex) still holds. */
+	irl_mutex_lock(&ctx->audio_state_lock);
 	if (fill_ms > ctx->audio_fill_peak_ms)
 		ctx->audio_fill_peak_ms = fill_ms;
+	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	if (has_audio &&
 	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count))

@@ -509,6 +509,21 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 
 	ctx->last_stats_time = now;
 
+	/* Snapshot what other threads write before formatting any of it.
+	 * The audio thread owns the playout offset and the buffer
+	 * high-water mark; the video thread owns the lead figures; the
+	 * pinned-surface peak belongs to video_queue_lock.
+	 *
+	 * Two separate acquisitions, never nested: no path in the plugin
+	 * holds video_queue_lock and audio_state_lock at once (the video
+	 * thread drops the queue lock before irl_video_output_frame, and
+	 * irl_handle_video_frame drops the state lock before pushing), and
+	 * a stats line is the last place that edge should be introduced.
+	 *
+	 * av_drift is computed inside the lock rather than from separate
+	 * reads: its three inputs are only meaningful against each other,
+	 * and the audio thread updates them together. */
+	irl_mutex_lock(&ctx->audio_state_lock);
 	/* Drift of the audio->OBS playout offset from its primed baseline.
 	 * Stays near 0 when healthy; a climbing value is concealment
 	 * inflating the video lip-sync mapping (see receiver-audio.c). */
@@ -521,6 +536,18 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 			       ctx->audio_playout_offset_baseline_ns) /
 			      1000000LL;
 	}
+	int audio_fill_peak_ms = ctx->audio_fill_peak_ms;
+	int64_t video_lead_ms = ctx->video_lead_ns / 1000000LL;
+	int64_t video_lead_peak_ms = ctx->video_lead_peak_ns / 1000000LL;
+	uint64_t video_lead_clamps = ctx->video_lead_clamps;
+	int64_t video_frame_interval_ns = ctx->video_frame_interval_ns;
+	irl_mutex_unlock(&ctx->audio_state_lock);
+
+	irl_mutex_lock(&ctx->video_queue_lock);
+	int video_pinned_peak = ctx->video_pinned_peak;
+	irl_mutex_unlock(&ctx->video_queue_lock);
+
+	int buffer_fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
 
 	blog(LOG_INFO,
 	     "[irl-source] Stats: video=%llu audio=%llu "
@@ -536,8 +563,8 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "pinned_peak=%d/%d eagain=%llu/%llu pktdrop=%llu/%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
-	     audio_buffer_fill_ms_locked(&ctx->audio_buf),
-	     ctx->audio_fill_peak_ms,
+	     buffer_fill_ms,
+	     audio_fill_peak_ms,
 	     (int)os_atomic_load_long(&ctx->config.buffer_target_ms),
 	     (double)ctx->current_speed,
 	     os_atomic_load_bool(&ctx->config.adaptive_speed) ? "on" : "off",
@@ -563,15 +590,15 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_output_restarts,
 	     (long long)av_drift_ms,
 	     (unsigned long long)ctx->audio_offset_reanchors,
-	     (long long)(ctx->video_lead_ns / 1000000LL),
-	     (long long)(ctx->video_lead_peak_ns / 1000000LL),
-	     (unsigned long long)ctx->video_lead_clamps,
-	     ctx->video_frame_interval_ns > 0
-		     ? 1000000000.0 / (double)ctx->video_frame_interval_ns
+	     (long long)video_lead_ms,
+	     (long long)video_lead_peak_ms,
+	     (unsigned long long)video_lead_clamps,
+	     video_frame_interval_ns > 0
+		     ? 1000000000.0 / (double)video_frame_interval_ns
 		     : 0.0,
 	     /* peak pinned surfaces vs what extra_hw_frames budgeted;
 	      * the pool must cover peak + the decoder's own frame. */
-	     ctx->video_pinned_peak, IRL_VIDEO_QUEUE_SIZE + 2,
+	     video_pinned_peak, IRL_VIDEO_QUEUE_SIZE + 2,
 	     (unsigned long long)ctx->video_pkt_eagain,
 	     (unsigned long long)ctx->audio_pkt_eagain,
 	     (unsigned long long)ctx->video_pkt_dropped,
