@@ -90,6 +90,81 @@ struct irl_source;
  * buffer capacity (4x buffer_max_ms) or writes would drop old data. */
 #define IRL_BLEED_PACE_FILL_MS 1000
 
+/* Concealment inflates the audio->OBS playout offset with no bounded
+ * recovery once primed (see irl_audio_maybe_reanchor_offset). This far
+ * past the primed baseline the accumulated latency is treated as
+ * unrecoverable by the speed-drain and reclaimed with one declared
+ * re-anchor. Set above the worst normal buffer swing (buffer_max is
+ * only ~200ms over target) so ordinary adaptive-speed excursions
+ * never trip it; only a real outage's worth of concealment does.
+ *
+ * Lives here rather than next to its use in receiver-audio.c because the
+ * video lead cap below is defined in terms of it. */
+#define AUDIO_OFFSET_REANCHOR_MARGIN_MS 400
+
+/* Video output lead cap.
+ *
+ * libobs schedules async video itself. obs_source_output_video() only queues
+ * the frame; ready_async_frame() releases it once the queue's play head
+ * (last_frame_ts, which advances at wall-clock rate) reaches its timestamp.
+ * Two libobs limits follow from that, and neither is observable from here:
+ *
+ *   - a frame timestamped past the play head holds the *previous* frame on
+ *     screen until wall clock catches up, and
+ *   - at MAX_ASYNC_FRAMES (30) queued frames, cache_video() drops the
+ *     incoming frame, throws the entire queue away and resets last_frame_ts,
+ *     silently.
+ *
+ * Video PTS is mapped through the audio playout offset for lip sync, so the
+ * lead over wall clock tracks the audio jitter buffer, and concealment
+ * inflates it further on every dropout. What libobs actually queues is the
+ * *growth* in that lead since its play head last anchored, so a steady lead
+ * (however large) is free and an excursion is what fills the queue. A backlog
+ * excursion big enough to park 30 frames makes libobs wipe the queue every
+ * time it refills: freeze frames and forward jumps, while audio — which paces
+ * itself — plays clean. That is the shape of the field report this cap exists
+ * for.
+ *
+ * Cap the lead at the configured target buffer plus an excursion allowance.
+ * Only the excursion is cut, never the steady lead, so a deliberately large
+ * Target Buffer still buys real buffered lip sync at any size. Past the cap
+ * the trade is explicit: video runs ahead of audio by the excess instead of
+ * freezing.
+ *
+ * The allowance is bounded from both directions, and both bounds are real:
+ *
+ *   - Above, by IRL_OBS_ASYNC_FRAME_BUDGET frames' worth of the *measured*
+ *     frame interval. What libobs queues is frames, not milliseconds, so the
+ *     same 400ms excursion is 12 frames at 30fps and 24 at 60fps. A fixed
+ *     millisecond allowance would therefore either clamp 30fps streams that
+ *     were never at risk (paying lip sync for nothing) or fail to protect
+ *     60fps ones. The budget leaves headroom under libobs's 30 for the frame
+ *     in flight, tick jitter, and interval mis-estimates.
+ *
+ *   - Below, by AUDIO_OFFSET_REANCHOR_MARGIN_MS. A clamped lead means video
+ *     is early by the excess, which is only acceptable while the excess is
+ *     transient. Excess fill always is: the speed controller drains backlog
+ *     to target at up to +5%, and video re-syncs smoothly on the way back
+ *     because the clamped line and the mapped line meet tangentially. Excess
+ *     *concealment* offset is not — the only thing that ever reclaims it is
+ *     irl_audio_maybe_reanchor_offset(), which does nothing until the drift
+ *     passes that margin. Allow less than it and the band between the two
+ *     becomes permanent lip sync error instead of a transient one.
+ *
+ * The two only conflict above ~60fps, where the frame budget wants less than
+ * the re-anchor margin. The floor wins there — permanent desync is worse than
+ * a queue wipe — and the case is logged, because that is the point where
+ * libobs scheduling has run out and the frames need pacing in-plugin instead.
+ */
+#define IRL_OBS_ASYNC_FRAME_BUDGET 24
+#define IRL_VIDEO_LEAD_WARN_INTERVAL_NS 10000000000ULL
+
+/* Bounds on the measured frame interval (250fps..10fps) and the estimate
+ * used before enough frames have arrived to measure one. */
+#define IRL_VIDEO_INTERVAL_MIN_NS 4000000LL
+#define IRL_VIDEO_INTERVAL_MAX_NS 100000000LL
+#define IRL_VIDEO_INTERVAL_DEFAULT_NS 33333333LL
+
 /* Abort a blocking read/connect through the FFmpeg interrupt callback
  * after this long without progress. A dead-but-open connection (uplink
  * loss in a dead zone) otherwise hangs av_read_frame forever with no
@@ -208,6 +283,11 @@ struct irl_source {
 	bool video_ts_init;
 	uint64_t video_sys_base;  /* os_gettime_ns() at first frame */
 	int64_t video_pts_base;   /* stream PTS at first frame (in ns) */
+	/* Previous decoded PTS, receiver-thread-owned; feeds the frame
+	 * interval EMA. */
+	int64_t video_prev_pts_ns;
+	/* Throttle for the lead-cap warning, video-thread-owned. */
+	uint64_t video_lead_warn_time_ns;
 
 	/* Audio output clock.  OBS timestamps are a pure sample
 	 * counter anchored once at prime time:
@@ -251,6 +331,18 @@ struct irl_source {
 	/* Stream PTS tracking for A/V sync and re-sync mode */
 	int64_t latest_audio_stream_pts_ns;
 	int64_t latest_video_stream_pts_ns;
+
+	/* Video lead diagnostics, all guarded by audio_state_lock.
+	 *
+	 * video_frame_interval_ns is an EMA of decoded PTS deltas, written
+	 * by the receiver thread and read by the video thread to estimate
+	 * how many frames a given lead parks in the libobs async queue.
+	 * video_lead_ns is the lead the PTS mapping asked for before the
+	 * cap (the uncapped value is the diagnostic: it shows the ratchet),
+	 * written by the video thread and read by the OBS thread. */
+	int64_t video_frame_interval_ns;
+	int64_t video_lead_ns;
+	uint64_t video_lead_clamps;
 
 	/* Latest audio already queued to OBS, in OBS clock domain.
 	 * Used to align video to actual audio playout instead of

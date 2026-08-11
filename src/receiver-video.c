@@ -181,8 +181,29 @@ void irl_handle_video_frame(struct irl_source *ctx, AVFrame *frame)
 			ctx->fmt_ctx->streams[ctx->video_stream_idx];
 		pts_ns = av_rescale_q(frame->pts, vs->time_base,
 				      (AVRational){1, 1000000000});
+
+		/* Frame interval EMA, for the video thread's estimate of how
+		 * many frames a given output lead parks in the libobs async
+		 * queue. Measured rather than taken from avg_frame_rate,
+		 * which live SRT/RTMP demuxers routinely leave unset or
+		 * wrong. Out-of-range deltas (PTS repair, discontinuities,
+		 * reordering) are skipped rather than smoothed in. */
+		int64_t delta = pts_ns - ctx->video_prev_pts_ns;
+		bool usable_delta = ctx->video_prev_pts_ns != 0 &&
+				    delta >= IRL_VIDEO_INTERVAL_MIN_NS &&
+				    delta <= IRL_VIDEO_INTERVAL_MAX_NS;
+		ctx->video_prev_pts_ns = pts_ns;
+
 		irl_mutex_lock(&ctx->audio_state_lock);
 		ctx->latest_video_stream_pts_ns = pts_ns;
+		if (usable_delta) {
+			if (ctx->video_frame_interval_ns == 0)
+				ctx->video_frame_interval_ns = delta;
+			else
+				ctx->video_frame_interval_ns +=
+					(delta - ctx->video_frame_interval_ns) /
+					8;
+		}
 		irl_mutex_unlock(&ctx->audio_state_lock);
 	}
 

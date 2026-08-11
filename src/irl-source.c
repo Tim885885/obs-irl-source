@@ -325,6 +325,8 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	uint64_t video_sys_base = ctx->video_sys_base;
 	int64_t video_pts_base = ctx->video_pts_base;
 	int64_t latest_video_stream_pts_ns = ctx->latest_video_stream_pts_ns;
+	int64_t video_lead_ms = ctx->video_lead_ns / 1000000LL;
+	uint64_t video_lead_clamps = ctx->video_lead_clamps;
 	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	calldata_set_int(cd, "buffer_fill_ms", buffer_fill_ms);
@@ -362,6 +364,9 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 			 (long long)audio_decoder_flushes);
 	calldata_set_int(cd, "video_decoder_flushes",
 			 (long long)video_decoder_flushes);
+	calldata_set_int(cd, "video_lead_ms", (long long)video_lead_ms);
+	calldata_set_int(cd, "video_lead_clamps",
+			 (long long)video_lead_clamps);
 
 	/* Stream delay: how far behind real-time the video output is.
 	 * Computed as wall_clock - anchored_video_PTS.  Includes SRT
@@ -429,6 +434,7 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int audio_output_restarts, out int obs_lead_ms, "
 		"out int audio_decoder_flushes, "
 		"out int video_decoder_flushes, "
+		"out int video_lead_ms, out int video_lead_clamps, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
 		"out int reconnect_count)",
 		irl_source_get_stats, ctx);

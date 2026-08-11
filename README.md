@@ -348,6 +348,8 @@ Stats are exposed through OBS's `proc_handler` API under the `get_stats` call, a
 | `obs_lead_ms` | int | How far ahead of real time audio is queued inside OBS (healthy is roughly 60 to 100ms) |
 | `audio_decoder_flushes` | int | Number of audio decoder flushes after repeated decode errors |
 | `video_decoder_flushes` | int | Number of video decoder flushes after repeated decode errors |
+| `video_lead_ms` | int | How far ahead of real time the last video frame was timestamped, before the lead cap. Tracks the audio buffer; a value climbing well past Target Buffer and staying there means concealment has inflated the A/V mapping |
+| `video_lead_clamps` | int | Frames whose lead was capped to keep OBS from dropping its async video queue. Non-zero means video ran ahead of audio rather than freezing |
 | `stream_delay_ms` | int | End-to-end stream delay (SRT latency + decode + buffering) |
 | `low_latency_audio` | bool | Whether OBS async unbuffered low-latency mode is enabled |
 | `reconnect_count` | int | Number of reconnect attempts since the source was created |

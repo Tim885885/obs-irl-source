@@ -265,6 +265,70 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 #define VIDEO_TS_CLAMP_NS 500000000LL   /* 500ms */
 #define VIDEO_TS_CAP_NS   200000000ULL  /* 200ms forward cap */
 
+/* Record the requested lead and cap it. `ts` is the timestamp the PTS
+ * mapping asked for; the returned one is what libobs can actually schedule
+ * without its async queue overflowing. See the IRL_OBS_ASYNC_FRAME_BUDGET
+ * block in irl-source.h for where the allowance comes from.
+ *
+ * Only the excursion above the configured target is capped, never the target
+ * itself: libobs anchors its async play head to the first frame it sees and
+ * then advances it at wall-clock rate, so what it holds is the *growth* in
+ * lead since that anchor. A large steady lead queues nothing and costs
+ * nothing.
+ *
+ * Frames already at or behind wall clock are left alone: libobs shows those
+ * immediately, which is the correct handling for a late frame. */
+static uint64_t video_apply_lead_cap(struct irl_source *ctx, int64_t ts,
+				     uint64_t now, int64_t frame_interval_ns)
+{
+	int64_t lead_ns = ts - (int64_t)now;
+
+	if (frame_interval_ns <= 0)
+		frame_interval_ns = IRL_VIDEO_INTERVAL_DEFAULT_NS;
+
+	int64_t budget_ns = IRL_OBS_ASYNC_FRAME_BUDGET * frame_interval_ns;
+	int64_t floor_ns = AUDIO_OFFSET_REANCHOR_MARGIN_MS * 1000000LL;
+	bool budget_exceeded = budget_ns < floor_ns;
+	int64_t allowance_ns = budget_exceeded ? floor_ns : budget_ns;
+
+	/* No floor needed: the allowance alone is already at least the
+	 * re-anchor margin, so the cap can never collapse onto a small
+	 * configured target. */
+	int64_t target_ns =
+		os_atomic_load_long(&ctx->config.buffer_target_ms) * 1000000LL;
+	int64_t cap_ns = target_ns + allowance_ns;
+
+	irl_mutex_lock(&ctx->audio_state_lock);
+	ctx->video_lead_ns = lead_ns;
+	if (lead_ns > cap_ns)
+		ctx->video_lead_clamps++;
+	irl_mutex_unlock(&ctx->audio_state_lock);
+
+	if (lead_ns <= cap_ns)
+		return (uint64_t)ts;
+
+	/* Clamping is the design working, but it is also the moment video
+	 * starts running ahead of audio, so say so once in a while. Call out
+	 * the frame-rate case separately: there the allowance had to overrun
+	 * the frame budget to avoid permanent desync, so a queue wipe is
+	 * still possible and only in-plugin pacing can fix it. */
+	if (now - ctx->video_lead_warn_time_ns >=
+	    IRL_VIDEO_LEAD_WARN_INTERVAL_NS) {
+		ctx->video_lead_warn_time_ns = now;
+		blog(LOG_WARNING,
+		     "[irl-source] Video lead %lldms capped to %lldms (~%lld frames queued in OBS, limit 30); "
+		     "video runs ahead of audio until the buffer drains%s",
+		     (long long)(lead_ns / 1000000LL),
+		     (long long)(cap_ns / 1000000LL),
+		     (long long)((cap_ns - target_ns) / frame_interval_ns),
+		     budget_exceeded
+			     ? " — frame rate too high to stay under the OBS queue limit, expect dropped frames"
+			     : "");
+	}
+
+	return now + (uint64_t)cap_ns;
+}
+
 /* Convert stream PTS to OBS nanosecond timestamp.
  *
  * When audio is active, treat queued audio as the master playout
@@ -287,10 +351,12 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	uint64_t audio_obs_end_ts_ns;
 	int64_t audio_buffered_end_pts_ns;
 	int startup_warmup_ms;
+	int64_t frame_interval_ns;
 	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
 	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
 	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
+	frame_interval_ns = ctx->video_frame_interval_ns;
 	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
@@ -300,7 +366,8 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 				  audio_buffered_end_pts_ns);
 		if (mapped < 0)
 			mapped = 0;
-		return (uint64_t)mapped;
+		return video_apply_lead_cap(ctx, mapped, now,
+					    frame_interval_ns);
 	}
 
 	if (!ctx->video_ts_init) {
@@ -337,7 +404,12 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 			computed += (uint64_t)audio_lead_ns;
 	}
 
-	return computed;
+	/* Capped on this path too. libobs anchors its async play head to the
+	 * first frame it sees, so the startup lead decides the baseline the
+	 * mapped path is later measured against; letting the two paths
+	 * disagree would bank queue depth at the handover. */
+	return video_apply_lead_cap(ctx, (int64_t)computed, now,
+				    frame_interval_ns);
 }
 
 /* ── Video output ─────────────────────────────────────────── */

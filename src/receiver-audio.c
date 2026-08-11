@@ -58,14 +58,11 @@
  * the clock line instead of letting OBS add permanent buffering. */
 #define AUDIO_OUT_MAX_LAG_MS 150
 
-/* Concealment inflates the audio->OBS playout offset with no bounded
- * recovery once primed (see the offset-reanchor logic below). This
- * far past the primed baseline the accumulated latency is treated as
- * unrecoverable by the speed-drain and reclaimed with one declared
- * re-anchor. Set above the worst normal buffer swing (buffer_max is
- * only ~200ms over target) so ordinary adaptive-speed excursions
- * never trip it; only a real outage's worth of concealment does. */
-#define AUDIO_OFFSET_REANCHOR_MARGIN_MS 400
+/* AUDIO_OFFSET_REANCHOR_MARGIN_MS lives in irl-source.h: it is also the
+ * floor on the video lead cap's excursion allowance, because a lead the cap
+ * suppresses and this margin never reclaims is permanent lip sync error
+ * rather than transient. See the IRL_OBS_ASYNC_FRAME_BUDGET block there
+ * before changing it. */
 
 /* Playback speed authority for buffer regulation. Asymmetric,
  * IRLToolkit-style: draining a post-stall backlog runs up to +5%
@@ -134,6 +131,13 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	irl_reset_audio_timing_state(ctx);
 	ctx->video_ts_init = false;
 	ctx->latest_video_stream_pts_ns = 0;
+	/* State, not counters: the interval has to be re-measured for the
+	 * new stream, and a stale lead would be reported until the first
+	 * frame arrives. video_lead_clamps is cumulative for the source,
+	 * like the other quality counters. */
+	ctx->video_prev_pts_ns = 0;
+	ctx->video_frame_interval_ns = 0;
+	ctx->video_lead_ns = 0;
 	ctx->video_decode_errors = 0;
 	ctx->video_last_decoder_flush_time_us = 0;
 	ctx->video_last_decoder_warning_time_us = 0;
