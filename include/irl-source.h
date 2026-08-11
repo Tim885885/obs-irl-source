@@ -225,8 +225,9 @@ struct irl_source {
 	 * Decouples the GPU→CPU frame transfer and format conversion
 	 * from the receiver thread so a GPU stall cannot starve audio
 	 * decode. Depth stays small because queued HW frames pin
-	 * decoder surface-pool entries (matched by extra_hw_frames at
-	 * decoder open). Queued frame->pts is in nanoseconds; the
+	 * decoder surface-pool entries (covered by extra_hw_frames at
+	 * decoder open, which budgets this queue plus the two frames
+	 * in flight around it). Queued frame->pts is in nanoseconds; the
 	 * receiver converts before queueing because it may close
 	 * fmt_ctx while frames are still in flight. */
 #define IRL_VIDEO_QUEUE_SIZE 4

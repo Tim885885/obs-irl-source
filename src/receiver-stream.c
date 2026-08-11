@@ -158,8 +158,18 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		/* The video output queue holds decoded HW frames, each
 		 * pinning a decoder surface; give the pool matching
 		 * headroom or the decoder can stall waiting for a
-		 * surface the queue is sitting on. */
-		ctx->extra_hw_frames = IRL_VIDEO_QUEUE_SIZE;
+		 * surface the queue is sitting on. Fixed-pool decoders
+		 * (D3D11VA, VAAPI) are where that bites, and it looks
+		 * like frozen video with clean audio.
+		 *
+		 * Count the surfaces this plugin can pin at once, not
+		 * just the queue: IRL_VIDEO_QUEUE_SIZE queued, plus the
+		 * one the video thread has popped and is transferring in
+		 * irl_video_output_frame(), plus the one just returned by
+		 * avcodec_receive_frame() and not yet unref'd. The clone
+		 * irl_video_queue_push() takes references that same
+		 * surface, so it does not add a third. */
+		ctx->extra_hw_frames = IRL_VIDEO_QUEUE_SIZE + 2;
 	}
 
 	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
