@@ -83,7 +83,7 @@ static const struct irl_stat_field irl_stat_fields[] = {
 	{"audio_decoder_flushes", IRL_STAT_INT},
 	{"video_decoder_flushes", IRL_STAT_INT},
 	{"video_lead_ms", IRL_STAT_INT},
-	{"video_lead_clamps", IRL_STAT_INT},
+	{"video_lead_excess", IRL_STAT_INT},
 	{"stream_delay_ms", IRL_STAT_INT},
 	{"low_latency_audio", IRL_STAT_BOOL},
 	{"reconnect_count", IRL_STAT_INT},

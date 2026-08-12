@@ -58,11 +58,8 @@
  * the clock line instead of letting OBS add permanent buffering. */
 #define AUDIO_OUT_MAX_LAG_MS 150
 
-/* AUDIO_OFFSET_REANCHOR_MARGIN_MS lives in irl-source.h: it is also the
- * floor on the video lead cap's excursion allowance, because a lead the cap
- * suppresses and this margin never reclaims is permanent lip sync error
- * rather than transient. See the IRL_OBS_ASYNC_FRAME_BUDGET block there
- * before changing it. */
+/* AUDIO_OFFSET_REANCHOR_MARGIN_MS lives in irl-source.h, where the video
+ * side also uses it to decide when a lead is worth reporting. */
 
 /* Playback speed authority for buffer regulation. Asymmetric,
  * IRLToolkit-style: draining a post-stall backlog runs up to +5%
@@ -133,7 +130,7 @@ void irl_reset_stream_timing_state(struct irl_source *ctx)
 	ctx->latest_video_stream_pts_ns = 0;
 	/* State, not counters: the interval has to be re-measured for the
 	 * new stream, and a stale lead would be reported until the first
-	 * frame arrives. video_lead_clamps is cumulative for the source,
+	 * frame arrives. video_lead_excess is cumulative for the source,
 	 * like the other quality counters. */
 	ctx->video_prev_pts_ns = 0;
 	ctx->video_frame_interval_ns = 0;

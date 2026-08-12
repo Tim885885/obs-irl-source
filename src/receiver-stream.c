@@ -539,7 +539,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	int audio_fill_peak_ms = ctx->audio_fill_peak_ms;
 	int64_t video_lead_ms = ctx->video_lead_ns / 1000000LL;
 	int64_t video_lead_peak_ms = ctx->video_lead_peak_ns / 1000000LL;
-	uint64_t video_lead_clamps = ctx->video_lead_clamps;
+	uint64_t video_lead_excess = ctx->video_lead_excess;
 	int64_t video_frame_interval_ns = ctx->video_frame_interval_ns;
 	irl_mutex_unlock(&ctx->audio_state_lock);
 
@@ -559,7 +559,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "obs_lead=%lldms chunk=%u@%u "
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "restarts=%llu av_drift=%lldms reanchors=%llu "
-	     "vlead=%lldms peak=%lldms clamps=%llu vfps=%.1f "
+	     "vlead=%lldms peak=%lldms excess=%llu vfps=%.1f "
 	     "pinned_peak=%d/%d eagain=%llu/%llu pktdrop=%llu/%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
@@ -592,7 +592,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     (unsigned long long)ctx->audio_offset_reanchors,
 	     (long long)video_lead_ms,
 	     (long long)video_lead_peak_ms,
-	     (unsigned long long)video_lead_clamps,
+	     (unsigned long long)video_lead_excess,
 	     video_frame_interval_ns > 0
 		     ? 1000000000.0 / (double)video_frame_interval_ns
 		     : 0.0,
