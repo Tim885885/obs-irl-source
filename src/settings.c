@@ -45,6 +45,10 @@ obs_properties_t *irl_source_get_properties(void *data)
 
 	obs_properties_t *props = obs_properties_create();
 
+	/* Without this, the dialog calls update() on every keystroke, so
+	 * typing a URL reopens the stream once per character. */
+	obs_properties_set_flags(props, OBS_PROPERTIES_DEFER_UPDATE);
+
 	/* ── General ───────────────────────────────────────── */
 
 	obs_properties_add_text(props, "url",
