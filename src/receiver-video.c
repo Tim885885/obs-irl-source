@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include <libavutil/imgutils.h>
+
 #include "receiver-internal.h"
 
 /* ── Video output queue ───────────────────────────────────── */
@@ -75,40 +77,166 @@ void irl_video_queue_push(struct irl_source *ctx, AVFrame *frame,
 	irl_mutex_unlock(&ctx->video_queue_lock);
 }
 
-void *irl_video_thread(void *data)
-{
-	struct irl_source *ctx = data;
+/* ── Pacing queue (video thread only) ─────────────────────── */
 
-	irl_mutex_lock(&ctx->video_queue_lock);
-	while (os_atomic_load_bool(&ctx->thread_active)) {
-		if (ctx->video_clear_pending) {
-			ctx->video_clear_pending = false;
+static size_t pacing_frame_bytes(const AVFrame *f)
+{
+	int size = av_image_get_buffer_size(f->format, f->width, f->height, 1);
+	return size > 0 ? (size_t)size : 0;
+}
+
+static bool pacing_has_room(const struct irl_source *ctx)
+{
+	return ctx->pacing_count < IRL_VIDEO_PACING_MAX_FRAMES &&
+	       ctx->pacing_bytes < IRL_VIDEO_PACING_MAX_BYTES;
+}
+
+static void pacing_push(struct irl_source *ctx, AVFrame *frame, uint64_t due_ns)
+{
+	int tail = (ctx->pacing_head + ctx->pacing_count) %
+		   IRL_VIDEO_PACING_MAX_FRAMES;
+	ctx->pacing_queue[tail].frame = frame;
+	ctx->pacing_queue[tail].due_ns = due_ns;
+	ctx->pacing_queue[tail].bytes = pacing_frame_bytes(frame);
+	ctx->pacing_bytes += ctx->pacing_queue[tail].bytes;
+	ctx->pacing_count++;
+	if (ctx->pacing_count > ctx->pacing_peak)
+		ctx->pacing_peak = ctx->pacing_count;
+}
+
+static struct irl_pacing_frame pacing_pop(struct irl_source *ctx)
+{
+	struct irl_pacing_frame e = ctx->pacing_queue[ctx->pacing_head];
+	ctx->pacing_queue[ctx->pacing_head].frame = NULL;
+	ctx->pacing_head = (ctx->pacing_head + 1) % IRL_VIDEO_PACING_MAX_FRAMES;
+	ctx->pacing_count--;
+	ctx->pacing_bytes -= e.bytes;
+	return e;
+}
+
+static void pacing_drain(struct irl_source *ctx)
+{
+	while (ctx->pacing_count > 0) {
+		struct irl_pacing_frame e = pacing_pop(ctx);
+		av_frame_free(&e.frame);
+	}
+	ctx->pacing_bytes = 0;
+}
+
+/* Move everything the receiver has decoded into the pacing queue, copying it
+ * out of the hardware frame pool on the way so the decoder gets its surfaces
+ * back. Runs before every emit and wait, because holding a decoded frame in
+ * video_queue is what stalls the decoder. */
+static void pacing_intake(struct irl_source *ctx)
+{
+	for (;;) {
+		irl_mutex_lock(&ctx->video_queue_lock);
+		if (ctx->video_queue_count == 0 || !pacing_has_room(ctx)) {
 			irl_mutex_unlock(&ctx->video_queue_lock);
-			obs_source_output_video(ctx->source, NULL);
-			irl_mutex_lock(&ctx->video_queue_lock);
-			continue;
-		}
-		if (ctx->video_queue_count == 0) {
-			irl_cond_wait(&ctx->video_queue_cond,
-				      &ctx->video_queue_lock);
-			continue;
+			return;
 		}
 		AVFrame *f = ctx->video_queue[ctx->video_queue_head];
 		ctx->video_queue[ctx->video_queue_head] = NULL;
 		ctx->video_queue_head =
 			(ctx->video_queue_head + 1) % IRL_VIDEO_QUEUE_SIZE;
 		ctx->video_queue_count--;
-		/* Still pinning f's surface until av_frame_free below. */
 		ctx->video_in_flight = 1;
 		video_pinned_update_locked(ctx);
 		irl_mutex_unlock(&ctx->video_queue_lock);
 
-		irl_video_output_frame(ctx, f);
+		AVFrame *sw = irl_video_to_sysmem(ctx, f);
+		uint64_t due = sw ? irl_video_due_time(ctx, sw) : 0;
 		av_frame_free(&f);
 
 		irl_mutex_lock(&ctx->video_queue_lock);
 		ctx->video_in_flight = 0;
+		irl_mutex_unlock(&ctx->video_queue_lock);
+
+		if (sw)
+			pacing_push(ctx, sw, due);
 	}
+}
+
+/* Emit every frame whose moment has arrived. Over the ceilings the head goes
+ * out early rather than being dropped: too-early video is what the un-paced
+ * path did all the time, and it beats a hole in the picture. */
+static void pacing_emit_due(struct irl_source *ctx, uint64_t now)
+{
+	while (ctx->pacing_count > 0) {
+		bool over = !pacing_has_room(ctx);
+		uint64_t due = ctx->pacing_queue[ctx->pacing_head].due_ns;
+
+		if (!over && (int64_t)(due - now) > IRL_VIDEO_PACING_SLACK_NS)
+			return;
+		if (over)
+			ctx->pacing_overflows++;
+
+		struct irl_pacing_frame e = pacing_pop(ctx);
+		irl_video_output_frame(ctx, e.frame, e.due_ns);
+		av_frame_free(&e.frame);
+	}
+}
+
+void *irl_video_thread(void *data)
+{
+	struct irl_source *ctx = data;
+
+	while (os_atomic_load_bool(&ctx->thread_active)) {
+		bool clear;
+		irl_mutex_lock(&ctx->video_queue_lock);
+		clear = ctx->video_clear_pending;
+		ctx->video_clear_pending = false;
+		irl_mutex_unlock(&ctx->video_queue_lock);
+
+		if (clear) {
+			/* video_queue was already dropped by the requester;
+			 * the paced frames behind it must go too, or the
+			 * blank would be repainted a lead later. */
+			pacing_drain(ctx);
+			obs_source_output_video(ctx->source, NULL);
+			continue;
+		}
+
+		pacing_intake(ctx);
+		pacing_emit_due(ctx, os_gettime_ns());
+
+		irl_mutex_lock(&ctx->video_queue_lock);
+		ctx->video_pacing_now = ctx->pacing_count;
+		ctx->video_pacing_peak = ctx->pacing_peak;
+		ctx->video_pacing_bytes = ctx->pacing_bytes;
+		ctx->video_pacing_overflows = ctx->pacing_overflows;
+		irl_mutex_unlock(&ctx->video_queue_lock);
+
+		/* Sleep until the next frame is due, or until the receiver
+		 * pushes, a clear arrives, or the thread is stopped. */
+		uint32_t wait_ms = IRL_VIDEO_PACING_MAX_WAIT_MS;
+		if (ctx->pacing_count > 0) {
+			uint64_t now = os_gettime_ns();
+			int64_t until = (int64_t)ctx->pacing_queue[ctx->pacing_head]
+						.due_ns -
+					(int64_t)now;
+			if (until <= IRL_VIDEO_PACING_SLACK_NS)
+				continue; /* due already; go round again */
+			uint32_t ms = (uint32_t)(until / 1000000LL);
+			if (ms < wait_ms)
+				wait_ms = ms;
+		}
+
+		irl_mutex_lock(&ctx->video_queue_lock);
+		/* Re-check under the lock: a push or clear between the work
+		 * above and here would otherwise be slept through. */
+		if (!ctx->video_clear_pending && ctx->video_queue_count == 0 &&
+		    os_atomic_load_bool(&ctx->thread_active)) {
+			if (wait_ms == 0)
+				wait_ms = 1;
+			irl_cond_timedwait(&ctx->video_queue_cond,
+					   &ctx->video_queue_lock, wait_ms);
+		}
+		irl_mutex_unlock(&ctx->video_queue_lock);
+	}
+
+	pacing_drain(ctx);
+	irl_mutex_lock(&ctx->video_queue_lock);
 	video_queue_drain_locked(ctx);
 	irl_mutex_unlock(&ctx->video_queue_lock);
 	return NULL;

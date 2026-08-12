@@ -59,8 +59,8 @@ Single OBS MODULE shared library. All source is C11.
   audio: resample, write to jitter buffer
   video: keyframe gate, push decoded frame (PTS in ns) onto video queue
 
-[video thread]: pop video queue, HW frame transfer, format conversion,
-                OBS async video output
+[video thread]: pop video queue, HW frame transfer, hold until due,
+                format conversion, OBS async video output
 
 [audio thread]: drain jitter buffer, speed correction, concealment,
                 OBS audio output
@@ -85,7 +85,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 - **`src/receiver-stream.c`**: stream open/close, demuxer options, reconnection, disconnect fade out, periodic stats logging.
 - **`src/receiver-decode.c`**: packet to decoder plumbing with corruption burst handling and throttled decoder flushes.
 - **`src/receiver-audio.c`**: the audio core. Intake side (receiver thread): PTS repair, resample to interleaved float, write to the PTS aware jitter buffer. Pre-keyframe audio is discarded (not staged) to avoid decoder warm-up artifacts. Output side (audio thread): sample counter output clock, constant rate submission, swr based speed correction, dropout concealment, hidden backlog trims.
-- **`src/receiver-video.c`**: decoded video frame handling, keyframe gate, resolution change detection. Also owns `irl_video_request_clear`: the receiver thread drops the queue and raises a flag, and the *video* thread is what actually calls `obs_source_output_video(source, NULL)`. Clearing from the receiver thread instead would race a frame already inside the format conversion, which would repaint the frozen frame right after the clear.
+- **`src/receiver-video.c`**: decoded video frame handling, keyframe gate, resolution change detection, and the video output pacing loop. Frames are copied out of the hardware pool as soon as they arrive (which returns the decoder's surface) and then held in a video-thread-private pacing queue until their mapped timestamp is due, the way OBS's own media source paces in `mp_media_sleep`. This is what keeps libobs's async queue about one frame deep: handing it a frame early makes it hold that frame, and past `MAX_ASYNC_FRAMES` (30) held frames `cache_video` silently discards the entire queue. Also owns `irl_video_request_clear`: the receiver thread drops the queue and raises a flag, and the *video* thread is what actually calls `obs_source_output_video(source, NULL)`. Clearing from the receiver thread instead would race a frame already inside the format conversion, which would repaint the frozen frame right after the clear.
 - **`src/audio-buffer.c`**: thread safe ring buffer sized in milliseconds with a parallel PTS chunk queue. Mutex protected. Supports fade-out reads.
 - **`src/video-handler.c`**: converts AVFrames to OBS video. Maps pixel formats (I420, NV12, I010, P010, etc.), handles HW frame transfer, falls back to swscale for unsupported formats. Maps video PTS through the audio playout offset for lip sync.
 - **`src/pts-repair.c`**: three tier PTS discontinuity repair. Small gaps interpolated, medium gaps get silence, large gaps trigger full reset.
@@ -103,7 +103,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 
 - **Main/OBS thread**: calls create, destroy, update, tick, get_properties, and the activate/deactivate/show/hide callbacks (used only when "Close Stream When Inactive" is on)
 - **Receiver thread**: owns demux/decode FFmpeg state. Writes to the audio buffer (mutex protected) and pushes decoded video frames (PTS pre-converted to nanoseconds) onto the video queue. Never blocks on GPU or OBS video delivery.
-- **Video thread**: pops the video queue, does the HW frame transfer and format conversion (owns sws_ctx), and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`).
+- **Video thread**: pops the video queue, does the HW frame transfer, paces each frame to its due time, then converts (owns sws_ctx) and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`). The pacing queue it holds those frames in needs no lock — the receiver thread never touches it, and a clear is routed through `video_clear_pending` — but its counters are mirrored under `video_queue_lock` for the stats line.
 - **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
 
 Config fields marked `/* hot */` in `struct irl_config` are written by `irl_source_update` while the worker threads run, so every cross-thread read goes through `os_atomic_load_long` / `os_atomic_load_bool` (not C11 `_Atomic`, which MSVC does not support without an experimental flag). The remaining fields are only written while the threads are stopped, where `irl_thread_create` and `irl_thread_join` supply the happens-before edge.

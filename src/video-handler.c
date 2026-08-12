@@ -334,7 +334,7 @@ static void video_record_lead(struct irl_source *ctx, int64_t ts, uint64_t now,
  *
  * If no audio playout mapping exists yet, fall back to the older
  * video-only wall-clock anchor. */
-static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
+uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame)
 {
 	/* frame->pts is pre-converted to nanoseconds by the receiver
 	 * thread (see irl_video_queue_push); fmt_ctx must not be
@@ -405,66 +405,56 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 
 /* ── Video output ─────────────────────────────────────────── */
 
-void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
+/* Bring a decoded frame into system memory, releasing any decoder surface it
+ * held. Returns a new reference the caller owns, or NULL.
+ *
+ * This deliberately does not use av_hwframe_map(AV_HWFRAME_MAP_READ), which
+ * earlier gave VAAPI and VideoToolbox a zero-copy CPU view. A mapped frame
+ * still pins the surface it maps, and pacing holds frames for the whole
+ * output lead — hundreds of them at a high frame rate — so mapping would
+ * exhaust the decoder pool within a few frames of the buffer filling. The
+ * copy is what makes the surface reusable, so it is not optional here.
+ *
+ * On those two backends this costs one extra copy against the old path; on
+ * D3D11VA and CUDA, where the map always fell back to a copy anyway, nothing
+ * changes. */
+AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame)
 {
-	/* Hardware-decoded frames (NVDEC/D3D11VA/VAAPI/VideoToolbox) come
-	 * out on the GPU; we have to expose them to OBS as system memory.
-	 *
-	 * Try av_hwframe_map(AV_HWFRAME_MAP_READ) first: on backends that
-	 * can produce a CPU-readable view without a full download (VAAPI
-	 * vaDeriveImage, VideoToolbox IOSurface), this skips the
-	 * gpu->cpu copy entirely. On D3D11VA / CUDA the map call falls
-	 * back to a copy internally or fails, so we fall back to
-	 * av_hwframe_transfer_data which is the historical path.
-	 *
-	 * hw_map_ok caches the outcome so we don't keep paying for a
-	 * doomed map attempt every frame on platforms that can't map. */
-	AVFrame *sw_frame = NULL;
-	if (frame->hw_frames_ctx) {
-		sw_frame = av_frame_alloc();
-		if (!sw_frame)
-			return;
+	UNUSED_PARAMETER(ctx);
 
-		bool used_map = false;
-		if (ctx->hw_map_ok != 0) {
-			int ret = av_hwframe_map(sw_frame, frame,
-						 AV_HWFRAME_MAP_READ);
-			if (ret == 0) {
-				used_map = true;
-				if (ctx->hw_map_ok != 1) {
-					ctx->hw_map_ok = 1;
-					blog(LOG_INFO,
-					     "[irl-source] HW frame path: av_hwframe_map (zero-copy)");
-				}
-			} else {
-				av_frame_unref(sw_frame);
-				if (ctx->hw_map_ok != 0) {
-					ctx->hw_map_ok = 0;
-					char errbuf[AV_ERROR_MAX_STRING_SIZE];
-					av_strerror(ret, errbuf, sizeof(errbuf));
-					blog(LOG_INFO,
-					     "[irl-source] HW frame path: av_hwframe_transfer_data (map unsupported: %s)",
-					     errbuf);
-				}
-			}
+	AVFrame *out = av_frame_alloc();
+	if (!out)
+		return NULL;
+
+	if (!frame->hw_frames_ctx) {
+		/* Already system memory: take a reference so the pacing queue
+		 * owns its entries uniformly. */
+		if (av_frame_ref(out, frame) < 0) {
+			av_frame_free(&out);
+			return NULL;
 		}
-
-		if (!used_map) {
-			if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
-				av_frame_free(&sw_frame);
-				return;
-			}
-		}
-
-		sw_frame->pts = frame->pts;
-		sw_frame->colorspace = frame->colorspace;
-		sw_frame->color_range = frame->color_range;
-		sw_frame->color_trc = frame->color_trc;
-		sw_frame->color_primaries = frame->color_primaries;
-		sw_frame->flags = frame->flags;
-		frame = sw_frame;
+		return out;
 	}
 
+	if (av_hwframe_transfer_data(out, frame, 0) < 0) {
+		av_frame_free(&out);
+		return NULL;
+	}
+
+	out->pts = frame->pts;
+	out->colorspace = frame->colorspace;
+	out->color_range = frame->color_range;
+	out->color_trc = frame->color_trc;
+	out->color_primaries = frame->color_primaries;
+	out->flags = frame->flags;
+	return out;
+}
+
+/* Hand a system-memory frame to OBS with the timestamp pacing scheduled it
+ * for. `frame` must already have been through irl_video_to_sysmem(). */
+void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
+			    uint64_t timestamp)
+{
 	enum video_format obs_fmt = avpixfmt_to_obs(frame->format);
 
 	/* Negative linesize means the frame is laid out bottom-up. OBS's
@@ -501,11 +491,8 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		size_t need = y_size + uv_size;
 		if (need > ctx->sws_nv12_buf_capacity) {
 			uint8_t *next = realloc(ctx->sws_nv12_buf, need);
-			if (!next) {
-				if (sw_frame)
-					av_frame_free(&sw_frame);
+			if (!next)
 				return;
-			}
 			ctx->sws_nv12_buf = next;
 			ctx->sws_nv12_buf_capacity = need;
 		}
@@ -514,11 +501,8 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 					  ctx->sws_nv12_buf + y_size};
 		int dst_strides[2] = {frame->width, frame->width};
 
-		if (!irl_convert_to_nv12(ctx, frame, dst_planes, dst_strides)) {
-			if (sw_frame)
-				av_frame_free(&sw_frame);
+		if (!irl_convert_to_nv12(ctx, frame, dst_planes, dst_strides))
 			return;
-		}
 
 		struct obs_source_frame obs_frame = {0};
 		obs_frame.width = frame->width;
@@ -528,12 +512,10 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_frame.data[1] = dst_planes[1];
 		obs_frame.linesize[0] = dst_strides[0];
 		obs_frame.linesize[1] = dst_strides[1];
-		obs_frame.timestamp = frame_timestamp(ctx, frame);
+		obs_frame.timestamp = timestamp;
 		setup_color_params(&obs_frame, frame, VIDEO_FORMAT_NV12);
 
 		obs_source_output_video(ctx->source, &obs_frame);
-		if (sw_frame)
-			av_frame_free(&sw_frame);
 		return;
 	}
 
@@ -542,7 +524,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	obs_frame.width = frame->width;
 	obs_frame.height = frame->height;
 	obs_frame.format = obs_fmt;
-	obs_frame.timestamp = frame_timestamp(ctx, frame);
+	obs_frame.timestamp = timestamp;
 	setup_color_params(&obs_frame, frame, obs_fmt);
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
@@ -554,6 +536,4 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 
 	obs_source_output_video(ctx->source, &obs_frame);
-	if (sw_frame)
-		av_frame_free(&sw_frame);
 }

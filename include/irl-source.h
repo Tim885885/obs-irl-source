@@ -132,11 +132,48 @@ struct irl_source;
 #define IRL_VIDEO_INTERVAL_MAX_NS 100000000LL
 #define IRL_VIDEO_INTERVAL_DEFAULT_NS 33333333LL
 
+/* Video output pacing.
+ *
+ * Video PTS is mapped through the audio playout offset for lip sync, which
+ * puts each frame's correct display moment roughly one audio-buffer ahead of
+ * now. Handing libobs a frame that early makes libobs hold it, and libobs
+ * throws its whole async queue away past 30 held frames. So the plugin keeps
+ * the frame itself and hands it over when it is due, the way OBS's own media
+ * source paces (mp_media_sleep in shared/media-playback). libobs then holds
+ * about one frame, and its 30-frame limit stops being reachable at any lead
+ * or frame rate.
+ *
+ * Holding the frames is the cost: an N-millisecond lead means N milliseconds
+ * of decoded video in memory, which is unavoidable — libobs was storing the
+ * same thing, just capped and silently discarded. Bounded two ways, since
+ * frame count alone means nothing across resolutions: whichever of the frame
+ * and byte ceilings binds first. Past either, frames are emitted before they
+ * are due, which is exactly the old behaviour, and counted so it is visible.
+ */
+#define IRL_VIDEO_PACING_MAX_FRAMES 512
+#define IRL_VIDEO_PACING_MAX_BYTES (192u * 1024u * 1024u)
+/* Emit rather than sleep again when this close to due: another wakeup costs
+ * more than the timing error it would remove. */
+#define IRL_VIDEO_PACING_SLACK_NS 1000000LL
+/* Ceiling on a single pacing sleep, so a clear or a shutdown is never left
+ * waiting on a frame that is due far in the future. */
+#define IRL_VIDEO_PACING_MAX_WAIT_MS 50
+
 /* Abort a blocking read/connect through the FFmpeg interrupt callback
  * after this long without progress. A dead-but-open connection (uplink
  * loss in a dead zone) otherwise hangs av_read_frame forever with no
  * reconnect. Connect plus stream probe normally completes in under 3s. */
 #define IRL_IO_STALL_TIMEOUT_US 10000000ULL
+
+/* One frame waiting for its moment. `due_ns` is the OBS-clock timestamp the
+ * PTS mapping produced, sampled once when the frame was decoded — the same
+ * sampling point the un-paced path used — so pacing does not change what
+ * timestamp a frame gets, only when it is handed over. */
+struct irl_pacing_frame {
+	AVFrame *frame;
+	uint64_t due_ns;
+	size_t bytes;
+};
 
 /* ── Source configuration ─────────────────────────────────── */
 
@@ -215,6 +252,29 @@ struct irl_source {
 	 * Both guarded by video_queue_lock. */
 	int video_in_flight;
 	int video_pinned_peak;
+
+	/* Pacing queue: decoded frames in system memory, waiting for their
+	 * due time. Video-thread-private — the receiver thread never touches
+	 * it, and a clear is routed through video_clear_pending, which the
+	 * video thread consumes — so unlike video_queue above it needs no
+	 * lock. Entries hold no decoder surfaces: irl_video_to_sysmem()
+	 * copies out of the hardware pool precisely so this queue can be
+	 * deep. video_pacing_* are read for stats without the lock, like
+	 * video_queue_drops. */
+	struct irl_pacing_frame pacing_queue[IRL_VIDEO_PACING_MAX_FRAMES];
+	int pacing_head;
+	int pacing_count;
+	size_t pacing_bytes;
+	int pacing_peak;
+	uint64_t pacing_overflows;
+
+	/* Published copies of the four above, mirrored under
+	 * video_queue_lock once per pacing cycle so the stats line on the
+	 * receiver thread has something synchronised to read. */
+	int video_pacing_now;
+	int video_pacing_peak;
+	size_t video_pacing_bytes;
+	uint64_t video_pacing_overflows;
 	/* Set by the receiver thread on disconnect, consumed by the video
 	 * thread. Guarded by video_queue_lock. The clear has to run on the
 	 * video thread so it cannot be undone by a frame that was already
@@ -464,7 +524,10 @@ void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */
 
-void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame);
+void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
+			    uint64_t timestamp);
+AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame);
+uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame);
 bool irl_video_is_keyframe(const AVFrame *frame);
 
 /* ── PTS repair (pts-repair.c) ────────────────────────────── */

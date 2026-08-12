@@ -545,6 +545,10 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 
 	irl_mutex_lock(&ctx->video_queue_lock);
 	int video_pinned_peak = ctx->video_pinned_peak;
+	int video_pacing_now = ctx->video_pacing_now;
+	int video_pacing_peak = ctx->video_pacing_peak;
+	size_t video_pacing_bytes = ctx->video_pacing_bytes;
+	uint64_t video_pacing_overflows = ctx->video_pacing_overflows;
 	irl_mutex_unlock(&ctx->video_queue_lock);
 
 	int buffer_fill_ms = audio_buffer_fill_ms_locked(&ctx->audio_buf);
@@ -560,7 +564,7 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     "stream_chunk=%llums obs_chunk=%llums "
 	     "restarts=%llu av_drift=%lldms reanchors=%llu "
 	     "vlead=%lldms peak=%lldms excess=%llu vfps=%.1f "
-	     "pinned_peak=%d/%d eagain=%llu/%llu pktdrop=%llu/%llu res=%dx%d",
+	     "pinned_peak=%d/%d paced=%d/%d(%zuMB) early=%llu eagain=%llu/%llu pktdrop=%llu/%llu res=%dx%d",
 	     (unsigned long long)ctx->total_video_frames,
 	     (unsigned long long)ctx->total_audio_frames,
 	     buffer_fill_ms,
@@ -599,6 +603,9 @@ void irl_log_receiver_stats(struct irl_source *ctx)
 	     /* peak pinned surfaces vs what extra_hw_frames budgeted;
 	      * the pool must cover peak + the decoder's own frame. */
 	     video_pinned_peak, IRL_VIDEO_QUEUE_SIZE + 2,
+	     video_pacing_now, video_pacing_peak,
+	     video_pacing_bytes / (1024u * 1024u),
+	     (unsigned long long)video_pacing_overflows,
 	     (unsigned long long)ctx->video_pkt_eagain,
 	     (unsigned long long)ctx->audio_pkt_eagain,
 	     (unsigned long long)ctx->video_pkt_dropped,
