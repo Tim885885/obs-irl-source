@@ -125,7 +125,12 @@ fetch() {
 	fi
 
 	echo "download: ${url}"
-	curl -fsSL --retry 3 --retry-delay 2 -o "${path}.tmp" "${url}"
+	# --retry alone only covers timeouts and 5xx; a refused or reset
+	# connection is not "transient" to curl and fails on the first try.
+	# ffmpeg.org does both often enough to have cost a CI run.
+	curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+		--retry-connrefused --connect-timeout 30 \
+		-o "${path}.tmp" "${url}"
 
 	local got
 	got="$(sha256_of "${path}.tmp")"
