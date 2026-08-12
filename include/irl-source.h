@@ -429,6 +429,10 @@ struct irl_source {
 	 * not reset the decoder state (losing reference frames). */
 	int audio_decode_errors;
 	int video_decode_errors;
+	/* Detection of a drain that cannot win: the audio thread owns these. */
+	uint64_t audio_drain_stuck_since_us;
+	int audio_drain_stuck_fill_ms;
+	uint64_t audio_drain_warn_time_us;
 	/* Jitter-buffer high-water mark, same sampling argument as
 	 * video_lead_peak_ns: the backlog excursion that drives everything
 	 * here is transient, and `buf` at log time usually misses it. */

@@ -75,6 +75,21 @@
  * skipping chunks when fill runs away. */
 #define AUDIO_LL_MAX_FILL_MS 100
 
+/* The drain is bounded at +5%, so a sender whose media clock runs faster
+ * than that can never be caught up with: the buffer rises to the read
+ * loop's bleed ceiling and parks there, and latency parks with it. Nothing
+ * the plugin may do fixes that — draining harder would mean skipping audio,
+ * which this design does not do once primed — but it should not look like
+ * normal operation either, so detect it and say so.
+ *
+ * Twenty seconds is chosen to sit clear of a legitimate burst: even a
+ * backlog filling the ceiling drains back under buffer_max in about 13s at
+ * the default target, after which the speed ramp backs off on its own. */
+#define AUDIO_DRAIN_STUCK_US 20000000ULL
+/* Treat the drain as making progress if fill has come down by this much
+ * since the window opened, so a slow but real recovery is not reported. */
+#define AUDIO_DRAIN_STUCK_PROGRESS_MS 100
+
 /* Grow a per-thread scratch buffer to at least `need` bytes. Returns
  * the buffer or NULL on OOM. The buffer is owned by the caller's
  * thread; no synchronisation here. */
@@ -121,6 +136,9 @@ void irl_reset_audio_timing_state(struct irl_source *ctx)
 	ctx->audio_decode_errors = 0;
 	ctx->audio_last_decoder_flush_time_us = 0;
 	ctx->audio_last_decoder_warning_time_us = 0;
+	ctx->audio_drain_stuck_since_us = 0;
+	ctx->audio_drain_stuck_fill_ms = 0;
+	ctx->audio_drain_warn_time_us = 0;
 }
 
 void irl_reset_stream_timing_state(struct irl_source *ctx)
@@ -638,6 +656,52 @@ static void irl_audio_maybe_reanchor_offset(struct irl_source *ctx,
 	     AUDIO_OFFSET_REANCHOR_MARGIN_MS);
 }
 
+/* ── Unwinnable drain detection ───────────────────────────── */
+
+/* Called once per emitted chunk with the fill and speed that produced it. */
+static void audio_check_drain_progress(struct irl_source *ctx, int fill_ms,
+				       float speed)
+{
+	int target_ms = (int)os_atomic_load_long(&ctx->config.buffer_target_ms);
+	bool at_full_authority = speed >= AUDIO_SPEED_MAX - 0.0005f &&
+				 fill_ms > target_ms + AUDIO_SPEED_DEADBAND_MS;
+
+	if (!at_full_authority) {
+		ctx->audio_drain_stuck_since_us = 0;
+		return;
+	}
+
+	uint64_t now_us = (uint64_t)av_gettime();
+	if (ctx->audio_drain_stuck_since_us == 0) {
+		ctx->audio_drain_stuck_since_us = now_us;
+		ctx->audio_drain_stuck_fill_ms = fill_ms;
+		return;
+	}
+
+	/* Coming down, just slowly: not stuck. */
+	if (fill_ms <= ctx->audio_drain_stuck_fill_ms -
+			       AUDIO_DRAIN_STUCK_PROGRESS_MS) {
+		ctx->audio_drain_stuck_since_us = now_us;
+		ctx->audio_drain_stuck_fill_ms = fill_ms;
+		return;
+	}
+
+	if (now_us - ctx->audio_drain_stuck_since_us < AUDIO_DRAIN_STUCK_US)
+		return;
+	if (ctx->audio_drain_warn_time_us != 0 &&
+	    now_us - ctx->audio_drain_warn_time_us < AUDIO_DRAIN_STUCK_US)
+		return;
+	ctx->audio_drain_warn_time_us = now_us;
+
+	blog(LOG_WARNING,
+	     "[irl-source] Audio buffer stuck at %dms (target %dms) with playback at +%.0f%% for %llus: "
+	     "the sender is delivering faster than real time, so the buffer cannot drain and latency stays here. "
+	     "Video stays in sync with it; check the sender's frame rate and clock",
+	     fill_ms, target_ms, (double)((speed - 1.0f) * 100.0f),
+	     (unsigned long long)((now_us - ctx->audio_drain_stuck_since_us) /
+				  1000000ULL));
+}
+
 /* ── Pump ─────────────────────────────────────────────────── */
 
 bool irl_pump_audio_once(struct irl_source *ctx)
@@ -778,6 +842,7 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 		(uint64_t)in_frames * 1000000000ULL / (uint64_t)out_rate;
 
 	float speed = compute_buffered_output_speed(ctx, fill_ms);
+	audio_check_drain_progress(ctx, fill_ms, speed);
 	uint8_t *emit_buf = in_buf;
 	uint32_t frames_out = (uint32_t)in_frames;
 
