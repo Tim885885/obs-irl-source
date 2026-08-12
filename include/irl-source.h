@@ -486,6 +486,12 @@ struct irl_source {
 	 * only: set at create, consumed in tick). */
 	bool fit_pending;
 
+	/* Set by the media-control Stop/Pause action, cleared by
+	 * Restart/Play and by a settings update. Keeps the source down
+	 * across show/activate, which would otherwise restart it. OBS
+	 * thread only, like the callbacks that touch it. */
+	bool media_stopped;
+
 	/* Statistics */
 	uint64_t total_audio_frames;
 	uint64_t total_video_frames;
@@ -511,6 +517,14 @@ void irl_source_show(void *data);
 void irl_source_hide(void *data);
 void irl_source_tick(void *data, float seconds);
 const char *irl_source_get_name(void *unused);
+
+/* Media controls (OBS_SOURCE_CONTROLLABLE_MEDIA). Drive the media
+ * controls dock, and obs-websocket's TriggerMediaInputAction /
+ * GetMediaInputStatus. */
+void irl_source_media_play_pause(void *data, bool pause);
+void irl_source_media_restart(void *data);
+void irl_source_media_stop(void *data);
+enum obs_media_state irl_source_media_get_state(void *data);
 
 /* ── Settings (settings.c) ────────────────────────────────── */
 

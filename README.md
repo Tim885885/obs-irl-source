@@ -191,6 +191,16 @@ console.log(responseData.stream_delay_ms, responseData.buffer_fill_ms);
 
 There is no event stream, so poll `GetStats` at whatever rate your overlay refreshes; once a second is plenty. The request reads the same snapshot the Lua path does, so both transports always report identical numbers.
 
+## Restarting the stream remotely
+
+The source registers as a controllable media input, so it appears in OBS's media controls dock and answers the standard obs-websocket media requests — no vendor extension needed:
+
+- `TriggerMediaInputAction` with `OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART` drops the connection and reconnects. This is the one to use for a chat bot's "fix my stream" command.
+- `..._STOP` (or `..._PAUSE`) stops the receiver and blanks the source until a restart or a settings edit; `..._PLAY` starts it again.
+- `GetMediaInputStatus` reports `OBS_MEDIA_STATE_PLAYING` once frames are flowing, `OBS_MEDIA_STATE_BUFFERING` while connected but still filling, `OBS_MEDIA_STATE_OPENING` while reconnecting, and `OBS_MEDIA_STATE_STOPPED` when the receiver is not running.
+
+Unlike OBS's own media source, writing settings does **not** implicitly restart the stream: changing anything other than URL, FFmpeg Options, Hardware Decode or Low Latency Audio is applied to the running stream in place, so retuning the buffer never costs a reconnect. Ask for a restart explicitly.
+
 ## Why open source?
 
 We run a commercial streaming service (relay infrastructure and more), so yes, we have plenty of closed-source code. But OBS itself is GPL-2.0. It is free software built by its community. Paywalling the thing that keeps your stream from dropping frames, just to upsell a subscription, feels like the wrong move.

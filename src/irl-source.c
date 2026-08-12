@@ -233,7 +233,7 @@ static void reset_runtime_state(struct irl_source *ctx)
 
 static bool should_run_receiver(const struct irl_source *ctx)
 {
-	return ctx->config.url &&
+	return ctx->config.url && !ctx->media_stopped &&
 	       (!ctx->config.close_when_inactive ||
 		obs_source_showing(ctx->source));
 }
@@ -501,6 +501,9 @@ void irl_source_update(void *data, obs_data_t *settings)
 	struct irl_config next = {0};
 	config_load(&next, settings);
 
+	/* Editing the source is a request to have it running again. */
+	ctx->media_stopped = false;
+
 	if (os_atomic_load_bool(&ctx->thread_active) &&
 	    !config_requires_restart(&ctx->config, &next)) {
 		config_apply_hot(ctx, &next);
@@ -574,6 +577,89 @@ void irl_source_hide(void *data)
 		return;
 
 	stop_receiver(ctx, true);
+}
+
+/* ── Media controls ───────────────────────────────────────── */
+
+/* A live stream has nothing to seek or pause, so the four callbacks
+ * reduce to "run the receiver" and "don't". They exist because
+ * OBS_SOURCE_CONTROLLABLE_MEDIA is what makes the source addressable
+ * through obs-websocket's TriggerMediaInputAction / GetMediaInputStatus,
+ * which is how NOALBS's !fix reconnects a stalled feed, and it is also
+ * what puts the source in the media controls dock. */
+
+void irl_source_media_restart(void *data)
+{
+	struct irl_source *ctx = data;
+	if (!ctx)
+		return;
+
+	blog(LOG_INFO, "[irl-source] Media restart requested");
+
+	/* An explicit restart overrides a previous Stop. */
+	ctx->media_stopped = false;
+	stop_receiver(ctx, true);
+	start_receiver(ctx);
+
+	if (os_atomic_load_bool(&ctx->thread_active))
+		obs_source_media_started(ctx->source);
+}
+
+void irl_source_media_stop(void *data)
+{
+	struct irl_source *ctx = data;
+	if (!ctx)
+		return;
+
+	blog(LOG_INFO, "[irl-source] Media stop requested");
+
+	ctx->media_stopped = true;
+	stop_receiver(ctx, false);
+	/* Unconditional, unlike a disconnect: the frame is gone because
+	 * the user asked for the source to stop, which is not what
+	 * clear_on_disconnect decides. Matches ffmpeg_source_stop(). */
+	clear_async_video(ctx);
+	/* No obs_source_media_ended() here: libobs already fires
+	 * "media_stopped" for the stop action, and a live stream has no
+	 * end to report. */
+}
+
+/* Pause is the only honest reading of "stop receiving" for a live
+ * stream: there is no paused position to resume from, so unpausing
+ * reconnects. */
+void irl_source_media_play_pause(void *data, bool pause)
+{
+	if (pause)
+		irl_source_media_stop(data);
+	else
+		irl_source_media_restart(data);
+}
+
+enum obs_media_state irl_source_media_get_state(void *data)
+{
+	struct irl_source *ctx = data;
+	if (!ctx)
+		return OBS_MEDIA_STATE_NONE;
+
+	if (!ctx->config.url)
+		return OBS_MEDIA_STATE_NONE;
+	/* Stopped by the user, or not running because the source is
+	 * hidden with "Close Stream When Inactive" on. Never ENDED: a
+	 * live stream has no end to reach. */
+	if (!os_atomic_load_bool(&ctx->thread_active))
+		return OBS_MEDIA_STATE_STOPPED;
+	if (os_atomic_load_bool(&ctx->reconnecting))
+		return OBS_MEDIA_STATE_OPENING;
+
+	/* Connected, but nothing on screen yet: the first connection
+	 * attempt is still in avformat_open_input, or the keyframe gate
+	 * has not opened. video_ts_init is receiver-thread state, read
+	 * under the same lock the stats snapshot uses. */
+	irl_mutex_lock(&ctx->audio_state_lock);
+	bool playing = ctx->video_ts_init || ctx->audio_out_primed;
+	irl_mutex_unlock(&ctx->audio_state_lock);
+
+	return playing ? OBS_MEDIA_STATE_PLAYING : OBS_MEDIA_STATE_BUFFERING;
 }
 
 void irl_source_tick(void *data, float seconds)
