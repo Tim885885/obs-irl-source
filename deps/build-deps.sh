@@ -125,7 +125,12 @@ fetch() {
 	fi
 
 	echo "download: ${url}"
-	curl -fsSL --retry 3 --retry-delay 2 -o "${path}.tmp" "${url}"
+	# --retry alone only covers timeouts and 5xx; a refused or reset
+	# connection is not "transient" to curl and fails on the first try.
+	# ffmpeg.org does both often enough to have cost a CI run.
+	curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+		--retry-connrefused --connect-timeout 30 \
+		-o "${path}.tmp" "${url}"
 
 	local got
 	got="$(sha256_of "${path}.tmp")"
@@ -272,15 +277,49 @@ build_zlib() {
 		"zlib-${ZLIB_VERSION}.tar.gz" "${ZLIB_SHA256}"
 	extract "zlib-${ZLIB_VERSION}.tar.gz" "zlib-${ZLIB_VERSION}"
 
+	# ZLIB_BUILD_TESTING is what 1.3.2 renamed ZLIB_BUILD_EXAMPLES to; both
+	# are passed so either version builds only the library.
+	#
+	# ZLIB_BUILD_SHARED/STATIC are zlib's own switches and both default ON;
+	# it does not honour BUILD_SHARED_LIBS from cmake_common. Left alone it
+	# installs z.dll plus an *import* z.lib alongside the static library,
+	# and since that import lib already occupies the name FFmpeg links
+	# against, ensure_msvc_lib_name below would accept it and quietly give
+	# the plugin a runtime DLL dependency the bundled stack exists to avoid.
 	cmake -S "$(npath "${src}/zlib-${ZLIB_VERSION}")" \
 		-B "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" \
 		"${cmake_common[@]}" \
+		-DZLIB_BUILD_SHARED=OFF \
+		-DZLIB_BUILD_STATIC=ON \
+		-DZLIB_BUILD_TESTING=OFF \
 		-DZLIB_BUILD_EXAMPLES=OFF
 	cmake --build "$(npath "${src}/zlib-${ZLIB_VERSION}/build")" --parallel "${jobs}"
 	cmake --install "$(npath "${src}/zlib-${ZLIB_VERSION}/build")"
 
-	# zlib's CMake calls its static output zlibstatic; FFmpeg asks for z.lib.
-	ensure_msvc_lib_name z zlibstatic zlib
+	# Belt and braces: if a future zlib renames those switches the way 1.3.2
+	# renamed its static target, fail here rather than link a DLL.
+	if [[ -f ${prefix}/bin/z.dll || -f ${prefix}/bin/zlib1.dll ]]; then
+		echo "zlib installed a DLL; the bundled stack must be static" >&2
+		exit 1
+	fi
+
+	# FFmpeg's MSVC flag translator hardcodes -lz to zlib.lib rather than
+	# z.lib like every other -l name:
+	#
+	#     -lz)   echo zlib.lib ;;
+	#     -l*)   echo ${flag#-l}.lib ;;
+	#
+	# Under zlib 1.3.1 that name existed by accident, as the *shared*
+	# import library (1.3.1 named the DLL target zlib; 1.3.2 renamed it to
+	# z). So the Windows build has been linking zlib dynamically all along,
+	# and turning the DLL off is what finally made the missing name visible
+	# as LNK1181: cannot open input file 'zlib.lib'.
+	#
+	# Provide both spellings from the static archive: zlib.lib is what
+	# FFmpeg links, z.lib is what the generic -l handling in the CMake
+	# description below resolves.
+	ensure_msvc_lib_name z zs zlibstatic zlib
+	ensure_msvc_lib_name zlib zs zlibstatic z
 
 	# zconf.h.cmakein still carries an autoconf-era block:
 	#
@@ -604,9 +643,24 @@ build_ffmpeg() {
 	# the only thing that distinguishes a missing library from one whose
 	# name or link order the toolchain got wrong.
 	if ! (cd "${ff}" && ./configure "${args[@]}"); then
+		local cfglog="${ff}/ffbuild/config.log"
 		echo
+		# A tail alone is not enough. Autodetected libraries are probed
+		# early and configure only dies about them in a sweep at the very
+		# end ("$lib requested but not found"), so by the time it fails
+		# the probe that actually explains it is a thousand lines above
+		# the tail and nothing in the visible output names a cause.
+		echo "---- probes for the libraries we require ----" >&2
+		local l
+		for l in zlib mbedtls libsrt librist ffnvcodec; do
+			echo "== ${l} ==" >&2
+			grep -n -B2 -A25 \
+				-e "check_pkg_config ${l} " \
+				-e "check_lib ${l} " \
+				"${cfglog}" >&2 || echo "(no probe logged)" >&2
+		done
 		echo "---- tail of ffbuild/config.log ----" >&2
-		tail -60 "${ff}/ffbuild/config.log" >&2 || true
+		tail -60 "${cfglog}" >&2 || true
 		exit 1
 	fi
 

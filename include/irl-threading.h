@@ -88,6 +88,16 @@ static inline void irl_cond_wait(irl_cond_t *c, irl_mutex_t *m)
 	SleepConditionVariableCS(c, m, INFINITE);
 }
 
+/* Wait until signalled or `timeout_ms` elapses. Spurious and early wakeups
+ * are permitted on every backend, so callers must re-check their predicate
+ * and recompute the remaining time rather than assume the full interval
+ * passed. */
+static inline void irl_cond_timedwait(irl_cond_t *c, irl_mutex_t *m,
+				      uint32_t timeout_ms)
+{
+	SleepConditionVariableCS(c, m, (DWORD)timeout_ms);
+}
+
 static inline void irl_cond_signal(irl_cond_t *c)
 {
 	WakeConditionVariable(c);
@@ -150,6 +160,8 @@ static inline void irl_thread_join(irl_thread_t *t)
 #else /* !_WIN32 */
 
 #include <pthread.h>
+#include <stdint.h>
+#include <time.h>
 
 typedef pthread_mutex_t irl_mutex_t;
 typedef pthread_cond_t irl_cond_t;
@@ -177,7 +189,24 @@ static inline void irl_mutex_unlock(irl_mutex_t *m)
 
 static inline int irl_cond_init(irl_cond_t *c)
 {
+#if defined(__APPLE__)
+	/* macOS has no pthread_condattr_setclock. Its timed wait below is
+	 * pthread_cond_timedwait_relative_np, which takes an interval rather
+	 * than a deadline and so is already immune to clock changes. */
 	return pthread_cond_init(c, NULL);
+#else
+	/* Bind the condvar to CLOCK_MONOTONIC. pthread_cond_timedwait takes an
+	 * absolute deadline against the condvar's clock, and the default is
+	 * CLOCK_REALTIME — an NTP step or a manual clock change would then
+	 * stretch or collapse a video pacing wait. */
+	pthread_condattr_t attr;
+	if (pthread_condattr_init(&attr) != 0)
+		return pthread_cond_init(c, NULL);
+	pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+	int ret = pthread_cond_init(c, &attr);
+	pthread_condattr_destroy(&attr);
+	return ret;
+#endif
 }
 
 static inline void irl_cond_destroy(irl_cond_t *c)
@@ -188,6 +217,31 @@ static inline void irl_cond_destroy(irl_cond_t *c)
 static inline void irl_cond_wait(irl_cond_t *c, irl_mutex_t *m)
 {
 	pthread_cond_wait(c, m);
+}
+
+/* Wait until signalled or `timeout_ms` elapses. Spurious and early wakeups
+ * are permitted on every backend, so callers must re-check their predicate
+ * and recompute the remaining time rather than assume the full interval
+ * passed. */
+static inline void irl_cond_timedwait(irl_cond_t *c, irl_mutex_t *m,
+				      uint32_t timeout_ms)
+{
+#if defined(__APPLE__)
+	struct timespec rel;
+	rel.tv_sec = (time_t)(timeout_ms / 1000u);
+	rel.tv_nsec = (long)(timeout_ms % 1000u) * 1000000L;
+	pthread_cond_timedwait_relative_np(c, m, &rel);
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	ts.tv_sec += (time_t)(timeout_ms / 1000u);
+	ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+	if (ts.tv_nsec >= 1000000000L) {
+		ts.tv_sec += 1;
+		ts.tv_nsec -= 1000000000L;
+	}
+	pthread_cond_timedwait(c, m, &ts);
+#endif
 }
 
 static inline void irl_cond_signal(irl_cond_t *c)

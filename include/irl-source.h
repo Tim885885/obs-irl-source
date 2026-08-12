@@ -90,11 +90,90 @@ struct irl_source;
  * buffer capacity (4x buffer_max_ms) or writes would drop old data. */
 #define IRL_BLEED_PACE_FILL_MS 1000
 
+/* Concealment inflates the audio->OBS playout offset with no bounded
+ * recovery once primed (see irl_audio_maybe_reanchor_offset). This far
+ * past the primed baseline the accumulated latency is treated as
+ * unrecoverable by the speed-drain and reclaimed with one declared
+ * re-anchor. Set above the worst normal buffer swing (buffer_max is
+ * only ~200ms over target) so ordinary adaptive-speed excursions
+ * never trip it; only a real outage's worth of concealment does.
+ *
+ * Lives here rather than next to its use in receiver-audio.c because the
+ * video lead threshold below is expressed in terms of it. */
+#define AUDIO_OFFSET_REANCHOR_MARGIN_MS 400
+
+/* Reporting threshold for the video output lead.
+ *
+ * libobs schedules async video itself: obs_source_output_video() queues the
+ * frame and ready_async_frame() releases it once the queue's play head
+ * (last_frame_ts, which advances at wall-clock rate) reaches its timestamp.
+ * At MAX_ASYNC_FRAMES (30) queued frames cache_video() drops the incoming
+ * frame, throws the whole queue away and resets last_frame_ts, silently.
+ *
+ * What lands in that queue is the *growth* in lead since the play head last
+ * anchored, not the lead itself — a large steady lead queues nothing. This
+ * threshold is therefore a reporting aid, not a limit that gets enforced: an
+ * earlier version clamped the lead against it and, because it compared the
+ * absolute lead to the configured target rather than measuring growth, held
+ * video half a second ahead of audio on a stream whose lead was merely large
+ * and steady.
+ *
+ * The budget is expressed in frames because that is what libobs counts: the
+ * same 400ms is 12 frames at 30fps and 48 at 120fps. Floored at the audio
+ * re-anchor margin, below which a lead is still within what concealment can
+ * legitimately have added.
+ */
+#define IRL_OBS_ASYNC_FRAME_BUDGET 24
+#define IRL_VIDEO_LEAD_WARN_INTERVAL_NS 10000000000ULL
+
+/* Bounds on the measured frame interval (250fps..10fps) and the estimate
+ * used before enough frames have arrived to measure one. */
+#define IRL_VIDEO_INTERVAL_MIN_NS 4000000LL
+#define IRL_VIDEO_INTERVAL_MAX_NS 100000000LL
+#define IRL_VIDEO_INTERVAL_DEFAULT_NS 33333333LL
+
+/* Video output pacing.
+ *
+ * Video PTS is mapped through the audio playout offset for lip sync, which
+ * puts each frame's correct display moment roughly one audio-buffer ahead of
+ * now. Handing libobs a frame that early makes libobs hold it, and libobs
+ * throws its whole async queue away past 30 held frames. So the plugin keeps
+ * the frame itself and hands it over when it is due, the way OBS's own media
+ * source paces (mp_media_sleep in shared/media-playback). libobs then holds
+ * about one frame, and its 30-frame limit stops being reachable at any lead
+ * or frame rate.
+ *
+ * Holding the frames is the cost: an N-millisecond lead means N milliseconds
+ * of decoded video in memory, which is unavoidable — libobs was storing the
+ * same thing, just capped and silently discarded. Bounded two ways, since
+ * frame count alone means nothing across resolutions: whichever of the frame
+ * and byte ceilings binds first. Past either, frames are emitted before they
+ * are due, which is exactly the old behaviour, and counted so it is visible.
+ */
+#define IRL_VIDEO_PACING_MAX_FRAMES 512
+#define IRL_VIDEO_PACING_MAX_BYTES (192u * 1024u * 1024u)
+/* Emit rather than sleep again when this close to due: another wakeup costs
+ * more than the timing error it would remove. */
+#define IRL_VIDEO_PACING_SLACK_NS 1000000LL
+/* Ceiling on a single pacing sleep, so a clear or a shutdown is never left
+ * waiting on a frame that is due far in the future. */
+#define IRL_VIDEO_PACING_MAX_WAIT_MS 50
+
 /* Abort a blocking read/connect through the FFmpeg interrupt callback
  * after this long without progress. A dead-but-open connection (uplink
  * loss in a dead zone) otherwise hangs av_read_frame forever with no
  * reconnect. Connect plus stream probe normally completes in under 3s. */
 #define IRL_IO_STALL_TIMEOUT_US 10000000ULL
+
+/* One frame waiting for its moment. `due_ns` is the OBS-clock timestamp the
+ * PTS mapping produced, sampled once when the frame was decoded — the same
+ * sampling point the un-paced path used — so pacing does not change what
+ * timestamp a frame gets, only when it is handed over. */
+struct irl_pacing_frame {
+	AVFrame *frame;
+	uint64_t due_ns;
+	size_t bytes;
+};
 
 /* ── Source configuration ─────────────────────────────────── */
 
@@ -150,8 +229,9 @@ struct irl_source {
 	 * Decouples the GPU→CPU frame transfer and format conversion
 	 * from the receiver thread so a GPU stall cannot starve audio
 	 * decode. Depth stays small because queued HW frames pin
-	 * decoder surface-pool entries (matched by extra_hw_frames at
-	 * decoder open). Queued frame->pts is in nanoseconds; the
+	 * decoder surface-pool entries (covered by extra_hw_frames at
+	 * decoder open, which budgets this queue plus the two frames
+	 * in flight around it). Queued frame->pts is in nanoseconds; the
 	 * receiver converts before queueing because it may close
 	 * fmt_ctx while frames are still in flight. */
 #define IRL_VIDEO_QUEUE_SIZE 4
@@ -161,6 +241,40 @@ struct irl_source {
 	int video_queue_head;
 	int video_queue_count;
 	uint64_t video_queue_drops;
+	/* Decoder surfaces this plugin pins at once, for checking the
+	 * extra_hw_frames budget against reality rather than against a
+	 * reading of the code: frames sitting in the queue plus the one the
+	 * video thread has popped and is converting. The frame the decoder
+	 * has just handed the receiver thread is not counted (it lives on
+	 * the other thread and is unref'd immediately), so the pool
+	 * requirement is this peak plus one. Cumulative for the source —
+	 * a two-hour stream's high-water mark is the interesting number.
+	 * Both guarded by video_queue_lock. */
+	int video_in_flight;
+	int video_pinned_peak;
+
+	/* Pacing queue: decoded frames in system memory, waiting for their
+	 * due time. Video-thread-private — the receiver thread never touches
+	 * it, and a clear is routed through video_clear_pending, which the
+	 * video thread consumes — so unlike video_queue above it needs no
+	 * lock. Entries hold no decoder surfaces: irl_video_to_sysmem()
+	 * copies out of the hardware pool precisely so this queue can be
+	 * deep. video_pacing_* are read for stats without the lock, like
+	 * video_queue_drops. */
+	struct irl_pacing_frame pacing_queue[IRL_VIDEO_PACING_MAX_FRAMES];
+	int pacing_head;
+	int pacing_count;
+	size_t pacing_bytes;
+	int pacing_peak;
+	uint64_t pacing_overflows;
+
+	/* Published copies of the four above, mirrored under
+	 * video_queue_lock once per pacing cycle so the stats line on the
+	 * receiver thread has something synchronised to read. */
+	int video_pacing_now;
+	int video_pacing_peak;
+	size_t video_pacing_bytes;
+	uint64_t video_pacing_overflows;
 	/* Set by the receiver thread on disconnect, consumed by the video
 	 * thread. Guarded by video_queue_lock. The clear has to run on the
 	 * video thread so it cannot be undone by a frame that was already
@@ -208,6 +322,11 @@ struct irl_source {
 	bool video_ts_init;
 	uint64_t video_sys_base;  /* os_gettime_ns() at first frame */
 	int64_t video_pts_base;   /* stream PTS at first frame (in ns) */
+	/* Previous decoded PTS, receiver-thread-owned; feeds the frame
+	 * interval EMA. */
+	int64_t video_prev_pts_ns;
+	/* Throttle for the lead-cap warning, video-thread-owned. */
+	uint64_t video_lead_warn_time_ns;
 
 	/* Audio output clock.  OBS timestamps are a pure sample
 	 * counter anchored once at prime time:
@@ -251,6 +370,19 @@ struct irl_source {
 	/* Stream PTS tracking for A/V sync and re-sync mode */
 	int64_t latest_audio_stream_pts_ns;
 	int64_t latest_video_stream_pts_ns;
+
+	/* Video lead diagnostics, all guarded by audio_state_lock.
+	 *
+	 * video_frame_interval_ns is an EMA of decoded PTS deltas, written
+	 * by the receiver thread and read by the video thread to estimate
+	 * how many frames a given lead parks in the libobs async queue.
+	 * video_lead_ns is the lead the PTS mapping asked for before the
+	 * cap (the uncapped value is the diagnostic: it shows the ratchet),
+	 * written by the video thread and read by the OBS thread. */
+	int64_t video_frame_interval_ns;
+	int64_t video_lead_ns;
+	int64_t video_lead_peak_ns;
+	uint64_t video_lead_excess;
 
 	/* Latest audio already queued to OBS, in OBS clock domain.
 	 * Used to align video to actual audio playout instead of
@@ -297,6 +429,26 @@ struct irl_source {
 	 * not reset the decoder state (losing reference frames). */
 	int audio_decode_errors;
 	int video_decode_errors;
+	/* Detection of a drain that cannot win: the audio thread owns these. */
+	uint64_t audio_drain_stuck_since_us;
+	int audio_drain_stuck_fill_ms;
+	uint64_t audio_drain_warn_time_us;
+	/* Jitter-buffer high-water mark, same sampling argument as
+	 * video_lead_peak_ns: the backlog excursion that drives everything
+	 * here is transient, and `buf` at log time usually misses it. */
+	int audio_fill_peak_ms;
+	/* avcodec_send_packet() returned EAGAIN, meaning the decoder did not
+	 * accept the packet and it must be resent after draining output.
+	 * Rare when the frame pool is adequately sized, which is exactly why
+	 * a non-zero count is worth seeing: it is the signal that decoder
+	 * surfaces are exhausted. */
+	uint64_t video_pkt_eagain;
+	uint64_t audio_pkt_eagain;
+	/* Packets still refused after the drain-and-resend retry, and so
+	 * genuinely lost. This is the number that costs picture quality;
+	 * the eagain counters above only say the condition was hit. */
+	uint64_t video_pkt_dropped;
+	uint64_t audio_pkt_dropped;
 	uint64_t audio_decoder_flushes;
 	uint64_t video_decoder_flushes;
 	uint64_t audio_last_decoder_flush_time_us;
@@ -376,7 +528,10 @@ void irl_receiver_stop(struct irl_source *ctx);
 
 /* ── Video handler (video-handler.c) ──────────────────────── */
 
-void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame);
+void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
+			    uint64_t timestamp);
+AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame);
+uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame);
 bool irl_video_is_keyframe(const AVFrame *frame);
 
 /* ── PTS repair (pts-repair.c) ────────────────────────────── */

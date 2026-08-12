@@ -265,6 +265,65 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
 #define VIDEO_TS_CLAMP_NS 500000000LL   /* 500ms */
 #define VIDEO_TS_CAP_NS   200000000ULL  /* 200ms forward cap */
 
+/* Record how far ahead of wall clock the PTS mapping placed this frame.
+ *
+ * This used to clamp the lead as well, to keep libobs's async queue under its
+ * 30-frame wipe threshold. That clamp is gone: it acted on the lead's
+ * distance from the configured target, but what libobs actually queues is the
+ * lead's *growth* since its play head last anchored. A large but steady lead
+ * — a jitter buffer parked against the bleed ceiling because the sender
+ * over-delivers, say — queues nothing, and clamping it only shifted video
+ * ahead of audio. A 720p120 stream showed the cost plainly: a steady 1032ms
+ * lead clamped to 520ms, so half a second of permanent desync bought against
+ * a queue that was very likely one frame deep.
+ *
+ * The measurement stays, because it is the signal for whether video pacing
+ * (which removes libobs's scheduler from the path entirely, and with it this
+ * whole threshold) is doing its job. */
+static void video_record_lead(struct irl_source *ctx, int64_t ts, uint64_t now,
+			      int64_t frame_interval_ns)
+{
+	int64_t lead_ns = ts - (int64_t)now;
+
+	if (frame_interval_ns <= 0)
+		frame_interval_ns = IRL_VIDEO_INTERVAL_DEFAULT_NS;
+
+	/* The lead libobs could absorb if the whole of it were growth. */
+	int64_t budget_ns = IRL_OBS_ASYNC_FRAME_BUDGET * frame_interval_ns;
+	int64_t floor_ns = AUDIO_OFFSET_REANCHOR_MARGIN_MS * 1000000LL;
+	int64_t queue_safe_ns =
+		os_atomic_load_long(&ctx->config.buffer_target_ms) * 1000000LL +
+		(budget_ns < floor_ns ? floor_ns : budget_ns);
+
+	irl_mutex_lock(&ctx->audio_state_lock);
+	ctx->video_lead_ns = lead_ns;
+	/* Keep the high-water mark too: stats are sampled every 30s, and an
+	 * excursion that drains in ~17s is very likely to fall between two
+	 * samples. The instantaneous value alone would read healthy on
+	 * exactly the streams this is meant to diagnose. */
+	if (lead_ns > ctx->video_lead_peak_ns)
+		ctx->video_lead_peak_ns = lead_ns;
+	if (lead_ns > queue_safe_ns)
+		ctx->video_lead_excess++;
+	irl_mutex_unlock(&ctx->audio_state_lock);
+
+	if (lead_ns <= queue_safe_ns)
+		return;
+
+	/* Only a risk while the lead is still climbing — a steady lead of any
+	 * size is free — so this is a "watch this" line, not a fault. */
+	if (now - ctx->video_lead_warn_time_ns >=
+	    IRL_VIDEO_LEAD_WARN_INTERVAL_NS) {
+		ctx->video_lead_warn_time_ns = now;
+		blog(LOG_INFO,
+		     "[irl-source] Video lead %lldms is beyond what OBS can queue (%lldms at %.0ffps); "
+		     "harmless while it holds steady, but a rise of that size would make OBS drop queued video",
+		     (long long)(lead_ns / 1000000LL),
+		     (long long)(queue_safe_ns / 1000000LL),
+		     1000000000.0 / (double)frame_interval_ns);
+	}
+}
+
 /* Convert stream PTS to OBS nanosecond timestamp.
  *
  * When audio is active, treat queued audio as the master playout
@@ -275,7 +334,7 @@ static void setup_color_params(struct obs_source_frame *obs_frame,
  *
  * If no audio playout mapping exists yet, fall back to the older
  * video-only wall-clock anchor. */
-static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
+uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame)
 {
 	/* frame->pts is pre-converted to nanoseconds by the receiver
 	 * thread (see irl_video_queue_push); fmt_ctx must not be
@@ -287,10 +346,12 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 	uint64_t audio_obs_end_ts_ns;
 	int64_t audio_buffered_end_pts_ns;
 	int startup_warmup_ms;
+	int64_t frame_interval_ns;
 	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_obs_end_ts_ns = ctx->latest_audio_obs_end_ts_ns;
 	audio_buffered_end_pts_ns = ctx->latest_audio_buffered_end_pts_ns;
 	startup_warmup_ms = ctx->startup_audio_warmup_remaining_ms;
+	frame_interval_ns = ctx->video_frame_interval_ns;
 	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
@@ -300,6 +361,7 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 				  audio_buffered_end_pts_ns);
 		if (mapped < 0)
 			mapped = 0;
+		video_record_lead(ctx, mapped, now, frame_interval_ns);
 		return (uint64_t)mapped;
 	}
 
@@ -337,71 +399,62 @@ static uint64_t frame_timestamp(struct irl_source *ctx, const AVFrame *frame)
 			computed += (uint64_t)audio_lead_ns;
 	}
 
+	video_record_lead(ctx, (int64_t)computed, now, frame_interval_ns);
 	return computed;
 }
 
 /* ── Video output ─────────────────────────────────────────── */
 
-void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
+/* Bring a decoded frame into system memory, releasing any decoder surface it
+ * held. Returns a new reference the caller owns, or NULL.
+ *
+ * This deliberately does not use av_hwframe_map(AV_HWFRAME_MAP_READ), which
+ * earlier gave VAAPI and VideoToolbox a zero-copy CPU view. A mapped frame
+ * still pins the surface it maps, and pacing holds frames for the whole
+ * output lead — hundreds of them at a high frame rate — so mapping would
+ * exhaust the decoder pool within a few frames of the buffer filling. The
+ * copy is what makes the surface reusable, so it is not optional here.
+ *
+ * On those two backends this costs one extra copy against the old path; on
+ * D3D11VA and CUDA, where the map always fell back to a copy anyway, nothing
+ * changes. */
+AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame)
 {
-	/* Hardware-decoded frames (NVDEC/D3D11VA/VAAPI/VideoToolbox) come
-	 * out on the GPU; we have to expose them to OBS as system memory.
-	 *
-	 * Try av_hwframe_map(AV_HWFRAME_MAP_READ) first: on backends that
-	 * can produce a CPU-readable view without a full download (VAAPI
-	 * vaDeriveImage, VideoToolbox IOSurface), this skips the
-	 * gpu->cpu copy entirely. On D3D11VA / CUDA the map call falls
-	 * back to a copy internally or fails, so we fall back to
-	 * av_hwframe_transfer_data which is the historical path.
-	 *
-	 * hw_map_ok caches the outcome so we don't keep paying for a
-	 * doomed map attempt every frame on platforms that can't map. */
-	AVFrame *sw_frame = NULL;
-	if (frame->hw_frames_ctx) {
-		sw_frame = av_frame_alloc();
-		if (!sw_frame)
-			return;
+	UNUSED_PARAMETER(ctx);
 
-		bool used_map = false;
-		if (ctx->hw_map_ok != 0) {
-			int ret = av_hwframe_map(sw_frame, frame,
-						 AV_HWFRAME_MAP_READ);
-			if (ret == 0) {
-				used_map = true;
-				if (ctx->hw_map_ok != 1) {
-					ctx->hw_map_ok = 1;
-					blog(LOG_INFO,
-					     "[irl-source] HW frame path: av_hwframe_map (zero-copy)");
-				}
-			} else {
-				av_frame_unref(sw_frame);
-				if (ctx->hw_map_ok != 0) {
-					ctx->hw_map_ok = 0;
-					char errbuf[AV_ERROR_MAX_STRING_SIZE];
-					av_strerror(ret, errbuf, sizeof(errbuf));
-					blog(LOG_INFO,
-					     "[irl-source] HW frame path: av_hwframe_transfer_data (map unsupported: %s)",
-					     errbuf);
-				}
-			}
+	AVFrame *out = av_frame_alloc();
+	if (!out)
+		return NULL;
+
+	if (!frame->hw_frames_ctx) {
+		/* Already system memory: take a reference so the pacing queue
+		 * owns its entries uniformly. */
+		if (av_frame_ref(out, frame) < 0) {
+			av_frame_free(&out);
+			return NULL;
 		}
-
-		if (!used_map) {
-			if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
-				av_frame_free(&sw_frame);
-				return;
-			}
-		}
-
-		sw_frame->pts = frame->pts;
-		sw_frame->colorspace = frame->colorspace;
-		sw_frame->color_range = frame->color_range;
-		sw_frame->color_trc = frame->color_trc;
-		sw_frame->color_primaries = frame->color_primaries;
-		sw_frame->flags = frame->flags;
-		frame = sw_frame;
+		return out;
 	}
 
+	if (av_hwframe_transfer_data(out, frame, 0) < 0) {
+		av_frame_free(&out);
+		return NULL;
+	}
+
+	out->pts = frame->pts;
+	out->colorspace = frame->colorspace;
+	out->color_range = frame->color_range;
+	out->color_trc = frame->color_trc;
+	out->color_primaries = frame->color_primaries;
+	out->flags = frame->flags;
+	return out;
+}
+
+/* Hand a system-memory frame to OBS with the timestamp pacing scheduled it
+ * for. `frame` must already have been through irl_video_to_sysmem(). */
+void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
+			    uint64_t timestamp)
+{
 	enum video_format obs_fmt = avpixfmt_to_obs(frame->format);
 
 	/* Negative linesize means the frame is laid out bottom-up. OBS's
@@ -438,11 +491,8 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		size_t need = y_size + uv_size;
 		if (need > ctx->sws_nv12_buf_capacity) {
 			uint8_t *next = realloc(ctx->sws_nv12_buf, need);
-			if (!next) {
-				if (sw_frame)
-					av_frame_free(&sw_frame);
+			if (!next)
 				return;
-			}
 			ctx->sws_nv12_buf = next;
 			ctx->sws_nv12_buf_capacity = need;
 		}
@@ -451,11 +501,8 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 					  ctx->sws_nv12_buf + y_size};
 		int dst_strides[2] = {frame->width, frame->width};
 
-		if (!irl_convert_to_nv12(ctx, frame, dst_planes, dst_strides)) {
-			if (sw_frame)
-				av_frame_free(&sw_frame);
+		if (!irl_convert_to_nv12(ctx, frame, dst_planes, dst_strides))
 			return;
-		}
 
 		struct obs_source_frame obs_frame = {0};
 		obs_frame.width = frame->width;
@@ -465,12 +512,10 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 		obs_frame.data[1] = dst_planes[1];
 		obs_frame.linesize[0] = dst_strides[0];
 		obs_frame.linesize[1] = dst_strides[1];
-		obs_frame.timestamp = frame_timestamp(ctx, frame);
+		obs_frame.timestamp = timestamp;
 		setup_color_params(&obs_frame, frame, VIDEO_FORMAT_NV12);
 
 		obs_source_output_video(ctx->source, &obs_frame);
-		if (sw_frame)
-			av_frame_free(&sw_frame);
 		return;
 	}
 
@@ -479,7 +524,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	obs_frame.width = frame->width;
 	obs_frame.height = frame->height;
 	obs_frame.format = obs_fmt;
-	obs_frame.timestamp = frame_timestamp(ctx, frame);
+	obs_frame.timestamp = timestamp;
 	setup_color_params(&obs_frame, frame, obs_fmt);
 
 	for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
@@ -491,6 +536,4 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame)
 	}
 
 	obs_source_output_video(ctx->source, &obs_frame);
-	if (sw_frame)
-		av_frame_free(&sw_frame);
 }
