@@ -303,9 +303,23 @@ build_zlib() {
 		exit 1
 	fi
 
-	# FFmpeg asks for z.lib. zlib 1.3.2 names the MSVC static output zs
-	# (1.3.1 called it zlibstatic), so both spellings are candidates.
+	# FFmpeg's MSVC flag translator hardcodes -lz to zlib.lib rather than
+	# z.lib like every other -l name:
+	#
+	#     -lz)   echo zlib.lib ;;
+	#     -l*)   echo ${flag#-l}.lib ;;
+	#
+	# Under zlib 1.3.1 that name existed by accident, as the *shared*
+	# import library (1.3.1 named the DLL target zlib; 1.3.2 renamed it to
+	# z). So the Windows build has been linking zlib dynamically all along,
+	# and turning the DLL off is what finally made the missing name visible
+	# as LNK1181: cannot open input file 'zlib.lib'.
+	#
+	# Provide both spellings from the static archive: zlib.lib is what
+	# FFmpeg links, z.lib is what the generic -l handling in the CMake
+	# description below resolves.
 	ensure_msvc_lib_name z zs zlibstatic zlib
+	ensure_msvc_lib_name zlib zs zlibstatic z
 
 	# zconf.h.cmakein still carries an autoconf-era block:
 	#
