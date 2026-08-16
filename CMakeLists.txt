@@ -396,6 +396,30 @@ endif()
 # ── C standard ───────────────────────────────────────────────
 target_compile_features(obs-irl-source PRIVATE c_std_11)
 
+# glibc hides PTHREAD_MUTEX_ERRORCHECK and pthread_mutexattr_settype() behind
+# __USE_UNIX98, which a strict -std=c11 build does not define.  CMake asks for
+# gnu11 by default, so this only bites when C extensions are turned off — pin
+# the visibility rather than depend on that default.  macOS and the BSDs
+# declare both unconditionally, so they need nothing.
+if(UNIX AND NOT APPLE)
+    target_compile_definitions(obs-irl-source PRIVATE _GNU_SOURCE)
+endif()
+
+# ── Checked locks ────────────────────────────────────────────
+# Turn a lock-contract violation (a nested acquire, or an unlock by a thread
+# that does not hold the mutex) into an immediate abort naming the offending
+# line, instead of a hung stream that only reproduces on POSIX.  See the
+# header comment in include/irl-threading.h.  Costs a mutex type change and
+# a branch per lock, so it is a development aid rather than a shipping mode.
+option(IRL_CHECKED_LOCKS "Abort on lock-contract violations (dev builds)" OFF)
+target_compile_definitions(obs-irl-source PRIVATE
+    $<$<CONFIG:Debug>:IRL_CHECKED_LOCKS>
+)
+if(IRL_CHECKED_LOCKS)
+    target_compile_definitions(obs-irl-source PRIVATE IRL_CHECKED_LOCKS)
+    message(STATUS "obs-irl-source: checked locks enabled")
+endif()
+
 # ── Compiler warnings ────────────────────────────────────────
 if(MSVC)
     target_compile_options(obs-irl-source PRIVATE /W4 /wd4100)

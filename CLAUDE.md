@@ -42,6 +42,8 @@ cmake --build build --parallel
 
 Output: `build/obs-irl-source.so` (Linux/macOS) or `build/RelWithDebInfo/obs-irl-source.dll` (Windows).
 
+`-DIRL_CHECKED_LOCKS=ON` (also automatic in Debug builds) makes a lock-contract violation abort on the spot, naming the offending file and line, instead of hanging the stream. Worth using whenever you touch the threading model: it is the difference between "OBS froze" and "src/receiver-audio.c:766 took a lock its caller already held". See the header comment in `include/irl-threading.h`. Development only — the check has no recovery path, so it stops the process.
+
 `-DIRL_BUNDLED_FFMPEG=OFF` falls back to linking a system or obs-deps FFmpeg. That path still works for a quick compile check, but it reintroduces the per OBS line binding the bundled stack exists to remove, so it is not what releases use.
 
 `scripts/verify-plugin.sh` is not optional polish. It asserts the two properties that make the bundled stack correct and that a successful compile does not prove: that the binary carries no `libav*` dependency, and that it exports nothing but `obs_module_*`. CI runs it (and a `dumpbin` equivalent on Windows) on every build.
