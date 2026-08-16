@@ -637,16 +637,15 @@ static void irl_audio_maybe_reanchor_offset(struct irl_source *ctx,
 	    ctx->audio_buf.target_ms)
 		return;
 
-	/* Lock order note: fill query above takes and releases the buffer
-	 * mutex on its own; the state lock below is never held across it. */
-	irl_mutex_lock(&ctx->audio_state_lock);
+	/* audio_state_lock is already held (see irl_pump_audio_once). The
+	 * fill query above takes and releases the buffer mutex underneath it,
+	 * which is the documented order (state lock, then buffer mutex). */
 	ctx->audio_out_anchor_ns = now + chunk_ns;
 	ctx->audio_out_samples = 0;
 	ctx->latest_audio_obs_end_ts_ns = 0;
 	ctx->latest_audio_buffered_end_pts_ns = 0;
 	ctx->audio_playout_offset_baseline_set = false;
 	ctx->audio_conceal_fade_pending = true;
-	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	ctx->audio_offset_reanchors++;
 	ctx->audio_quality_events++;
@@ -704,6 +703,10 @@ static void audio_check_drain_progress(struct irl_source *ctx, int fill_ms,
 
 /* ── Pump ─────────────────────────────────────────────────── */
 
+/* Caller holds audio_state_lock for the whole call (irl_audio_thread). See
+ * the declaration in receiver-internal.h: nothing on this path may re-take
+ * it. Buffer-mutex calls (peek/read/fill) nest underneath it, which is the
+ * documented lock order. */
 bool irl_pump_audio_once(struct irl_source *ctx)
 {
 	bool low_latency = ctx->config.low_latency_audio;
@@ -758,15 +761,13 @@ bool irl_pump_audio_once(struct irl_source *ctx)
 	int chunk_count = 0;
 	bool has_audio = audio_buffer_peek_state(&ctx->audio_buf, &peek,
 						 &fill_ms, &chunk_count);
-	/* The receiver thread reads this for the stats line, so publish it
-	 * under the shared timing lock like the rest of the cross-thread
-	 * state. peek_state released the buffer mutex before returning, so
-	 * nothing is nested here and the documented order (audio_state_lock
-	 * before the buffer mutex) still holds. */
-	irl_mutex_lock(&ctx->audio_state_lock);
+	/* The receiver thread reads this for the stats line; audio_state_lock
+	 * is already held for the whole pump, so the publish is covered.
+	 * peek_state took and released the buffer mutex underneath it, which
+	 * is the documented order (audio_state_lock before the buffer
+	 * mutex). */
 	if (fill_ms > ctx->audio_fill_peak_ms)
 		ctx->audio_fill_peak_ms = fill_ms;
-	irl_mutex_unlock(&ctx->audio_state_lock);
 
 	if (has_audio &&
 	    maybe_trim_hidden_audio_backlog(ctx, fill_ms, chunk_count))
