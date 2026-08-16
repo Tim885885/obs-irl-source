@@ -31,7 +31,23 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 {
 	av_dict_set(opts, "probesize", "5000000", 0);
 	av_dict_set(opts, "analyzeduration", "5000000", 0);
-	av_dict_set(opts, "fflags", "+genpts+discardcorrupt", 0);
+	/* No +discardcorrupt. mpegts.c marks a PES corrupt on any continuity
+	 * counter discontinuity, and AVFMT_FLAG_DISCARD_CORRUPT then drops the
+	 * whole packet in demux.c before the decoder ever sees it. On a lossy
+	 * IRL uplink that silently deletes video: a 1080p frame spans ~100+ TS
+	 * packets while an audio frame is one, so a per-packet loss rate too
+	 * small to dent audio takes out most video frames. Measured on a
+	 * report of "stuck at 15-20fps": audio ran at 99% of real time while
+	 * decoded video sat at 12.8fps, with no decode errors and no drops
+	 * counted anywhere in the plugin, because the packets died in
+	 * libavformat. OBS's own media source does not set this flag.
+	 *
+	 * Damaged packets now reach the decoder, which conceals and keeps
+	 * emitting frames — that is what irl_handle_video_frame()'s
+	 * video_corrupted passthrough was written for, and it was unreachable
+	 * for demux-level corruption as long as this flag was set. Artifacts
+	 * beat a hole in the cadence. */
+	av_dict_set(opts, "fflags", "+genpts", 0);
 	/* http(s) inputs only; harmless no-ops elsewhere */
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
