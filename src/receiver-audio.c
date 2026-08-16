@@ -928,9 +928,9 @@ void irl_handle_audio_frame(struct irl_source *ctx, AVFrame *frame)
 				&ctx->audio_buf, out_rate, out_channels,
 				bytes_per_sample, target_ms, min_ms, max_ms);
 		} else {
-			audio_buffer_init(&ctx->audio_buf, out_rate,
-					  out_channels, bytes_per_sample,
-					  target_ms, min_ms, max_ms);
+			reconfigured = audio_buffer_init(
+				&ctx->audio_buf, out_rate, out_channels,
+				bytes_per_sample, target_ms, min_ms, max_ms);
 		}
 		ctx->audio_out_primed = false;
 		ctx->audio_out_anchor_ns = 0;

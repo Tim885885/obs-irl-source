@@ -402,9 +402,32 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	struct irl_source *ctx = bzalloc(sizeof(*ctx));
 	ctx->source = source;
 	ctx->current_speed = 1.0f;
-	irl_mutex_init(&ctx->audio_state_lock);
-	irl_mutex_init(&ctx->video_queue_lock);
-	irl_cond_init(&ctx->video_queue_cond);
+	/* Bail out rather than run on primitives that were never created:
+	 * every lock/unlock below this point would be undefined behaviour.
+	 * Nothing is registered with libobs yet, so freeing ctx and returning
+	 * NULL is the whole cleanup — libobs logs the failure and never calls
+	 * irl_source_destroy for a create that returned NULL. */
+	if (irl_mutex_init(&ctx->audio_state_lock) != 0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create audio state lock");
+		bfree(ctx);
+		return NULL;
+	}
+	if (irl_mutex_init(&ctx->video_queue_lock) != 0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create video queue lock");
+		irl_mutex_destroy(&ctx->audio_state_lock);
+		bfree(ctx);
+		return NULL;
+	}
+	if (irl_cond_init(&ctx->video_queue_cond) != 0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create video queue condition variable");
+		irl_mutex_destroy(&ctx->video_queue_lock);
+		irl_mutex_destroy(&ctx->audio_state_lock);
+		bfree(ctx);
+		return NULL;
+	}
 
 	config_load(&ctx->config, settings);
 	apply_async_audio_mode(ctx);

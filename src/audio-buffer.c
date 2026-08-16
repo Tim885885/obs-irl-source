@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <util/base.h>
 #include <util/bmem.h>
 
 #include "../include/audio-buffer.h"
@@ -160,11 +161,25 @@ static void pts_consume(struct audio_buffer *buf, size_t bytes_consumed)
 
 /* ── Public API ───────────────────────────────────────────── */
 
-void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
+bool audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 		       int bytes_per_sample, int target_ms, int min_ms,
 		       int max_ms)
 {
 	memset(buf, 0, sizeof(*buf));
+
+	/* Initialise the lock before publishing buf->data: stats readers
+	 * (e.g. proc_handler) gate locking on buf->data != NULL, so the
+	 * mutex must already be live when data becomes visible.
+	 *
+	 * It also has to happen before sample_rate is set, which is what
+	 * audio_buffer_free() reads as its "init ran" marker: leaving the
+	 * struct zeroed here keeps free() from destroying a mutex that was
+	 * never created. */
+	if (irl_mutex_init(&buf->lock) != 0) {
+		blog(LOG_ERROR,
+		     "[irl-source] Failed to create audio buffer lock");
+		return false;
+	}
 
 	buf->sample_rate = sample_rate;
 	buf->channels = channels;
@@ -174,11 +189,6 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	buf->min_ms = min_ms;
 	buf->max_ms = max_ms;
 
-	/* Initialise the lock before publishing buf->data: stats readers
-	 * (e.g. proc_handler) gate locking on buf->data != NULL, so the
-	 * mutex must already be live when data becomes visible. */
-	irl_mutex_init(&buf->lock);
-
 	/* Allocate enough headroom that Max Buffer is not an audible hard
 	 * trim point. Old audio is dropped only by explicit recovery paths. */
 	buf->capacity = ms_to_bytes(buf, max_ms * 4);
@@ -187,6 +197,7 @@ void audio_buffer_init(struct audio_buffer *buf, int sample_rate, int channels,
 	buf->data = bzalloc(buf->capacity);
 	if (!buf->data)
 		buf->capacity = 0;
+	return true;
 }
 
 bool audio_buffer_reconfigure(struct audio_buffer *buf, int sample_rate,
