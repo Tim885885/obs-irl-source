@@ -29,6 +29,11 @@ void *irl_audio_thread(void *data)
 		bool pumped = false;
 		for (int i = 0; i < 16 && os_atomic_load_bool(&ctx->thread_active);
 		     i++) {
+			/* The whole pump runs under audio_state_lock, so
+			 * nothing it calls may take that lock again — the
+			 * mutex is not recursive and a nested acquire hangs
+			 * this thread, and with it the video thread waiting
+			 * behind it. */
 			irl_mutex_lock(&ctx->audio_state_lock);
 			bool ok = irl_pump_audio_once(ctx);
 			irl_mutex_unlock(&ctx->audio_state_lock);

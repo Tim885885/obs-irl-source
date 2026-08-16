@@ -42,6 +42,8 @@ cmake --build build --parallel
 
 Output: `build/obs-irl-source.so` (Linux/macOS) or `build/RelWithDebInfo/obs-irl-source.dll` (Windows).
 
+`-DIRL_CHECKED_LOCKS=ON` (also automatic in Debug builds) makes a lock-contract violation abort on the spot, naming the offending file and line, instead of hanging the stream. Worth using whenever you touch the threading model: it is the difference between "OBS froze" and "src/receiver-audio.c:766 took a lock its caller already held". See the header comment in `include/irl-threading.h`. Development only — the check has no recovery path, so it stops the process.
+
 `-DIRL_BUNDLED_FFMPEG=OFF` falls back to linking a system or obs-deps FFmpeg. That path still works for a quick compile check, but it reintroduces the per OBS line binding the bundled stack exists to remove, so it is not what releases use.
 
 `scripts/verify-plugin.sh` is not optional polish. It asserts the two properties that make the bundled stack correct and that a successful compile does not prove: that the binary carries no `libav*` dependency, and that it exports nothing but `obs_module_*`. CI runs it (and a `dumpbin` equivalent on Windows) on every build.
@@ -104,7 +106,7 @@ Buffer regulation happens through playback speed only, asymmetric like IRLToolki
 - **Main/OBS thread**: calls create, destroy, update, tick, get_properties, and the activate/deactivate/show/hide callbacks (used only when "Close Stream When Inactive" is on)
 - **Receiver thread**: owns demux/decode FFmpeg state. Writes to the audio buffer (mutex protected) and pushes decoded video frames (PTS pre-converted to nanoseconds) onto the video queue. Never blocks on GPU or OBS video delivery.
 - **Video thread**: pops the video queue, does the HW frame transfer, paces each frame to its due time, then converts (owns sws_ctx) and calls `obs_source_output_video`. Queue overflow drops the oldest frame (`video_queue_drops`). The pacing queue it holds those frames in needs no lock — the receiver thread never touches it, and a clear is routed through `video_clear_pending` — but its counters are mirrored under `video_queue_lock` for the stats line.
-- **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex).
+- **Audio thread**: drains the jitter buffer and submits audio to OBS via `obs_source_output_audio`, paced against the sample counter output clock. Shared timing state is protected by `audio_state_lock` (lock order: `audio_state_lock` before the buffer mutex). The thread takes `audio_state_lock` once around the whole of `irl_pump_audio_once`, so nothing reachable from the pump may take it again: the mutex is a plain non-recursive one, and a nested acquire hangs the audio thread and then the video thread queued behind it. Buffer-mutex calls (`audio_buffer_peek_state`, `audio_buffer_fill_ms_locked`, the reads) nest underneath it, which is the documented order.
 
 Config fields marked `/* hot */` in `struct irl_config` are written by `irl_source_update` while the worker threads run, so every cross-thread read goes through `os_atomic_load_long` / `os_atomic_load_bool` (not C11 `_Atomic`, which MSVC does not support without an experimental flag). The remaining fields are only written while the threads are stopped, where `irl_thread_create` and `irl_thread_join` supply the happens-before edge.
 

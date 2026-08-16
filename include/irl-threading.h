@@ -33,6 +33,47 @@
 
 #pragma once
 
+/* ── Checked locks ────────────────────────────────────────────
+ *
+ * Two of the plugin's locks carry contracts the compiler cannot see. The
+ * audio thread holds audio_state_lock across the whole of
+ * irl_pump_audio_once(), so nothing the pump reaches may take it again; the
+ * video thread waits on a condition variable under video_queue_lock, which
+ * needs that lock held exactly once. Breaking either hangs OBS with no
+ * diagnostic beyond a stalled stream.
+ *
+ * Worse, it does not hang everywhere. CRITICAL_SECTION is recursive, so a
+ * nested acquire is a no-op on Windows and a deadlock on Linux and macOS —
+ * the bug ships from a Windows desk and detonates on someone else's machine.
+ * That is exactly how the audio pump's double lock reached a release.
+ *
+ * A checked build turns the hang into an immediate, located abort: POSIX
+ * mutexes become PTHREAD_MUTEX_ERRORCHECK, where a re-acquire returns
+ * EDEADLK rather than blocking forever and an unlock by a thread that does
+ * not hold the mutex returns EPERM; Win32 reads CRITICAL_SECTION's own
+ * recursion count for the nested-acquire half of the same signal.
+ *
+ * Enabled by -DIRL_CHECKED_LOCKS=ON and in Debug builds (see CMakeLists.txt).
+ * It is a development aid, not a shipping mode: once a lock call has failed
+ * there is nothing to recover to, because the caller would run on
+ * unprotected state and its matching unlock would fail in turn. */
+#ifdef IRL_CHECKED_LOCKS
+
+#include <stdlib.h>
+#include <util/base.h>
+
+static inline void irl_lock_abort(const char *what, int code, const char *file,
+				  int line)
+{
+	blog(LOG_ERROR,
+	     "[irl-source] Lock contract violated at %s:%d: %s (code %d). "
+	     "See the threading model in CLAUDE.md",
+	     file, line, what, code);
+	abort();
+}
+
+#endif /* IRL_CHECKED_LOCKS */
+
 #ifdef _WIN32
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -70,6 +111,43 @@ static inline void irl_mutex_unlock(irl_mutex_t *m)
 {
 	LeaveCriticalSection(m);
 }
+
+#ifdef IRL_CHECKED_LOCKS
+/* RecursionCount is part of the public RTL_CRITICAL_SECTION layout and is
+ * incremented by the Enter below, so anything past 1 means this thread was
+ * already inside. */
+static inline void irl_mutex_lock_checked(irl_mutex_t *m, const char *file,
+					  int line)
+{
+	EnterCriticalSection(m);
+	if (m->RecursionCount > 1) {
+		irl_lock_abort("this thread already holds this lock",
+			       (int)m->RecursionCount, file, line);
+	}
+}
+
+/* Catches unlocking a section nobody holds. It does not catch unlocking one
+ * that a *different* thread holds: that needs an owner identity, and the only
+ * ones available are the undocumented OwningThread encoding or a field of our
+ * own — which would make sizeof(irl_mutex_t) depend on IRL_CHECKED_LOCKS,
+ * while the type is embedded by value in struct irl_source and struct
+ * audio_buffer. A mutex whose layout varies between translation units is the
+ * bug described at the top of this file; it is not worth re-creating for a
+ * debug aid. POSIX reports that case as EPERM.
+ *
+ * Reading RecursionCount unsynchronised races with other threads, but only
+ * ever toward a false negative: it cannot read 0 while this thread holds the
+ * section, so a correct build is never aborted. */
+static inline void irl_mutex_unlock_checked(irl_mutex_t *m, const char *file,
+					    int line)
+{
+	if (m->RecursionCount == 0) {
+		irl_lock_abort("unlock of a lock no thread holds", 0, file,
+			       line);
+	}
+	LeaveCriticalSection(m);
+}
+#endif /* IRL_CHECKED_LOCKS */
 
 static inline int irl_cond_init(irl_cond_t *c)
 {
@@ -159,6 +237,7 @@ static inline void irl_thread_join(irl_thread_t *t)
 
 #else /* !_WIN32 */
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <time.h>
@@ -169,7 +248,28 @@ typedef pthread_t irl_thread_t;
 
 static inline int irl_mutex_init(irl_mutex_t *m)
 {
+#ifdef IRL_CHECKED_LOCKS
+	/* No fallback to a default mutex if the attribute cannot be set: a
+	 * checked build that silently produced unchecked mutexes would report
+	 * a clean run while catching nothing.
+	 *
+	 * glibc gates PTHREAD_MUTEX_ERRORCHECK and pthread_mutexattr_settype()
+	 * on __USE_UNIX98, which a strict -std=c11 build does not define. The
+	 * build defines _GNU_SOURCE there (see CMakeLists.txt). */
+	pthread_mutexattr_t attr;
+	int ret = pthread_mutexattr_init(&attr);
+	if (ret != 0)
+		return ret;
+
+	ret = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
+	if (ret == 0)
+		ret = pthread_mutex_init(m, &attr);
+
+	pthread_mutexattr_destroy(&attr);
+	return ret;
+#else
 	return pthread_mutex_init(m, NULL);
+#endif
 }
 
 static inline void irl_mutex_destroy(irl_mutex_t *m)
@@ -186,6 +286,32 @@ static inline void irl_mutex_unlock(irl_mutex_t *m)
 {
 	pthread_mutex_unlock(m);
 }
+
+#ifdef IRL_CHECKED_LOCKS
+static inline void irl_mutex_lock_checked(irl_mutex_t *m, const char *file,
+					  int line)
+{
+	int ret = pthread_mutex_lock(m);
+	if (ret == EDEADLK) {
+		irl_lock_abort("this thread already holds this lock", ret,
+			       file, line);
+	} else if (ret != 0) {
+		irl_lock_abort("pthread_mutex_lock failed", ret, file, line);
+	}
+}
+
+static inline void irl_mutex_unlock_checked(irl_mutex_t *m, const char *file,
+					    int line)
+{
+	int ret = pthread_mutex_unlock(m);
+	if (ret == EPERM) {
+		irl_lock_abort("this thread does not hold this lock", ret,
+			       file, line);
+	} else if (ret != 0) {
+		irl_lock_abort("pthread_mutex_unlock failed", ret, file, line);
+	}
+}
+#endif /* IRL_CHECKED_LOCKS */
 
 static inline int irl_cond_init(irl_cond_t *c)
 {
@@ -266,3 +392,12 @@ static inline void irl_thread_join(irl_thread_t *t)
 }
 
 #endif /* _WIN32 */
+
+#ifdef IRL_CHECKED_LOCKS
+/* Function-like macros rather than checks inside irl_mutex_lock() itself, so
+ * the abort names the *caller's* file and line — the offending lock/unlock is
+ * the one thing a contributor needs to see, and it is never in this header.
+ * Both backends define the _checked helpers above. */
+#define irl_mutex_lock(m) irl_mutex_lock_checked((m), __FILE__, __LINE__)
+#define irl_mutex_unlock(m) irl_mutex_unlock_checked((m), __FILE__, __LINE__)
+#endif
