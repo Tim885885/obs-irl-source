@@ -151,7 +151,7 @@ struct irl_source;
  * are due, which is exactly the old behaviour, and counted so it is visible.
  */
 #define IRL_VIDEO_PACING_MAX_FRAMES 512
-#define IRL_VIDEO_PACING_MAX_BYTES (192u * 1024u * 1024u)
+#define IRL_VIDEO_PACING_MAX_BYTES (512u * 1024u * 1024u)
 /* Emit rather than sleep again when this close to due: another wakeup costs
  * more than the timing error it would remove. */
 #define IRL_VIDEO_PACING_SLACK_NS 1000000LL

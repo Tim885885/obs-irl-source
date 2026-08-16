@@ -79,7 +79,7 @@ A source you just added sizes itself to the canvas when its first frame arrives,
 |---|---|---|
 | URL | | Your pull URL. SRT, RTMP, or anything else FFmpeg can open |
 | Reconnect Delay | 2s | How long to wait between reconnect attempts |
-| Target Buffer | 120ms | How much audio cushion to hold. This is your main latency knob: higher rides out a worse connection, lower is snappier and less forgiving |
+| Target Buffer | 120ms | How much audio cushion to hold, 20ms to 2s. This is your main latency knob: higher rides out a worse connection, lower is snappier and less forgiving. If the stats show `underruns` climbing, this is the setting to raise — an underrun means the cushion ran dry, and the concealment that covers it delays video by the same amount to keep lip sync |
 | Adaptive Latency Control | On | Holds latency near your target by nudging playback speed (up to 2% slow, 5% fast) instead of dropping audio |
 | FFmpeg Options | | Extra options for the stream reader, `key1=val1 key2=val2` style. Use this to set the SRT `latency`, for example |
 | Hardware Decode | Auto | Let the GPU decode video. Auto picks whatever your machine supports, Off forces the CPU |

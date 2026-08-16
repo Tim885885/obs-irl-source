@@ -83,12 +83,23 @@ void *irl_receiver_thread(void *data)
 		 * buffer to drop audible data. */
 		if (ctx->audio_stream_idx >= 0 &&
 		    !ctx->config.low_latency_audio) {
-			int pace_ms =
-				(int)os_atomic_load_long(
-					&ctx->config.buffer_max_ms) *
-				3;
+			int buffer_max_ms = (int)os_atomic_load_long(
+				&ctx->config.buffer_max_ms);
+			int pace_ms = buffer_max_ms * 3;
 			if (pace_ms > IRL_BLEED_PACE_FILL_MS)
 				pace_ms = IRL_BLEED_PACE_FILL_MS;
+			/* The flat cap above is an absolute latency guard, but
+			 * it must never fall to where playback cannot prime:
+			 * priming waits for target + the OBS output lead, and a
+			 * ceiling below that stops the read loop before the
+			 * buffer ever reaches it, so the source would sit
+			 * silent forever. buffer_max is target + 200, so this
+			 * floor clears the prime threshold by ~220ms at every
+			 * target. Only binds above a ~700ms target, which is
+			 * why nothing hit it while the setting stopped at
+			 * 500ms. */
+			if (pace_ms < buffer_max_ms + 100)
+				pace_ms = buffer_max_ms + 100;
 			while (os_atomic_load_bool(&ctx->thread_active) &&
 			       audio_buffer_fill_ms_locked(&ctx->audio_buf) >
 				       pace_ms) {

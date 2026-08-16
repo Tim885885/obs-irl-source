@@ -60,8 +60,13 @@ obs_properties_t *irl_source_get_properties(void *data)
 
 	/* ── Audio Buffer ──────────────────────────────────── */
 
+	/* Up to 2s: IRL uplinks routinely stall for over a second (a field log
+	 * showed 1.7s gaps with 287 underruns at the 120ms default), and
+	 * riding those out is the only way to avoid the concealment that
+	 * inflates the A/V mapping and holds video back with it. The old 500ms
+	 * limit could not cover them. */
 	obs_properties_add_int(props, "buffer_target_ms",
-			       obs_module_text("Target Buffer (ms)"), 20, 500,
+			       obs_module_text("Target Buffer (ms)"), 20, 2000,
 			       10);
 	obs_properties_add_bool(props, "adaptive_speed",
 				obs_module_text("Adaptive Latency Control"));
