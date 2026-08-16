@@ -114,11 +114,8 @@ static inline void irl_mutex_unlock(irl_mutex_t *m)
 
 #ifdef IRL_CHECKED_LOCKS
 /* RecursionCount is part of the public RTL_CRITICAL_SECTION layout and is
- * incremented by the Enter above, so anything past 1 means this thread was
- * already inside. There is no matching unlock check: LeaveCriticalSection on
- * a section this thread does not own is undefined rather than reported, and
- * inferring ownership from the undocumented OwningThread encoding would risk
- * aborting a correct build. POSIX covers that half. */
+ * incremented by the Enter below, so anything past 1 means this thread was
+ * already inside. */
 static inline void irl_mutex_lock_checked(irl_mutex_t *m, const char *file,
 					  int line)
 {
@@ -129,11 +126,25 @@ static inline void irl_mutex_lock_checked(irl_mutex_t *m, const char *file,
 	}
 }
 
+/* Catches unlocking a section nobody holds. It does not catch unlocking one
+ * that a *different* thread holds: that needs an owner identity, and the only
+ * ones available are the undocumented OwningThread encoding or a field of our
+ * own — which would make sizeof(irl_mutex_t) depend on IRL_CHECKED_LOCKS,
+ * while the type is embedded by value in struct irl_source and struct
+ * audio_buffer. A mutex whose layout varies between translation units is the
+ * bug described at the top of this file; it is not worth re-creating for a
+ * debug aid. POSIX reports that case as EPERM.
+ *
+ * Reading RecursionCount unsynchronised races with other threads, but only
+ * ever toward a false negative: it cannot read 0 while this thread holds the
+ * section, so a correct build is never aborted. */
 static inline void irl_mutex_unlock_checked(irl_mutex_t *m, const char *file,
 					    int line)
 {
-	(void)file;
-	(void)line;
+	if (m->RecursionCount == 0) {
+		irl_lock_abort("unlock of a lock no thread holds", 0, file,
+			       line);
+	}
 	LeaveCriticalSection(m);
 }
 #endif /* IRL_CHECKED_LOCKS */
