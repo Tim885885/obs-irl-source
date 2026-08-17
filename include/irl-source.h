@@ -321,6 +321,17 @@ struct irl_source {
 	enum AVHWDeviceType hw_device_type;
 	int audio_stream_idx;
 	int video_stream_idx;
+	/* "This connection carries audio", published for the video thread.
+	 *
+	 * audio_stream_idx itself is receiver-thread state: it indexes
+	 * fmt_ctx->streams, the receiver thread rewrites both on every
+	 * reconnect, and nothing outside that thread can read either safely.
+	 * The video thread needs the fact, not the index — before the audio
+	 * playout mapping exists it still has to know whether to hold video
+	 * back for audio that is about to prime — so the fact is mirrored
+	 * here and goes through os_atomic_*, like the hot config fields. Set
+	 * wherever audio_stream_idx is assigned, and only there. */
+	volatile bool audio_stream_present;
 	bool using_hw_decode;
 	/* Tri-state: -1 = not yet attempted, 0 = map fails, falling back
 	 * to transfer_data, 1 = map succeeded at least once. Used to

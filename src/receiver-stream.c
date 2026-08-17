@@ -267,6 +267,7 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 	if (ctx->hw_device_ctx)
 		av_buffer_unref(&ctx->hw_device_ctx);
 	ctx->audio_stream_idx = -1;
+	os_atomic_store_bool(&ctx->audio_stream_present, false);
 	ctx->video_stream_idx = -1;
 	ctx->using_hw_decode = false;
 	ctx->hw_device_type = AV_HWDEVICE_TYPE_NONE;
@@ -326,6 +327,7 @@ bool irl_open_stream(struct irl_source *ctx)
 	}
 
 	ctx->audio_stream_idx = -1;
+	os_atomic_store_bool(&ctx->audio_stream_present, false);
 	ctx->video_stream_idx = -1;
 	ctx->hw_device_type = AV_HWDEVICE_TYPE_NONE;
 
@@ -363,6 +365,8 @@ bool irl_open_stream(struct irl_source *ctx)
 			ctx->audio_dec_ctx = open_decoder(ctx, s, false);
 			if (ctx->audio_dec_ctx) {
 				ctx->audio_stream_idx = (int)i;
+				os_atomic_store_bool(
+					&ctx->audio_stream_present, true);
 				blog(LOG_INFO,
 				     "[irl-source] Audio stream %u: %s %dHz %dch",
 				     i, avcodec_get_name(s->codecpar->codec_id),

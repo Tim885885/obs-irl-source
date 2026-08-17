@@ -354,8 +354,9 @@ uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame)
 	frame_interval_ns = ctx->video_frame_interval_ns;
 	irl_mutex_unlock(&ctx->audio_state_lock);
 
-	if (ctx->audio_stream_idx >= 0 && audio_obs_end_ts_ns != 0 &&
-	    audio_buffered_end_pts_ns > 0) {
+	/* No audio_stream_idx test: a published mapping already implies the
+	 * pump handed OBS a real chunk, so it implies the audio stream. */
+	if (audio_obs_end_ts_ns != 0 && audio_buffered_end_pts_ns > 0) {
 		int64_t mapped = (int64_t)pts_ns +
 				 ((int64_t)audio_obs_end_ts_ns -
 				  audio_buffered_end_pts_ns);
@@ -383,8 +384,12 @@ uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame)
 		computed = now + VIDEO_TS_CAP_NS;
 	}
 
-	/* Startup fallback before the audio playout mapping exists. */
-	if (ctx->audio_stream_idx >= 0) {
+	/* Startup fallback before the audio playout mapping exists. Here the
+	 * mapping cannot stand in for "there is audio" — the whole point is
+	 * that it does not exist yet — so this reads the atomic mirror the
+	 * receiver thread publishes rather than audio_stream_idx, which it
+	 * rewrites underneath us on every reconnect. */
+	if (os_atomic_load_bool(&ctx->audio_stream_present)) {
 		int64_t audio_lead_ns = 0;
 		if (audio_obs_end_ts_ns == 0) {
 			audio_lead_ns = (int64_t)startup_warmup_ms * 1000000LL;
