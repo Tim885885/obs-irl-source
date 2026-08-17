@@ -158,6 +158,11 @@ struct irl_source;
 /* Ceiling on a single pacing sleep, so a clear or a shutdown is never left
  * waiting on a frame that is due far in the future. */
 #define IRL_VIDEO_PACING_MAX_WAIT_MS 50
+/* How long the video thread keeps using the last audio playout offset after
+ * the published mapping goes away. Long enough to cover a re-anchor, which
+ * republishes on the pump's very next chunk (~21ms), and far short of the
+ * 2s reconnect delay, so a new connection never inherits the old epoch. */
+#define IRL_VIDEO_OFFSET_HOLD_NS 500000000ULL
 
 /* Abort a blocking read/connect through the FFmpeg interrupt callback
  * after this long without progress. A dead-but-open connection (uplink
@@ -165,12 +170,25 @@ struct irl_source;
  * reconnect. Connect plus stream probe normally completes in under 3s. */
 #define IRL_IO_STALL_TIMEOUT_US 10000000ULL
 
-/* One frame waiting for its moment. `due_ns` is the OBS-clock timestamp the
- * PTS mapping produced, sampled once when the frame was decoded — the same
- * sampling point the un-paced path used — so pacing does not change what
- * timestamp a frame gets, only when it is handed over. */
+/* One frame waiting for its moment.
+ *
+ * `pts_ns` is the frame's stream PTS; `due_ns` is where the audio playout
+ * offset currently places it on the OBS clock. The due time is re-derived
+ * from pts_ns every pacing cycle rather than frozen at intake, because the
+ * offset is a live quantity: the speed controller moves it continuously
+ * (a chunk played at +5% advances the OBS side by frames_out/rate and the
+ * stream side by in_frames/rate, so the offset shrinks by ~4.8% of that
+ * chunk), and a re-anchor steps it.
+ *
+ * A frozen due time meant a queued frame was scheduled against whatever the
+ * offset happened to be when it was decoded, and kept that schedule for its
+ * whole residence — so every reclaim the audio side performed left video
+ * behind by the reclaimed amount until the queue drained. Re-deriving is
+ * what puts video on the same latency-reclaim mechanism as the audio it is
+ * supposed to stay level with. */
 struct irl_pacing_frame {
 	AVFrame *frame;
+	int64_t pts_ns;
 	uint64_t due_ns;
 	size_t bytes;
 };
@@ -267,6 +285,15 @@ struct irl_source {
 	size_t pacing_bytes;
 	int pacing_peak;
 	uint64_t pacing_overflows;
+	/* Last audio playout offset the video thread saw, and when. Also
+	 * video-thread-private. A re-anchor zeroes the published mapping for
+	 * the one pump iteration it takes to rebuild it; rescheduling the
+	 * whole queue against the video-only fallback in that window would
+	 * move every frame onto a different clock, so the last good offset is
+	 * held instead. The hold expires well short of a reconnect, whose
+	 * fresh PTS epoch must not inherit the previous connection's offset. */
+	int64_t video_playout_offset_ns;
+	uint64_t video_playout_offset_time_ns;
 
 	/* Published copies of the four above, mirrored under
 	 * video_queue_lock once per pacing cycle so the stats line on the
@@ -546,6 +573,7 @@ void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
 			    uint64_t timestamp);
 AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame);
 uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame);
+bool irl_video_playout_offset(struct irl_source *ctx, int64_t *offset_ns);
 bool irl_video_is_keyframe(const AVFrame *frame);
 
 /* ── PTS repair (pts-repair.c) ────────────────────────────── */

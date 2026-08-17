@@ -202,6 +202,13 @@ static void reset_runtime_state(struct irl_source *ctx)
 	 * the video thread never got to is correct: the stop path decides for
 	 * itself whether the frame stays. */
 	ctx->video_clear_pending = false;
+	/* Same window, same reason: the video thread drops its cached playout
+	 * offset when it processes a clear, but a stop/start pair never gives
+	 * it one — and a restart that completes inside the cache's hold would
+	 * otherwise map the new stream's PTS epoch through the old stream's
+	 * offset. Safe to touch here for the same reason as the flag above. */
+	ctx->video_playout_offset_ns = 0;
+	ctx->video_playout_offset_time_ns = 0;
 	os_atomic_store_bool(&ctx->reconnecting, false);
 	irl_mutex_lock(&ctx->audio_state_lock);
 	audio_buffer_flush(&ctx->audio_buf);

@@ -96,6 +96,9 @@ static void pacing_push(struct irl_source *ctx, AVFrame *frame, uint64_t due_ns)
 	int tail = (ctx->pacing_head + ctx->pacing_count) %
 		   IRL_VIDEO_PACING_MAX_FRAMES;
 	ctx->pacing_queue[tail].frame = frame;
+	/* frame->pts is in nanoseconds here: the receiver thread rescaled it
+	 * in irl_handle_video_frame() before queueing. */
+	ctx->pacing_queue[tail].pts_ns = frame->pts;
 	ctx->pacing_queue[tail].due_ns = due_ns;
 	ctx->pacing_queue[tail].bytes = pacing_frame_bytes(frame);
 	ctx->pacing_bytes += ctx->pacing_queue[tail].bytes;
@@ -157,6 +160,34 @@ static void pacing_intake(struct irl_source *ctx)
 	}
 }
 
+/* Re-derive every queued frame's due time from the offset as it stands now.
+ *
+ * The audio side reclaims playout latency two ways, and both used to leave
+ * paced video behind for the depth of this queue. The speed controller moves
+ * the offset continuously — a chunk emitted at +5% advances the OBS end by
+ * frames_out/rate against a stream end that advanced by in_frames/rate — so a
+ * frame frozen at intake showed ~5% of its residence late for the whole drain.
+ * A re-anchor steps the offset outright, and video kept the pre-step schedule
+ * until the queue emptied.
+ *
+ * Rescheduling against one offset per cycle preserves the spacing between
+ * frames (their due times differ only by their PTS deltas) and moves the whole
+ * queue with the audio it is mapped to, so video rides the same drain instead
+ * of trailing it. */
+static void pacing_reschedule(struct irl_source *ctx)
+{
+	int64_t offset_ns;
+	if (ctx->pacing_count == 0 ||
+	    !irl_video_playout_offset(ctx, &offset_ns))
+		return;
+
+	for (int i = 0; i < ctx->pacing_count; i++) {
+		int idx = (ctx->pacing_head + i) % IRL_VIDEO_PACING_MAX_FRAMES;
+		int64_t due = ctx->pacing_queue[idx].pts_ns + offset_ns;
+		ctx->pacing_queue[idx].due_ns = due > 0 ? (uint64_t)due : 0;
+	}
+}
+
 /* Emit every frame whose moment has arrived. Over the ceilings the head goes
  * out early rather than being dropped: too-early video is what the un-paced
  * path did all the time, and it beats a hole in the picture. */
@@ -193,11 +224,19 @@ void *irl_video_thread(void *data)
 			 * the paced frames behind it must go too, or the
 			 * blank would be repainted a lead later. */
 			pacing_drain(ctx);
+			/* The offset belongs to the connection that just
+			 * ended; the next one brings its own PTS epoch. */
+			ctx->video_playout_offset_ns = 0;
+			ctx->video_playout_offset_time_ns = 0;
 			obs_source_output_video(ctx->source, NULL);
 			continue;
 		}
 
 		pacing_intake(ctx);
+		/* Before both the emit and the sleep below, so each cycle
+		 * schedules against the offset as it is now rather than as it
+		 * was when the frames were decoded. */
+		pacing_reschedule(ctx);
 		pacing_emit_due(ctx, os_gettime_ns());
 
 		irl_mutex_lock(&ctx->video_queue_lock);

@@ -403,6 +403,48 @@ uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame)
 	return computed;
 }
 
+/* The current stream-PTS → OBS-clock offset, for re-deriving the due time of
+ * frames already queued. Deliberately free of the side effects in
+ * irl_video_due_time() above — the lead stats, the warning log and the
+ * video-only fallback anchor all belong to a frame arriving, and running them
+ * again for every queued frame on every pacing cycle would report the queue
+ * rather than the stream.
+ *
+ * Returns false when there is no audio to slave to, or when the mapping has
+ * been gone long enough that holding it would be a guess; callers keep the
+ * due time the frame arrived with.
+ *
+ * Audio presence is read from the mapping fields rather than from
+ * audio_stream_idx, which the receiver thread rewrites on every reconnect and
+ * which nothing here could read without a race. The two are equivalent for
+ * this purpose: the pump is the only writer of those fields, it only ever
+ * publishes them for a real chunk it handed to OBS, and reset_runtime_state()
+ * zeroes both them and the cache below before a connection starts. A stream
+ * with no audio therefore never gets past the hold check. */
+bool irl_video_playout_offset(struct irl_source *ctx, int64_t *offset_ns)
+{
+	uint64_t obs_end;
+	int64_t buffered_end;
+	irl_mutex_lock(&ctx->audio_state_lock);
+	obs_end = ctx->latest_audio_obs_end_ts_ns;
+	buffered_end = ctx->latest_audio_buffered_end_pts_ns;
+	irl_mutex_unlock(&ctx->audio_state_lock);
+
+	uint64_t now = os_gettime_ns();
+	if (obs_end != 0 && buffered_end > 0) {
+		ctx->video_playout_offset_ns =
+			(int64_t)obs_end - buffered_end;
+		ctx->video_playout_offset_time_ns = now;
+	} else if (ctx->video_playout_offset_time_ns == 0 ||
+		   now - ctx->video_playout_offset_time_ns >
+			   IRL_VIDEO_OFFSET_HOLD_NS) {
+		return false;
+	}
+
+	*offset_ns = ctx->video_playout_offset_ns;
+	return true;
+}
+
 /* ── Video output ─────────────────────────────────────────── */
 
 /* Bring a decoded frame into system memory, releasing any decoder surface it
