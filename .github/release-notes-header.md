@@ -11,11 +11,11 @@ One archive per platform, and it works on OBS 32.1 and newer. The plugin bundles
 ### macOS (Apple Silicon)
 
 1. Close OBS.
-2. Extract the zip into `~/Library/Application Support/obs-studio/plugins/`.
+2. Extract the zip into `~/Library/Application Support/obs-studio/plugins/`. It contains an `obs-irl-source.plugin` bundle; if an `obs-irl-source` folder from an older release is still there, delete it (that flat layout is invisible to OBS on macOS).
 3. The binary is not signed or notarized, so clear the quarantine flag once:
 
    ```
-   xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-irl-source"
+   xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-irl-source.plugin"
    ```
 
 4. Start OBS.
