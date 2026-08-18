@@ -27,10 +27,21 @@ static bool url_has_scheme(const char *url, const char *scheme)
 }
 
 static void apply_demuxer_options(AVDictionary **opts, const char *url,
-				  const char *extra, int network_buffer_mb)
+				  const char *extra, int network_buffer_mb,
+				  bool fast_probe)
 {
-	av_dict_set(opts, "probesize", "5000000", 0);
-	av_dict_set(opts, "analyzeduration", "5000000", 0);
+	/* A reconnect probes fast: the previous session already showed what
+	 * the stream carries, and every probe byte is time the feed stays
+	 * dark after a `!fix`. irl_open_stream retries with the full probe
+	 * if the short one comes up missing a stream the last session had
+	 * (some encoders advertise audio late). */
+	if (fast_probe) {
+		av_dict_set(opts, "probesize", "1000000", 0);
+		av_dict_set(opts, "analyzeduration", "1000000", 0);
+	} else {
+		av_dict_set(opts, "probesize", "5000000", 0);
+		av_dict_set(opts, "analyzeduration", "5000000", 0);
+	}
 	/* No +discardcorrupt. mpegts.c marks a PES corrupt on any continuity
 	 * counter discontinuity, and AVFMT_FLAG_DISCARD_CORRUPT then drops the
 	 * whole packet in demux.c before the decoder ever sees it. On a lossy
@@ -349,11 +360,11 @@ static int interrupt_cb(void *opaque)
 	return 0;
 }
 
-bool irl_open_stream(struct irl_source *ctx)
+static bool open_stream_attempt(struct irl_source *ctx, bool fast_probe)
 {
 	AVDictionary *opts = NULL;
 	apply_demuxer_options(&opts, ctx->config.url, ctx->config.ffmpeg_options,
-			      ctx->config.network_buffer_mb);
+			      ctx->config.network_buffer_mb, fast_probe);
 
 	blog(LOG_INFO, "[irl-source] Connecting to: %s", ctx->config.url);
 
@@ -458,6 +469,45 @@ bool irl_open_stream(struct irl_source *ctx)
 				as->time_base.den);
 	}
 
+	return true;
+}
+
+bool irl_open_stream(struct irl_source *ctx)
+{
+	/* Reconnects to a stream this thread has already carried probe with
+	 * a fraction of the first-connect budget; the wall-clock cost of a
+	 * probe is dead air on the program feed. The short probe can miss a
+	 * stream some encoders advertise late, so a result thinner than the
+	 * previous session is thrown away and re-probed in full rather than
+	 * trusted. prev_had_* is cleared at receiver-thread start, so a
+	 * settings-forced restart (new URL, new options) always probes in
+	 * full. */
+	bool fast = ctx->prev_had_video || ctx->prev_had_audio;
+	if (fast) {
+		if (open_stream_attempt(ctx, true)) {
+			bool missing = (ctx->prev_had_video &&
+					ctx->video_stream_idx < 0) ||
+				       (ctx->prev_had_audio &&
+					ctx->audio_stream_idx < 0);
+			if (!missing) {
+				ctx->prev_had_video =
+					ctx->video_stream_idx >= 0;
+				ctx->prev_had_audio =
+					ctx->audio_stream_idx >= 0;
+				return true;
+			}
+			blog(LOG_INFO,
+			     "[irl-source] Fast probe missed a stream the previous session had (video=%d, audio=%d), re-probing in full",
+			     ctx->video_stream_idx, ctx->audio_stream_idx);
+			irl_close_ffmpeg(ctx);
+		}
+	}
+
+	if (!open_stream_attempt(ctx, false))
+		return false;
+
+	ctx->prev_had_video = ctx->video_stream_idx >= 0;
+	ctx->prev_had_audio = ctx->audio_stream_idx >= 0;
 	return true;
 }
 

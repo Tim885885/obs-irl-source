@@ -332,6 +332,13 @@ struct irl_source {
 	 * here and goes through os_atomic_*, like the hot config fields. Set
 	 * wherever audio_stream_idx is assigned, and only there. */
 	volatile bool audio_stream_present;
+	/* What the previous connection of this receiver thread carried, so
+	 * a reconnect can probe fast and detect when the short probe missed
+	 * a stream the last session had. Receiver-thread owned; survives
+	 * irl_close_ffmpeg, cleared at thread start so a settings-forced
+	 * restart probes in full. */
+	bool prev_had_video;
+	bool prev_had_audio;
 	bool using_hw_decode;
 	/* Tri-state: -1 = not yet attempted, 0 = map fails, falling back
 	 * to transfer_data, 1 = map succeeded at least once. Used to

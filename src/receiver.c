@@ -66,6 +66,12 @@ void *irl_receiver_thread(void *data)
 	blog(LOG_INFO, "[irl-source] Receiver thread started for: %s",
 	     ctx->config.url ? ctx->config.url : "(null)");
 
+	/* A new thread means a new stream configuration (create, or a
+	 * restart-forcing settings edit): nothing learned about the previous
+	 * stream applies, so the first connect always probes in full. */
+	ctx->prev_had_video = false;
+	ctx->prev_had_audio = false;
+
 	while (os_atomic_load_bool(&ctx->thread_active)) {
 		if (!ctx->fmt_ctx) {
 			if (!irl_open_stream(ctx)) {
