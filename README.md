@@ -52,9 +52,9 @@ Download from [Releases](../../releases). There is one archive per platform and 
 ### macOS (Apple Silicon)
 
 1. Close OBS
-2. Extract the zip into `~/Library/Application Support/obs-studio/plugins/`
+2. Extract the zip into `~/Library/Application Support/obs-studio/plugins/` (it contains `obs-irl-source.plugin`; if an older `obs-irl-source` folder is still there, delete it)
 3. The binary is unsigned, so clear the quarantine flag once:
-   `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-irl-source"`
+   `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-irl-source.plugin"`
 4. Start OBS
 
 ### Linux

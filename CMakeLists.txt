@@ -454,14 +454,24 @@ endif()
 include(GNUInstallDirs)
 
 if(APPLE)
-    set(OBS_PLUGIN_DIR "$ENV{HOME}/Library/Application Support/obs-studio/plugins/obs-irl-source/bin")
+    # OBS on macOS only scans .plugin bundles (%module%.plugin/Contents/MacOS
+    # with an extensionless binary), not the bin/ layout the other platforms
+    # use, so the install must build that bundle structure.
+    set(OBS_PLUGIN_BUNDLE
+        "$ENV{HOME}/Library/Application Support/obs-studio/plugins/obs-irl-source.plugin")
+    set(PLUGIN_VERSION "${PROJECT_VERSION}")
+    configure_file(cmake/macos/Info.plist.in "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
+    install(PROGRAMS "$<TARGET_FILE:obs-irl-source>"
+        DESTINATION "${OBS_PLUGIN_BUNDLE}/Contents/MacOS"
+        RENAME "obs-irl-source")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+        DESTINATION "${OBS_PLUGIN_BUNDLE}/Contents")
 elseif(WIN32)
-    set(OBS_PLUGIN_DIR "$ENV{APPDATA}/obs-studio/plugins/obs-irl-source/bin/64bit")
+    install(TARGETS obs-irl-source
+        DESTINATION "$ENV{APPDATA}/obs-studio/plugins/obs-irl-source/bin/64bit")
 else()
-    set(OBS_PLUGIN_DIR "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
+    install(TARGETS obs-irl-source DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
 endif()
-
-install(TARGETS obs-irl-source DESTINATION "${OBS_PLUGIN_DIR}")
 
 # ── Summary ──────────────────────────────────────────────────
 message(STATUS "")
