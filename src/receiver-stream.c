@@ -48,9 +48,46 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 	 * for demux-level corruption as long as this flag was set. Artifacts
 	 * beat a hole in the cadence. */
 	av_dict_set(opts, "fflags", "+genpts", 0);
-	/* http(s) inputs only; harmless no-ops elsewhere */
+	/* mpegts only (the SRT/UDP/RIST carriers). When the ingest socket
+	 * survives an encoder swap — a relay (SLS, MediaMTX, belabox cloud)
+	 * keeps serving this connection while a different encoder reconnects
+	 * upstream — the new session's PMT can lay out different PIDs
+	 * (Moblin muxes video/audio on 256/257; GStreamer's mpegtsmux picks
+	 * its own layout). Without this flag libavformat answers new PIDs
+	 * with brand-new AVStreams, the latched stream indexes stop
+	 * matching, and the feed stalls until the I/O timeout forces a
+	 * reconnect. With it the demuxer maps the new PIDs onto the
+	 * existing streams and only the PTS jump remains, which is
+	 * pts-repair's job anyway. Same-encoder restarts never needed it:
+	 * Moblin and belacoder both re-emit byte-identical version-0 PMTs,
+	 * which mpegts.c skips on the version+CRC check. */
+	av_dict_set(opts, "merge_pmt_versions", "1", 0);
+	/* udp:// only. A burst the receive ring cannot absorb is a fatal
+	 * read error by default, turning one hiccup into a full
+	 * disconnect/reconnect cycle (fade-out, keyframe wait). Losing the
+	 * overrun packets and letting the decoder conceal is strictly
+	 * smoother — the same call as the +discardcorrupt removal above:
+	 * artifacts beat a hole in the cadence. */
+	av_dict_set(opts, "overrun_nonfatal", "1", 0);
+	/* rtmp(s):// only; ignored elsewhere. Declare live intent so the
+	 * server serves the live edge instead of "any", and shrink the
+	 * client buffer hint from FFmpeg's 3000ms default — nginx-rtmp
+	 * family servers pace delivery by it, so the default parks three
+	 * seconds of latency server-side. */
+	av_dict_set(opts, "rtmp_live", "live", 0);
+	av_dict_set(opts, "rtmp_buffer", "1000", 0);
+	/* Reaches every TCP-based transport (rtmp, http, the tcp under
+	 * tls). Receive-side it only affects our acks and control replies,
+	 * but Nagle delaying those on a lossy uplink is pure harm. */
+	av_dict_set(opts, "tcp_nodelay", "1", 0);
+	/* http(s) inputs only; harmless no-ops elsewhere. An FFmpeg-internal
+	 * reconnect keeps the decoders and the keyframe gate warm, so it is
+	 * always smoother than falling out to the plugin's reconnect loop;
+	 * cover connect-time network errors too, not just mid-stream drops.
+	 * The interrupt_cb stall timeout still bounds all of it. */
 	av_dict_set(opts, "reconnect", "1", 0);
 	av_dict_set(opts, "reconnect_streamed", "1", 0);
+	av_dict_set(opts, "reconnect_on_network_error", "1", 0);
 
 	/*
 	 * FFmpeg 9.0 flipped tls_verify to default on. The bundled stack has
@@ -102,6 +139,19 @@ static void apply_demuxer_options(AVDictionary **opts, const char *url,
 		if (!url_has_scheme(url, "rist"))
 			av_dict_set(opts, "buffer_size", bytes, 0);
 		av_dict_set(opts, "recv_buffer_size", bytes, 0);
+
+		/* udp:// also has a userspace ring between its receive
+		 * thread and the demuxer, sized in 188-byte TS packets
+		 * (default 7*4096 ≈ 5.3MB). Grow it with the setting, never
+		 * shrink it — the setting's 2MB default is below FFmpeg's
+		 * own default ring. */
+		int fifo_pkts =
+			(int)((int64_t)network_buffer_mb * 1024 * 1024 / 188);
+		if (fifo_pkts > 7 * 4096) {
+			char fifo[32];
+			snprintf(fifo, sizeof(fifo), "%d", fifo_pkts);
+			av_dict_set(opts, "fifo_size", fifo, 0);
+		}
 	}
 
 	if (url_has_scheme(url, "srt"))
