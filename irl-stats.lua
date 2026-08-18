@@ -1,5 +1,7 @@
 obs = obslua
 
+local last_text = nil
+
 function script_description()
     return "Updates a text source with IRL Source stats"
 end
@@ -7,7 +9,7 @@ end
 function script_update(settings)
 end
 
-function script_tick(seconds)
+function update_stats()
     local source = obs.obs_get_source_by_name("IRL Source (irlserver.com)")
     if not source then return end
 
@@ -42,6 +44,10 @@ function script_tick(seconds)
         resync_skips, audio_flushes, video_flushes
     )
 
+    -- Re-rendering the text texture is the expensive part; skip it
+    -- when nothing changed (e.g. while reconnecting or idle).
+    if text == last_text then return end
+
     local text_source = obs.obs_get_source_by_name("IRL Stats")
     if text_source then
         local settings = obs.obs_data_create()
@@ -49,5 +55,14 @@ function script_tick(seconds)
         obs.obs_source_update(text_source, settings)
         obs.obs_data_release(settings)
         obs.obs_source_release(text_source)
+        last_text = text
     end
+end
+
+function script_load(settings)
+    obs.timer_add(update_stats, 1000)
+end
+
+function script_unload()
+    obs.timer_remove(update_stats)
 end
