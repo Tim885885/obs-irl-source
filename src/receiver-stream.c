@@ -221,6 +221,17 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		 * decode ignores both settings. */
 		ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
 		ctx->thread_count = 4;
+		/* Concealment of lossy input: keep FFmpeg's guess_mvs+deblock
+		 * default and add favor_inter, which patches damaged
+		 * macroblocks from the previous frame instead of guessing
+		 * spatially — on moving IRL content temporal patches are far
+		 * less visible. H.264 only in practice; HEVC has no
+		 * error-resilience path and ignores it. */
+		ctx->error_concealment |= FF_EC_FAVOR_INTER;
+		/* Spec-noncompliant speedups on the software path (hardware
+		 * decoders ignore it), for the machines where hardware decode
+		 * fell back to software and every cycle counts. */
+		ctx->flags2 |= AV_CODEC_FLAG2_FAST;
 		/* The video output queue holds decoded HW frames, each
 		 * pinning a decoder surface; give the pool matching
 		 * headroom or the decoder can stall waiting for a
