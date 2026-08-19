@@ -295,6 +295,23 @@ struct irl_source {
 	int64_t video_playout_offset_ns;
 	uint64_t video_playout_offset_time_ns;
 
+	/* Recycled destination buffers for the GPU→CPU transfer in
+	 * irl_video_to_sysmem(). Without a pool every frame heap-allocates
+	 * and frees its full pixel buffer — ~12MB per 4K NV12 frame, 60
+	 * times a second — and allocations that size go straight to the OS,
+	 * so each one pays page zeroing plus thousands of soft page faults
+	 * when the copy first writes into it. Video-thread-private, like the
+	 * pacing queue whose entries the buffers end up in; rebuilt when the
+	 * transfer geometry changes and released on clear/exit through
+	 * irl_video_xfer_pool_release(). The broken flag latches a backend
+	 * that refuses caller-allocated destinations, falling back for good
+	 * to the old per-frame path. */
+	AVBufferPool *video_xfer_pool;
+	int video_xfer_pool_w;
+	int video_xfer_pool_h;
+	enum AVPixelFormat video_xfer_pool_fmt;
+	bool video_xfer_pool_broken;
+
 	/* Published copies of the four above, mirrored under
 	 * video_queue_lock once per pacing cycle so the stats line on the
 	 * receiver thread has something synchronised to read. */
@@ -590,6 +607,7 @@ void irl_receiver_stop(struct irl_source *ctx);
 void irl_video_output_frame(struct irl_source *ctx, AVFrame *frame,
 			    uint64_t timestamp);
 AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame);
+void irl_video_xfer_pool_release(struct irl_source *ctx);
 uint64_t irl_video_due_time(struct irl_source *ctx, const AVFrame *frame);
 bool irl_video_playout_offset(struct irl_source *ctx, int64_t *offset_ns);
 bool irl_video_is_keyframe(const AVFrame *frame);

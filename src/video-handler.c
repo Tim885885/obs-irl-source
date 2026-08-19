@@ -12,6 +12,8 @@
 
 #include <stdlib.h>
 
+#include <libavutil/imgutils.h>
+
 #include "../include/irl-source.h"
 
 /* ── swscale backend selection ────────────────────────────── */
@@ -452,6 +454,69 @@ bool irl_video_playout_offset(struct irl_source *ctx, int64_t *offset_ns)
 
 /* ── Video output ─────────────────────────────────────────── */
 
+/* Plane alignment for pooled transfer destinations; what
+ * av_frame_get_buffer() would pick on a modern x86 (AVX-512 stores). */
+#define XFER_PLANE_ALIGN 64
+
+/* Give `out` a pixel buffer from the recycled pool, laid out the way
+ * av_hwframe_transfer_data() would have allocated one itself: the hardware
+ * pool's software format, dimensions padded to 16 (backends copy in aligned
+ * blocks; every one of them clips the copy to the source size). The caller
+ * restores the display dimensions after the transfer, exactly as FFmpeg's
+ * own transfer_data_alloc() does. */
+static bool xfer_frame_from_pool(struct irl_source *ctx, AVFrame *out,
+				 const AVFrame *src)
+{
+	const AVHWFramesContext *hwfc =
+		(const AVHWFramesContext *)src->hw_frames_ctx->data;
+	enum AVPixelFormat fmt = hwfc->sw_format;
+	int w = FFALIGN(src->width, 16);
+	int h = FFALIGN(src->height, 16);
+
+	if (!ctx->video_xfer_pool || ctx->video_xfer_pool_w != w ||
+	    ctx->video_xfer_pool_h != h || ctx->video_xfer_pool_fmt != fmt) {
+		int size = av_image_get_buffer_size(fmt, w, h,
+						    XFER_PLANE_ALIGN);
+		if (size <= 0)
+			return false;
+		av_buffer_pool_uninit(&ctx->video_xfer_pool);
+		ctx->video_xfer_pool = av_buffer_pool_init((size_t)size, NULL);
+		if (!ctx->video_xfer_pool)
+			return false;
+		ctx->video_xfer_pool_w = w;
+		ctx->video_xfer_pool_h = h;
+		ctx->video_xfer_pool_fmt = fmt;
+		blog(LOG_INFO,
+		     "[irl-source] Transfer buffer pool: %dx%d fmt=%d, %.1f MB/frame",
+		     w, h, fmt, (double)size / (1024.0 * 1024.0));
+	}
+
+	AVBufferRef *buf = av_buffer_pool_get(ctx->video_xfer_pool);
+	if (!buf)
+		return false;
+
+	out->format = fmt;
+	out->width = w;
+	out->height = h;
+	if (av_image_fill_arrays(out->data, out->linesize, buf->data, fmt, w,
+				 h, XFER_PLANE_ALIGN) < 0) {
+		av_buffer_unref(&buf);
+		return false;
+	}
+	out->buf[0] = buf;
+	return true;
+}
+
+void irl_video_xfer_pool_release(struct irl_source *ctx)
+{
+	/* Safe with pooled buffers still alive in the pacing queue: the pool
+	 * lingers internally until its last buffer is returned. */
+	av_buffer_pool_uninit(&ctx->video_xfer_pool);
+	ctx->video_xfer_pool_w = 0;
+	ctx->video_xfer_pool_h = 0;
+	ctx->video_xfer_pool_fmt = AV_PIX_FMT_NONE;
+}
+
 /* Bring a decoded frame into system memory, releasing any decoder surface it
  * held. Returns a new reference the caller owns, or NULL.
  *
@@ -464,11 +529,15 @@ bool irl_video_playout_offset(struct irl_source *ctx, int64_t *offset_ns)
  *
  * On those two backends this costs one extra copy against the old path; on
  * D3D11VA and CUDA, where the map always fell back to a copy anyway, nothing
- * changes. */
+ * changes.
+ *
+ * The destination buffer comes from video_xfer_pool rather than a fresh
+ * heap allocation: letting av_hwframe_transfer_data() allocate meant a full
+ * frame's worth of malloc/free per frame, which at 4K goes straight to the
+ * OS and pays page zeroing plus thousands of soft page faults per frame —
+ * measured as a first-order CPU cost on multi-source 4K60 setups. */
 AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame)
 {
-	UNUSED_PARAMETER(ctx);
-
 	AVFrame *out = av_frame_alloc();
 	if (!out)
 		return NULL;
@@ -483,9 +552,29 @@ AVFrame *irl_video_to_sysmem(struct irl_source *ctx, AVFrame *frame)
 		return out;
 	}
 
-	if (av_hwframe_transfer_data(out, frame, 0) < 0) {
+	bool pooled = !ctx->video_xfer_pool_broken &&
+		      xfer_frame_from_pool(ctx, out, frame);
+	if (pooled && av_hwframe_transfer_data(out, frame, 0) < 0) {
+		/* This backend refuses a caller-allocated destination; stop
+		 * offering one. The retry below with an empty frame is the
+		 * old let-FFmpeg-allocate path, so behaviour degrades to
+		 * exactly what shipped before the pool. */
+		ctx->video_xfer_pool_broken = true;
+		irl_video_xfer_pool_release(ctx);
+		blog(LOG_WARNING,
+		     "[irl-source] Pooled hw frame transfer rejected; falling back to per-frame allocation");
+		av_frame_unref(out);
+		pooled = false;
+	}
+	if (!pooled && av_hwframe_transfer_data(out, frame, 0) < 0) {
 		av_frame_free(&out);
 		return NULL;
+	}
+	if (pooled) {
+		/* Undo the 16-alignment padding: OBS must see the display
+		 * size, not the surface size. */
+		out->width = frame->width;
+		out->height = frame->height;
 	}
 
 	out->pts = frame->pts;

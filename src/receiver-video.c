@@ -224,6 +224,10 @@ void *irl_video_thread(void *data)
 			 * the paced frames behind it must go too, or the
 			 * blank would be repainted a lead later. */
 			pacing_drain(ctx);
+			/* A cleared source is showing nothing; no reason to
+			 * keep a lead's worth of recycled buffers resident
+			 * while it does. The next frame rebuilds the pool. */
+			irl_video_xfer_pool_release(ctx);
 			/* The offset belongs to the connection that just
 			 * ended; the next one brings its own PTS epoch. */
 			ctx->video_playout_offset_ns = 0;
@@ -275,6 +279,7 @@ void *irl_video_thread(void *data)
 	}
 
 	pacing_drain(ctx);
+	irl_video_xfer_pool_release(ctx);
 	irl_mutex_lock(&ctx->video_queue_lock);
 	video_queue_drain_locked(ctx);
 	irl_mutex_unlock(&ctx->video_queue_lock);

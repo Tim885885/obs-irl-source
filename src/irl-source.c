@@ -517,6 +517,9 @@ void irl_source_destroy(void *data)
 	 * is freed above. */
 	if (ctx->sws_dst_frame)
 		av_frame_free(&ctx->sws_dst_frame);
+	/* The video thread releases this on exit; kept here as well for a
+	 * source destroyed without its threads ever starting. */
+	irl_video_xfer_pool_release(ctx);
 	if (ctx->hw_device_ctx)
 		av_buffer_unref(&ctx->hw_device_ctx);
 
