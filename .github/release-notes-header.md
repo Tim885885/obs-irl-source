@@ -1,8 +1,12 @@
 ## Installation
 
-One archive per platform, and it works on OBS 32.1 and newer. The plugin bundles its own FFmpeg and libsrt, so there is no longer a separate download per OBS version.
+One download per platform (Windows also gets an installer), and it works on OBS 32.1 and newer. The plugin bundles its own FFmpeg and libsrt, so there is no longer a separate download per OBS version.
 
 ### Windows
+
+Run `-windows-x64-setup.exe`. It locates OBS Studio from the registry, closes it if it is running, and registers an entry in Add or Remove Programs. The installer is unsigned, so SmartScreen asks for a confirmation the first time.
+
+Prefer to do it by hand? Use the zip instead:
 
 1. Close OBS.
 2. Extract the zip into your OBS Studio install folder (usually `C:\Program Files\obs-studio`). The DLLs land in `obs-plugins\64bit`.

@@ -114,6 +114,7 @@ Config fields marked `/* hot */` in `struct irl_config` are written by `irl_sour
 
 - Memory: use `bfree()`/`bstrdup()`/`bzalloc()` (OBS allocators), not stdlib malloc/free
 - Logging: `blog(LOG_INFO, "[irl-source] ...")` — always use the `[irl-source]` prefix
+- UI strings: never pass English text to `obs_module_text`. A new string belongs in two places, the call site and `data/locale/en-US.ini`, keyed by a short identifier. The version in the About block is substituted with `dstr_replace` on a `%1` token rather than a printf format, so a bad translation renders oddly instead of reading the stack.
 - Stats are exposed via `proc_handler` ("get_stats" call) for Lua/Python script consumption, and over obs-websocket through the vendor extension. A new stat field belongs in three places: the proc declaration in `irl_source_create`, the `calldata_set_*` block above it, and `irl_stat_fields[]` in `src/websocket-vendor.c` (plus the table in README.md)
 - Source flags: `OBS_SOURCE_AUDIO | OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE`
 
@@ -142,6 +143,9 @@ The initial version of this plugin was heavily built with LLM assistance. The au
 ## Other files
 
 - **`irl-stats.lua`** - Example OBS Lua script that reads plugin stats via proc_handler and updates a text source overlay.
+- **`installer/obs-irl-source.iss`** - Inno Setup script for the Windows setup .exe. It resolves the OBS folder from the registry (`Uninstall\OBS Studio` in HKLM64 then HKCU, then `HKLM\SOFTWARE\OBS Studio`), validates it by finding `bin\64bit\obs64.exe`, and installs the same payload as the release zip. The OBS version check is a *minimum* (32.1), not an exact match, because bundling FFmpeg removed the per-OBS-line coupling that makes other plugins pin a version. The Windows job in `build.yml` compiles it on every push, not just at tag time, so a broken `.iss` fails a normal build instead of a release.
+- **`data/locale/en-US.ini`** - UI strings. `OBS_MODULE_USE_DEFAULT_LOCALE` in `plugin.c` loads it, and every string in the properties dialog goes through `obs_module_text`. Shipping it is not optional: the lookup falls back to returning the key, so a package built without it renders the dialog as bare identifiers like `AudioBufferHelp`. All three release archives and the installer place it where `obs_module_file()` looks (`data/locale/` next to the binary on Linux, `data/obs-plugins/obs-irl-source/locale/` on Windows, `Contents/Resources/locale/` inside the macOS bundle).
+- **`THIRD_PARTY_NOTICES.md`** - Licenses for the statically linked stack, shipped inside every release archive rather than only living in the repo, because LGPLv3 FFmpeg wants its notices conveyed with the object code. `deps/README.md` has the reasoning behind the license choices; this file is the artifact-facing copy.
 - **`third_party/`** - Verbatim copies of files from other projects, under their own licenses. Currently just `obs-websocket-api.h`. See `third_party/README.md` for provenance and how to update it.
 - **`docs/audio-pipeline.md`** - Deep dive on the buffered vs low-latency audio paths, jitter buffer, adaptive latency control, PTS repair tiers, and timestamp handling.
 - **`docs/viewer-quality-plan.md`** - The viewer-quality policy and the recovery/diagnostics behavior that implements it (what stats to watch and what healthy looks like).

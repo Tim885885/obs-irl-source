@@ -23,6 +23,7 @@ Releases are tag driven. Pushing a tag `vX.Y.Z` runs `.github/workflows/release.
 
    * `obs-irl-source-X.Y.Z-linux-x64.tar.gz` (extract into `~/.config/obs-studio/plugins/`)
    * `obs-irl-source-X.Y.Z-windows-x64.zip` (extract into the OBS install folder)
+   * `obs-irl-source-X.Y.Z-windows-x64-setup.exe` (same payload as the zip, installed by `installer/obs-irl-source.iss`)
    * `obs-irl-source-X.Y.Z-macos-arm64.zip` (extract into `~/Library/Application Support/obs-studio/plugins/`)
    * `sha256sums.txt`
 
@@ -64,4 +65,4 @@ One archive per platform covers every supported OBS line. The plugin bundles its
 ## Not automated (yet)
 
 * macOS signing and notarization. The zip ships unsigned, and the release notes tell users to clear the quarantine attribute.
-* Windows code signing and installers. The zip layout extracts into the OBS install folder.
+* Windows code signing. The installer is built but not signed, so SmartScreen warns on first run until the download builds reputation.

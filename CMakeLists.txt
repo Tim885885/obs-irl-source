@@ -466,11 +466,18 @@ if(APPLE)
         RENAME "obs-irl-source")
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
         DESTINATION "${OBS_PLUGIN_BUNDLE}/Contents")
+    # obs_module_file() resolves to Contents/Resources inside a .plugin bundle.
+    install(DIRECTORY data/locale
+        DESTINATION "${OBS_PLUGIN_BUNDLE}/Contents/Resources")
 elseif(WIN32)
     install(TARGETS obs-irl-source
         DESTINATION "$ENV{APPDATA}/obs-studio/plugins/obs-irl-source/bin/64bit")
+    install(DIRECTORY data/locale
+        DESTINATION "$ENV{APPDATA}/obs-studio/plugins/obs-irl-source/data")
 else()
     install(TARGETS obs-irl-source DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
+    install(DIRECTORY data/locale
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/obs-irl-source")
 endif()
 
 # ── Summary ──────────────────────────────────────────────────

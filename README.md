@@ -45,6 +45,10 @@ Download from [Releases](../../releases). There is one archive per platform and 
 
 ### Windows
 
+Run `obs-irl-source-<version>-windows-x64-setup.exe`. It finds your OBS Studio folder from the registry, closes OBS if it is running, and can be removed again from Add or Remove Programs.
+
+Or, from the zip:
+
 1. Close OBS
 2. Extract the zip into your OBS Studio install folder (usually `C:\Program Files\obs-studio`), so the DLLs land in `obs-plugins\64bit`
 3. Start OBS
@@ -172,6 +176,8 @@ Please don't just copy and paste replies directly from the AI.
 ## License
 
 AGPL-3.0-or-later. Copyright (C) 2026 Thomas Lekanger.
+
+The released binaries statically link FFmpeg (LGPL-3.0), libsrt (MPL-2.0), librist (BSD-2-Clause) and Mbed TLS (Apache-2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which also ships inside every release archive.
 
 See [irlserver.com](https://irlserver.com) for more information.
 

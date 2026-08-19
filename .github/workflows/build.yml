@@ -227,6 +227,50 @@ jobs:
             # OBS's crash handler reads it if it sits next to the DLL.
             build/RelWithDebInfo/obs-irl-source.pdb
 
+      # Built on every push rather than only in the release workflow, so a
+      # syntax error in the .iss fails a normal build instead of a tag. The
+      # version comes from CMakeLists.txt, which the release workflow already
+      # verifies against the tag before it gets here.
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $match = Select-String -Path CMakeLists.txt `
+            -Pattern 'project\(obs-irl-source VERSION ([0-9]+\.[0-9]+\.[0-9]+)' |
+            Select-Object -First 1
+          if (-not $match) { throw 'Could not read the version from CMakeLists.txt' }
+          $version = $match.Matches[0].Groups[1].Value
+
+          # Staged in the release zip's layout so the .iss has one file list
+          # describing both.
+          New-Item -ItemType Directory -Force -Path dist\windows\obs-plugins\64bit | Out-Null
+          Copy-Item build\RelWithDebInfo\obs-irl-source.dll dist\windows\obs-plugins\64bit\
+          if (Test-Path build\RelWithDebInfo\w32-pthreads.dll) {
+            Copy-Item build\RelWithDebInfo\w32-pthreads.dll dist\windows\obs-plugins\64bit\
+          }
+
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'ISCC.exe not found after installing Inno Setup' }
+
+          & $iscc "/DPluginVersion=$version" "/DPayloadDir=..\dist\windows" installer\obs-irl-source.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist\*.exe
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-irl-source-windows-installer
+          path: dist/*.exe
+
   macos-arm64:
     runs-on: macos-15
     env:

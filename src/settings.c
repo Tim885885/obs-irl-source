@@ -8,6 +8,8 @@
  * settings.c — OBS properties UI for the IRL source
  */
 
+#include <util/dstr.h>
+
 #include "../include/irl-source.h"
 
 /* ── Defaults ─────────────────────────────────────────────── */
@@ -51,12 +53,10 @@ obs_properties_t *irl_source_get_properties(void *data)
 
 	/* ── General ───────────────────────────────────────── */
 
-	obs_properties_add_text(props, "url",
-				obs_module_text("URL"),
+	obs_properties_add_text(props, "url", obs_module_text("URL"),
 				OBS_TEXT_DEFAULT);
 	obs_properties_add_int(props, "reconnect_delay",
-			       obs_module_text("Reconnect Delay (s)"), 1, 60,
-			       1);
+			       obs_module_text("ReconnectDelay"), 1, 60, 1);
 
 	/* ── Audio Buffer ──────────────────────────────────── */
 
@@ -66,76 +66,48 @@ obs_properties_t *irl_source_get_properties(void *data)
 	 * inflates the A/V mapping and holds video back with it. The old 500ms
 	 * limit could not cover them. */
 	obs_properties_add_int(props, "buffer_target_ms",
-			       obs_module_text("Target Buffer (ms)"), 20, 2000,
-			       10);
+			       obs_module_text("TargetBuffer"), 20, 2000, 10);
 	obs_properties_add_bool(props, "adaptive_speed",
-				obs_module_text("Adaptive Latency Control"));
-	obs_properties_add_text(
-		props, "audio_buffer_help",
-		obs_module_text(
-			"Target Buffer is the jitter cushion and the main "
-			"latency knob. Adaptive Latency Control keeps audio "
-			"near native rate with bounded speed correction; "
-			"backlog from a stall is played back slightly sped up "
-			"instead of skipped. Lower values reduce delay but "
-			"make silence or hitches more likely on bad signal."),
-		OBS_TEXT_INFO);
+				obs_module_text("AdaptiveLatency"));
+	obs_properties_add_text(props, "audio_buffer_help",
+				obs_module_text("AudioBufferHelp"),
+				OBS_TEXT_INFO);
 
 	/* ── Advanced ──────────────────────────────────────── */
 
 	obs_properties_add_text(props, "ffmpeg_options",
-				obs_module_text("FFmpeg Options"),
+				obs_module_text("FFmpegOptions"),
 				OBS_TEXT_DEFAULT);
 
 	obs_property_t *hw = obs_properties_add_list(
-		props, "hw_decode", obs_module_text("Hardware Decode"),
+		props, "hw_decode", obs_module_text("HardwareDecode"),
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(hw, obs_module_text("Auto"), 0);
-	obs_property_list_add_int(hw, obs_module_text("Off"), 1);
+	obs_property_list_add_int(hw, obs_module_text("HardwareDecode.Auto"),
+				  0);
+	obs_property_list_add_int(hw, obs_module_text("HardwareDecode.Off"), 1);
 
-	obs_properties_add_bool(
-		props, "wait_for_keyframe",
-		obs_module_text("Wait for Keyframe on Start/Reconnect"));
-	obs_properties_add_bool(
-		props, "low_latency_audio",
-		obs_module_text("Use OBS Low-Latency Async Audio Mode"));
-	obs_properties_add_bool(
-		props, "clear_on_disconnect",
-		obs_module_text("Show Nothing When the Stream Ends"));
+	obs_properties_add_bool(props, "wait_for_keyframe",
+				obs_module_text("WaitForKeyframe"));
+	obs_properties_add_bool(props, "low_latency_audio",
+				obs_module_text("LowLatencyAudio"));
+	obs_properties_add_bool(props, "clear_on_disconnect",
+				obs_module_text("ClearOnDisconnect"));
 	obs_properties_add_bool(props, "close_when_inactive",
-				obs_module_text("Close Stream When Inactive"));
-	obs_properties_add_text(
-		props, "advanced_help",
-		obs_module_text(
-			"Wait for Keyframe avoids corrupt startup/reconnect frames, "
-			"but it can add up to one keyframe interval of delay. The "
-			"low-latency option enables OBS async unbuffered audio mode "
-			"for this source and makes the plugin drain immediately "
-			"instead of building the normal jitter cushion, so it is "
-			"faster but less tolerant of jitter. Show Nothing When "
-			"the Stream Ends blanks the source as soon as the stream "
-			"drops, instead of leaving the last frame frozen on screen "
-			"until it reconnects. Close Stream "
-			"When Inactive stops receiving when the source is not "
-			"active, clearing the frame if the option above is on. "
-			"FFmpeg Options can "
-			"override any demuxer option, for example buffer_size or "
-			"the SRT latency."),
-		OBS_TEXT_INFO);
+				obs_module_text("CloseWhenInactive"));
+	obs_properties_add_text(props, "advanced_help",
+				obs_module_text("AdvancedHelp"), OBS_TEXT_INFO);
 
 	/* ── About ─────────────────────────────────────────── */
 
-	obs_properties_add_text(
-		props, "about_info",
-		obs_module_text(
-			"IRL Source v" OBS_IRL_SOURCE_VERSION
-			" by Thomas Lekanger\n"
-			"https://irlserver.com\n\n"
-			"Codec/protocol-agnostic live source with audio jitter "
-			"buffering, PTS discontinuity repair, adaptive latency "
-			"control, and first-keyframe gating.\n\n"
-			"Licensed under AGPL-3.0-or-later"),
-		OBS_TEXT_INFO);
+	/* dstr_replace rather than a printf format: the template comes from a
+	 * locale file, and a translation that drops or mistypes the token
+	 * should render oddly, not read the stack. */
+	struct dstr about = {0};
+	dstr_copy(&about, obs_module_text("About"));
+	dstr_replace(&about, "%1", OBS_IRL_SOURCE_VERSION);
+	obs_properties_add_text(props, "about_info", about.array,
+				OBS_TEXT_INFO);
+	dstr_free(&about);
 
 	return props;
 }

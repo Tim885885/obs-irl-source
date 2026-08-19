@@ -401,7 +401,7 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 const char *irl_source_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("IRL Source (irlserver.com)");
+	return obs_module_text("SourceName");
 }
 
 void *irl_source_create(obs_data_t *settings, obs_source_t *source)
