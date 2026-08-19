@@ -556,6 +556,32 @@ build_ffmpeg() {
 		echo "patched gmtime_r include into libavformat/tls_mbedtls.c"
 	fi
 
+	# Upstream performance bug, Windows-only code. The D3D11VA download
+	# (d3d11va_transfer_data) reads the mapped staging texture with
+	# av_image_copy2 — plain cached loads. Drivers may place a READ|WRITE
+	# staging texture in write-combined memory, where cached loads run at
+	# a small fraction of memory speed; one 4K60 stream (~716MB/s of
+	# NV12) then pins an entire core inside the copy, and the whole thing
+	# runs under the shared D3D11 device lock the decoder also submits
+	# through. The DXVA2 path has used av_image_copy_uc_from — SSE4
+	# streaming loads written for exactly this kind of memory — since
+	# 2017; D3D11VA never got the same treatment. Swap the download copy
+	# over to it. Safe by construction: av_image_copy_uc_from falls back
+	# to the plain copy on its own when SSE4 or the 64-byte alignment it
+	# wants is missing, so the worst case is today's behaviour.
+	if [[ ${host} == windows ]]; then
+		local d3d="${ff}/libavutil/hwcontext_d3d11va.c"
+		if [[ -f ${d3d} ]] && ! grep -q 'av_image_copy_uc_from' "${d3d}"; then
+			sed -i '/av_image_copy2(dst->data, dst->linesize, map_data, map_linesize,/{N;s|av_image_copy2(dst->data, dst->linesize, map_data, map_linesize,\n *ctx->sw_format, w, h);|{\n            ptrdiff_t uc_dst_ls[4], uc_src_ls[4];\n            for (int uc_k = 0; uc_k < 4; uc_k++) {\n                uc_dst_ls[uc_k] = dst->linesize[uc_k];\n                uc_src_ls[uc_k] = map_linesize[uc_k];\n            }\n            av_image_copy_uc_from(dst->data, uc_dst_ls,\n                                  (const uint8_t **)map_data, uc_src_ls,\n                                  ctx->sw_format, w, h);\n        }|}' "${d3d}"
+			if ! grep -q 'av_image_copy_uc_from' "${d3d}"; then
+				echo "failed to patch the D3D11VA download copy in ${d3d}" >&2
+				echo "check whether d3d11va_transfer_data still uses av_image_copy2 upstream." >&2
+				exit 1
+			fi
+			echo "patched D3D11VA download to av_image_copy_uc_from"
+		fi
+	fi
+
 	local args=(
 		--prefix="${prefix}"
 		--disable-shared
