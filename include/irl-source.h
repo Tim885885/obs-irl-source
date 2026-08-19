@@ -151,7 +151,13 @@ struct irl_source;
  * are due, which is exactly the old behaviour, and counted so it is visible.
  */
 #define IRL_VIDEO_PACING_MAX_FRAMES 512
-#define IRL_VIDEO_PACING_MAX_BYTES (512u * 1024u * 1024u)
+/* The byte ceiling has to carry a realistic lead at 4K: one 3840x2160 frame
+ * is ~12MB at 8-bit (NV12) and ~24MB at 10-bit (P010), so 512MB was only
+ * ~700ms / ~350ms of 4K60 — a queue permanently over its ceiling on exactly
+ * the streams pacing matters most for. 1GiB is ~1.4s / ~0.7s at 4K60, and it
+ * is a ceiling, not a reservation: memory is only held while the audio lead
+ * actually parks that much video. */
+#define IRL_VIDEO_PACING_MAX_BYTES (1024u * 1024u * 1024u)
 /* Emit rather than sleep again when this close to due: another wakeup costs
  * more than the timing error it would remove. */
 #define IRL_VIDEO_PACING_SLACK_NS 1000000LL
