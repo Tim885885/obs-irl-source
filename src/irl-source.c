@@ -56,6 +56,24 @@ static void config_load(struct irl_config *cfg, obs_data_t *settings)
 	cfg->ffmpeg_options = ff && *ff ? bstrdup(ff) : NULL;
 
 	cfg->hw_decode = (int)obs_data_get_int(settings, "hw_decode");
+	if (cfg->hw_decode < IRL_HW_DECODE_AUTO ||
+	    cfg->hw_decode > IRL_HW_DECODE_NVDEC) {
+		blog(LOG_WARNING,
+		     "[irl-source] Unknown hardware decode mode %d; using Auto",
+		     cfg->hw_decode);
+		cfg->hw_decode = IRL_HW_DECODE_AUTO;
+	}
+#if !defined(_WIN32) && !defined(__linux__)
+	/* NVDEC is only offered (and only compiled into the bundled FFmpeg)
+	 * on Windows and Linux. A scene collection saved there can still
+	 * carry the value here; degrade to Auto instead of forcing a CUDA
+	 * device that cannot exist, which would leave the source videoless. */
+	if (cfg->hw_decode == IRL_HW_DECODE_NVDEC) {
+		blog(LOG_WARNING,
+		     "[irl-source] NVDEC is not available on this platform; using Auto");
+		cfg->hw_decode = IRL_HW_DECODE_AUTO;
+	}
+#endif
 	cfg->wait_for_keyframe =
 		obs_data_get_bool(settings, "wait_for_keyframe");
 	cfg->low_latency_audio =

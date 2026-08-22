@@ -199,9 +199,45 @@ static const enum AVHWDeviceType hw_device_types[] = {
 	AV_HWDEVICE_TYPE_NONE,
 };
 
-static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
-				    bool try_hw)
+static const enum AVHWDeviceType nvdec_device_types[] = {
+	AV_HWDEVICE_TYPE_CUDA,
+	AV_HWDEVICE_TYPE_NONE,
+};
+
+/* Explicit NVDEC must not let libavcodec choose the software pixel format
+ * when a stream or driver cannot provide CUDA frames. Auto deliberately keeps
+ * the default FFmpeg negotiation, including its existing software fallback. */
+static enum AVPixelFormat nvdec_get_format(AVCodecContext *ctx,
+					   const enum AVPixelFormat *formats)
 {
+	for (const enum AVPixelFormat *fmt = formats; *fmt != AV_PIX_FMT_NONE;
+	     fmt++) {
+		for (int i = 0;; i++) {
+			const AVCodecHWConfig *config =
+				avcodec_get_hw_config(ctx->codec, i);
+			if (!config)
+				break;
+			if (config->device_type == AV_HWDEVICE_TYPE_CUDA &&
+			    (config->methods &
+			     AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+			    config->pix_fmt == *fmt)
+				return *fmt;
+		}
+	}
+
+	blog(LOG_ERROR,
+	     "[irl-source] NVDEC requested, but the decoder offered no CUDA hardware format");
+	return AV_PIX_FMT_NONE;
+}
+
+static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
+				    int hw_decode_mode)
+{
+	bool is_video = stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
+	bool try_hw = is_video && hw_decode_mode != IRL_HW_DECODE_OFF;
+	bool force_nvdec = is_video && hw_decode_mode == IRL_HW_DECODE_NVDEC;
+	const enum AVHWDeviceType *device_types =
+		force_nvdec ? nvdec_device_types : hw_device_types;
 	const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
 	if (!codec)
 		return NULL;
@@ -260,43 +296,67 @@ static AVCodecContext *open_decoder(struct irl_source *src, AVStream *stream,
 		ctx->extra_hw_frames = IRL_VIDEO_QUEUE_SIZE + 2;
 	}
 
-	if (try_hw && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-		for (int i = 0; hw_device_types[i] != AV_HWDEVICE_TYPE_NONE;
+	if (try_hw) {
+		for (int i = 0; device_types[i] != AV_HWDEVICE_TYPE_NONE;
 		     i++) {
 			if (src->hw_device_ctx)
 				break;
 			int err = av_hwdevice_ctx_create(
-				&src->hw_device_ctx, hw_device_types[i], NULL,
+				&src->hw_device_ctx, device_types[i], NULL,
 				NULL, 0);
 			if (err == 0) {
-				src->hw_device_type = hw_device_types[i];
+				src->hw_device_type = device_types[i];
 				blog(LOG_INFO,
 				     "[irl-source] Using hardware device: %s",
 				     av_hwdevice_get_type_name(
-					     hw_device_types[i]));
+					     device_types[i]));
 			} else {
 				char errbuf[AV_ERROR_MAX_STRING_SIZE];
 				av_strerror(err, errbuf, sizeof(errbuf));
 				blog(LOG_INFO,
 				     "[irl-source] Hardware device %s unavailable: %s",
 				     av_hwdevice_get_type_name(
-					     hw_device_types[i]),
+					     device_types[i]),
 				     errbuf);
 				src->hw_device_ctx = NULL;
 			}
 		}
-		if (src->hw_device_ctx)
+		if (force_nvdec && !src->hw_device_ctx) {
+			blog(LOG_ERROR,
+			     "[irl-source] NVDEC was selected, but no CUDA device is available");
+			avcodec_free_context(&ctx);
+			return NULL;
+		}
+		if (src->hw_device_ctx) {
 			ctx->hw_device_ctx = av_buffer_ref(src->hw_device_ctx);
+			if (force_nvdec)
+				ctx->get_format = nvdec_get_format;
+		}
 	}
 
-	if (avcodec_open2(ctx, codec, NULL) < 0) {
-		if (ctx->hw_device_ctx) {
+	int open_ret = avcodec_open2(ctx, codec, NULL);
+	if (open_ret < 0) {
+		char errbuf[AV_ERROR_MAX_STRING_SIZE];
+		av_strerror(open_ret, errbuf, sizeof(errbuf));
+		if (ctx->hw_device_ctx && !force_nvdec) {
 			avcodec_free_context(&ctx);
 			av_buffer_unref(&src->hw_device_ctx);
+			src->hw_device_type = AV_HWDEVICE_TYPE_NONE;
 			blog(LOG_INFO,
 			     "[irl-source] Hardware decode failed, falling back to software");
-			return open_decoder(src, stream, false);
+			return open_decoder(src, stream, IRL_HW_DECODE_OFF);
 		}
+		if (ctx->hw_device_ctx) {
+			av_buffer_unref(&src->hw_device_ctx);
+			src->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+		}
+		if (force_nvdec)
+			blog(LOG_ERROR,
+			     "[irl-source] NVDEC decoder failed (%s); software fallback is disabled",
+			     errbuf);
+		else
+			blog(LOG_WARNING,
+			     "[irl-source] Decoder failed to open: %s", errbuf);
 		avcodec_free_context(&ctx);
 		return NULL;
 	}
@@ -407,8 +467,8 @@ static bool open_stream_attempt(struct irl_source *ctx, bool fast_probe)
 		AVStream *s = ctx->fmt_ctx->streams[i];
 		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
 		    ctx->video_stream_idx < 0) {
-			bool try_hw = (ctx->config.hw_decode == 0);
-			ctx->video_dec_ctx = open_decoder(ctx, s, try_hw);
+			ctx->video_dec_ctx =
+				open_decoder(ctx, s, ctx->config.hw_decode);
 			if (ctx->video_dec_ctx) {
 				ctx->video_stream_idx = (int)i;
 				/* This reports the requested decode path;
@@ -434,7 +494,8 @@ static bool open_stream_attempt(struct irl_source *ctx, bool fast_probe)
 			}
 		} else if (s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
 			   ctx->audio_stream_idx < 0) {
-			ctx->audio_dec_ctx = open_decoder(ctx, s, false);
+			ctx->audio_dec_ctx =
+				open_decoder(ctx, s, IRL_HW_DECODE_OFF);
 			if (ctx->audio_dec_ctx) {
 				ctx->audio_stream_idx = (int)i;
 				os_atomic_store_bool(

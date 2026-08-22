@@ -86,7 +86,7 @@ A source you just added sizes itself to the canvas when its first frame arrives,
 | Target Buffer | 120ms | How much audio cushion to hold, 20ms to 2s. This is your main latency knob: higher rides out a worse connection, lower is snappier and less forgiving. If the stats show `underruns` climbing, this is the setting to raise — an underrun means the cushion ran dry, and the concealment that covers it delays video by the same amount to keep lip sync |
 | Adaptive Latency Control | On | Holds latency near your target by nudging playback speed (up to 2% slow, 5% fast) instead of dropping audio |
 | FFmpeg Options | | Extra options for the stream reader, `key1=val1 key2=val2` style. Use this to set the SRT `latency`, for example |
-| Hardware Decode | Auto | Let the GPU decode video. Auto picks whatever your machine supports, Off forces the CPU |
+| Hardware Decode | Auto | Let the GPU decode video. Auto picks whatever your machine supports, Off forces the CPU, and NVDEC (Windows/Linux) explicitly requires NVIDIA CUDA/NVDEC |
 | Wait for Keyframe | On | Hold video back until a clean frame arrives, so you never see blocky garbage on join |
 | Low Latency Audio | Off | Play audio the moment it arrives, with no cushion. Lowest delay, least tolerant of a wobbly connection |
 | Show Nothing When the Stream Ends | On | Blank the source as soon as the stream drops, instead of leaving the last frame frozen on screen until it reconnects. Same idea as the media source's "Show nothing when playback ends" |
@@ -261,7 +261,7 @@ Auto-detection tries, in order:
 | macOS | VideoToolbox (Apple Silicon & Intel) |
 | Linux | VAAPI (Intel/AMD), CUDA (NVIDIA) |
 
-Falls back to software decoding if no hardware decoder is available. **Hardware Decode: Off** forces software.
+Auto falls back to software decoding if no hardware decoder is available. **Hardware Decode: Off** forces software. **Hardware Decode: NVDEC** attempts only NVIDIA CUDA/NVDEC and never falls back to software; if the NVIDIA driver, GPU, or stream codec cannot provide NVDEC, the video decoder cannot produce frames. NVDEC uses the default CUDA device and is available in the settings on Windows and Linux; a scene collection that selects it and is opened on macOS falls back to Auto.
 
 The OBS log shows which decoder was requested at stream open:
 

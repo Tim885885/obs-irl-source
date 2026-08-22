@@ -83,8 +83,14 @@ obs_properties_t *irl_source_get_properties(void *data)
 		props, "hw_decode", obs_module_text("HardwareDecode"),
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(hw, obs_module_text("HardwareDecode.Auto"),
-				  0);
-	obs_property_list_add_int(hw, obs_module_text("HardwareDecode.Off"), 1);
+				  IRL_HW_DECODE_AUTO);
+	obs_property_list_add_int(hw, obs_module_text("HardwareDecode.Off"),
+				  IRL_HW_DECODE_OFF);
+#if defined(_WIN32) || defined(__linux__)
+	obs_property_list_add_int(hw,
+				  obs_module_text("HardwareDecode.NVDEC"),
+				  IRL_HW_DECODE_NVDEC);
+#endif
 
 	obs_properties_add_bool(props, "wait_for_keyframe",
 				obs_module_text("WaitForKeyframe"));
