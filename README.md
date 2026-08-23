@@ -26,7 +26,7 @@ OBS ships with a Media Source that can play SRT, RTMP and RIST. It works, but it
 
 | | Media Source | IRL Source |
 | --- | --- | --- |
-| Unstable connection | Relies on whatever cushion procol itself provides, and holds nothing after it | Adds its own cushion (120ms default) behind the protocol latency |
+| Unstable connection | Relies on whatever cushion the protocol itself provides, and holds nothing after it | Adds its own cushion (120ms default) behind the protocol latency |
 | After a stall | Latency climbs and stays there, with no way to catch up | Catches up at up to +5% speed until latency is back on target, without skipping audio |
 | Audio timing | Falls behind the mixer, so OBS adds up to a second of buffering that never goes away | Steady clock with a fixed lead, so OBS never adds hidden delay |
 | Timestamp jumps | Passed straight through, so you get pops and freezes | Repaired: small gaps smoothed, medium gaps filled with silence, large gaps get a clean reset |
