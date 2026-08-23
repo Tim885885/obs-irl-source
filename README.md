@@ -22,11 +22,11 @@ Works with SRT, RTMP, RIST, UDP, TCP, HTTP, or anything else FFmpeg can open, an
 
 ## Why not the built-in Media Source?
 
-OBS ships with a Media Source that can play SRT. It works, but it was written for playing files and general media, not for a live feed coming off a phone on mobile data.
+OBS ships with a Media Source that can play SRT, RTMP and RIST. It works, but it was written for playing files and general media, not for a live feed coming off a phone on mobile data.
 
 | | Media Source | IRL Source |
-|---|---|---|
-| Unstable connection | Relies on whatever cushion SRT itself provides, and holds nothing after it | Adds its own cushion (120ms default) behind SRT's |
+| --- | --- | --- |
+| Unstable connection | Relies on whatever cushion procol itself provides, and holds nothing after it | Adds its own cushion (120ms default) behind the protocol latency |
 | After a stall | Latency climbs and stays there, with no way to catch up | Catches up at up to +5% speed until latency is back on target, without skipping audio |
 | Audio timing | Falls behind the mixer, so OBS adds up to a second of buffering that never goes away | Steady clock with a fixed lead, so OBS never adds hidden delay |
 | Timestamp jumps | Passed straight through, so you get pops and freezes | Repaired: small gaps smoothed, medium gaps filled with silence, large gaps get a clean reset |
@@ -80,7 +80,7 @@ A source you just added sizes itself to the canvas when its first frame arrives,
 ### Settings
 
 | Setting | Default | What it does |
-|---|---|---|
+| --- | --- | --- |
 | URL | | Your pull URL. SRT, RTMP, or anything else FFmpeg can open |
 | Reconnect Delay | 2s | How long to wait between reconnect attempts |
 | Target Buffer | 120ms | How much audio cushion to hold, 20ms to 2s. This is your main latency knob: higher rides out a worse connection, lower is snappier and less forgiving. If the stats show `underruns` climbing, this is the setting to raise — an underrun means the cushion ran dry, and the concealment that covers it delays video by the same amount to keep lip sync |
@@ -118,7 +118,7 @@ The same stats are exposed as an [obs-websocket](https://github.com/obsproject/o
 Vendor name: `obs-irl-source`.
 
 | Request | Request data | Response |
-|---|---|---|
+| --- | --- | --- |
 | `GetStats` | `source_name`, optional when the scene collection has exactly one IRL source | `source_name` plus every field in [Stats reference](#stats-reference) |
 | `GetSourceList` | none | `sources`: array of `{source_name, active, showing}` |
 | `GetVersion` | none | `plugin_version`, `vendor_api_version`, `obs_websocket_api_version` |
@@ -256,7 +256,7 @@ How the built-in Media Source actually behaves on a network stream, which is whe
 Auto-detection tries, in order:
 
 | Platform | APIs tried |
-|---|---|
+| --- | --- |
 | Windows | D3D11VA (Intel/AMD/NVIDIA), CUDA (NVIDIA NVDEC) |
 | macOS | VideoToolbox (Apple Silicon & Intel) |
 | Linux | VAAPI (Intel/AMD), CUDA (NVIDIA) |
@@ -286,7 +286,7 @@ The first-keyframe line reports the ground truth from the actual decoded frame, 
 Stats are exposed through OBS's `proc_handler` API under the `get_stats` call, and under the same names through the obs-websocket vendor `GetStats` request (see [Reading stats over obs-websocket](#reading-stats-over-obs-websocket)).
 
 | Field | Type | Description |
-|---|---|---|
+| --- | --- | --- |
 | `buffer_fill_ms` | int | Current audio jitter buffer fill level (ms) |
 | `current_speed` | float | Current audio correction factor. Buffered mode keeps this near 1.0. |
 | `adaptive_latency_control` | bool | Whether buffered steady-state latency correction is enabled |
