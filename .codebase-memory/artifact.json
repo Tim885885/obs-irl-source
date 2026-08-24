@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "27ad08a9e7f4760b433c7eecb94fa89d7e629c75",
+    "indexed_at": "2026-08-24T19:25:49Z",
+    "project": "obs-irl-source-tim885885-crash-fixed-final-v3",
+    "nodes": 1023,
+    "edges": 2492,
+    "original_size": 3735552,
+    "compressed_size": 794424,
+    "compression_level": 9
+}

@@ -24,6 +24,7 @@
 struct irl_rist_transport {
     struct rist_ctx *ctx;
     struct rist_peer *peer;
+    struct rist_logging_settings *logging_settings;
     struct rist_data_block *current_block;
     size_t current_offset;
 
@@ -171,11 +172,21 @@ int irl_rist_transport_open(struct irl_rist_transport **out,
     struct irl_rist_transport *t = calloc(1, sizeof(*t));
     if (!t)
         return -1;
+    struct rist_peer_config *peer_config = NULL;
 
     stats_atomic_init(t);
 
+    /* On native Windows, libRIST 0.2.20 initializes its global logging
+     * CRITICAL_SECTION only when a public logging API is called. Its receiver
+     * creation path logs before doing that initialization, so passing NULL
+     * here reaches EnterCriticalSection with a zeroed lock and crashes OBS.
+     * Keep a disabled settings object alive for the full receiver lifetime;
+     * rist_logging_set() safely initializes that global lock first. */
+    if (rist_logging_set(&t->logging_settings, RIST_LOG_DISABLE,
+                         NULL, NULL, NULL, NULL) != 0)
+        goto fail;
+
     /* Parse first so ?profile= can choose the receiver context profile too. */
-    struct rist_peer_config *peer_config = NULL;
     if (rist_parse_address2(config->url, &peer_config) < 0 || !peer_config)
         goto fail;
 
@@ -185,7 +196,7 @@ int irl_rist_transport_open(struct irl_rist_transport **out,
         profile = peer_config->profile;
 #endif
 
-    if (rist_receiver_create(&t->ctx, profile, NULL) != 0)
+    if (rist_receiver_create(&t->ctx, profile, t->logging_settings) != 0)
         goto fail;
 
     if (config->fifo_packets > 0 &&
@@ -259,6 +270,8 @@ void irl_rist_transport_close(struct irl_rist_transport **transport)
         rist_receiver_data_block_free2(&t->current_block);
     if (t->ctx)
         rist_destroy(t->ctx);
+    if (t->logging_settings)
+        rist_logging_settings_free2(&t->logging_settings);
     free(t);
     *transport = NULL;
 }
