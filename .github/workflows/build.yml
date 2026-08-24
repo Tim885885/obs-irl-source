@@ -183,7 +183,9 @@ jobs:
         run: |
           # IRL_ADAPTIVE_RIST_WINDOWS_DIAGNOSTICS
           $ErrorActionPreference = 'Continue'
-          cmake --build build --config RelWithDebInfo --parallel 2>&1 |
+          # Serial build keeps the first compiler/linker failure adjacent to
+          # the source that caused it instead of burying it in parallel output.
+          cmake --build build --config RelWithDebInfo --parallel 1 2>&1 |
             Tee-Object -FilePath build-msvc.log
           $code = $LASTEXITCODE
           if ($code -ne 0) {
@@ -191,14 +193,26 @@ jobs:
             $hits = Select-String -Path build-msvc.log -Pattern `
               'error C[0-9]{4}', 'fatal error', 'LNK[0-9]{4}', 'error MSB[0-9]{4}'
             if ($hits) {
-              $hits | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
+              $lines = $hits | Select-Object -First 40 | ForEach-Object { $_.Line }
+              foreach ($line in $lines) {
+                Write-Host $line
+                # GitHub workflow command escaping. Public Actions pages expose
+                # annotations even when they hide the complete step log.
+                $escaped = $line.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Host "::error title=MSVC/MSBuild::$escaped"
+              }
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## MSVC/MSBuild errors"
+              foreach ($line in $lines) {
+                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- ``" + $line.Replace('`', "''") + "``")
+              }
             } else {
-              Write-Host "No Cxxxx/LNKxxxx line found; showing last 120 log lines"
-              Get-Content build-msvc.log -Tail 120
+              Write-Host "No Cxxxx/LNKxxxx line found; showing last 160 log lines"
+              $tail = Get-Content build-msvc.log -Tail 160
+              $tail | ForEach-Object { Write-Host $_ }
+              Write-Host "::error title=Windows build failed::No Cxxxx/LNKxxxx match; inspect build-msvc.log tail in the Build step."
             }
             exit $code
           }
-
       - name: Verify isolation
         shell: pwsh
         run: |
