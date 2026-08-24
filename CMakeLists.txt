@@ -290,10 +290,27 @@ set(PLUGIN_SOURCES
     src/websocket-vendor.c
 )
 
+# IRL_ADAPTIVE_RIST_MVP_0_3: direct libRIST is only available with the bundled dependency stack.
+# Non-bundled builds retain the original FFmpeg URLProtocol path unchanged.
+if(_IRL_BUNDLED)
+    list(APPEND PLUGIN_SOURCES
+        src/network-controller.c
+        src/rist-transport.c
+        src/adaptive-rist.c
+        src/adaptive-runtime.c
+        src/ffmpeg-rist-avio.c
+        src/live-edge-controller.c
+        src/live-edge-runtime.c
+    )
+endif()
+
 add_library(obs-irl-source MODULE ${PLUGIN_SOURCES})
 target_compile_definitions(obs-irl-source PRIVATE
     OBS_IRL_SOURCE_VERSION="${OBS_IRL_SOURCE_BUILD_VERSION}"
 )
+if(_IRL_BUNDLED)
+    target_compile_definitions(obs-irl-source PRIVATE IRL_DIRECT_RIST=1)
+endif()
 
 # ── Include directories ──────────────────────────────────────
 target_include_directories(obs-irl-source PRIVATE

@@ -46,6 +46,7 @@
 /* ── Forward declarations ─────────────────────────────────── */
 
 struct irl_source;
+struct irl_direct_rist_io; /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 /* ── Configuration defaults ───────────────────────────────── */
 
@@ -341,6 +342,40 @@ struct irl_source {
 	 * timeout. Receiver-thread owned (interrupt_cb runs on the
 	 * calling thread). */
 	uint64_t io_start_us;
+#ifdef IRL_DIRECT_RIST
+	/* IRL_ADAPTIVE_RIST_MVP_0_3: direct libRIST receiver and a coherent
+	 * telemetry snapshot. direct_rist_io is receiver-thread owned; the
+	 * telemetry fields below are guarded by audio_state_lock. */
+	struct irl_direct_rist_io *direct_rist_io;
+	volatile long rist_user_buffer_target_ms;
+	bool rist_stats_valid;
+	int rist_net_state;
+	uint32_t rist_rtt_ms;
+	uint32_t rist_missing;
+	uint32_t rist_recovered;
+	uint32_t rist_lost;
+	uint32_t rist_reordered;
+	double rist_quality_pct;
+	double rist_retry_pct;
+	uint64_t rist_transport_buffer_ms;
+	long rist_effective_playout_ms;
+	uint32_t rist_recovery_recommended_min_ms;
+	uint32_t rist_recovery_recommended_max_ms;
+	double rist_risk_score;
+
+	/* Experimental live-edge reclaim. Destructive behaviour is opt-in via
+	 * IRL_ADAPTIVE_LIVE_EDGE=balanced|aggressive. Policy request fields and
+	 * the hard video PTS boundary are guarded by video_queue_lock. */
+	int rist_live_edge_mode;
+	bool rist_live_edge_allow_video_drop;
+	uint32_t rist_live_edge_video_late_drop_ms;
+	bool rist_live_edge_video_reclaim_pending;
+	int64_t rist_live_edge_min_video_pts_ns;
+	uint64_t rist_live_edge_last_hard_ms;
+	uint64_t rist_live_edge_hard_reclaims;
+	uint64_t rist_live_edge_audio_trimmed_chunks;
+	uint64_t rist_live_edge_video_drops;
+#endif
 	AVCodecContext *audio_dec_ctx;
 	AVCodecContext *video_dec_ctx;
 	AVBufferRef *hw_device_ctx;

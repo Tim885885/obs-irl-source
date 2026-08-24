@@ -37,7 +37,7 @@
 
 /* Bumped when a request is added or a response field changes meaning, so a
  * client can feature-detect instead of probing. */
-#define IRL_VENDOR_API_VERSION 1
+#define IRL_VENDOR_API_VERSION 3 /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 #define IRL_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -87,6 +87,26 @@ static const struct irl_stat_field irl_stat_fields[] = {
 	{"stream_delay_ms", IRL_STAT_INT},
 	{"low_latency_audio", IRL_STAT_BOOL},
 	{"reconnect_count", IRL_STAT_INT},
+#ifdef IRL_DIRECT_RIST
+	{"rist_stats_valid", IRL_STAT_BOOL},
+	{"rist_net_state", IRL_STAT_INT},
+	{"rist_rtt_ms", IRL_STAT_INT},
+	{"rist_missing", IRL_STAT_INT},
+	{"rist_recovered", IRL_STAT_INT},
+	{"rist_lost", IRL_STAT_INT},
+	{"rist_reordered", IRL_STAT_INT},
+	{"rist_quality_pct", IRL_STAT_FLOAT},
+	{"rist_retry_pct", IRL_STAT_FLOAT},
+	{"rist_transport_buffer_ms", IRL_STAT_INT},
+	{"rist_effective_playout_ms", IRL_STAT_INT},
+	{"rist_recovery_min_ms", IRL_STAT_INT},
+	{"rist_recovery_max_ms", IRL_STAT_INT},
+	{"rist_risk_score", IRL_STAT_FLOAT},
+	{"rist_live_edge_mode", IRL_STAT_INT},
+	{"rist_live_edge_hard_reclaims", IRL_STAT_INT},
+	{"rist_live_edge_audio_trimmed_chunks", IRL_STAT_INT},
+	{"rist_live_edge_video_drops", IRL_STAT_INT},
+#endif
 };
 
 static void stats_to_obs_data(const calldata_t *cd, obs_data_t *out)

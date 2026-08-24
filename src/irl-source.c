@@ -13,6 +13,10 @@
 
 #include "../include/irl-source.h"
 #include "receiver-internal.h"
+#ifdef IRL_DIRECT_RIST
+#include "adaptive-runtime.h"
+#include "live-edge-runtime.h"
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -128,6 +132,9 @@ static void config_apply_hot(struct irl_source *ctx,
 					   next->buffer_min_ms);
 			os_atomic_set_long(&ctx->config.buffer_max_ms,
 					   next->buffer_max_ms);
+#ifdef IRL_DIRECT_RIST
+			irl_adaptive_runtime_set_user_target(ctx, next->buffer_target_ms);
+#endif
 		} else {
 			blog(LOG_WARNING,
 			     "[irl-source] Could not resize jitter buffer to %ldms; keeping %ldms",
@@ -352,7 +359,34 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	int64_t latest_video_stream_pts_ns = ctx->latest_video_stream_pts_ns;
 	int64_t video_lead_ms = ctx->video_lead_ns / 1000000LL;
 	uint64_t video_lead_excess = ctx->video_lead_excess;
+#ifdef IRL_DIRECT_RIST
+	bool rist_stats_valid = ctx->rist_stats_valid;
+	int rist_net_state = ctx->rist_net_state;
+	uint32_t rist_rtt_ms = ctx->rist_rtt_ms;
+	uint32_t rist_missing = ctx->rist_missing;
+	uint32_t rist_recovered = ctx->rist_recovered;
+	uint32_t rist_lost = ctx->rist_lost;
+	uint32_t rist_reordered = ctx->rist_reordered;
+	double rist_quality_pct = ctx->rist_quality_pct;
+	double rist_retry_pct = ctx->rist_retry_pct;
+	uint64_t rist_transport_buffer_ms = ctx->rist_transport_buffer_ms;
+	long rist_effective_playout_ms = ctx->rist_effective_playout_ms;
+	uint32_t rist_recovery_min_ms =
+		ctx->rist_recovery_recommended_min_ms;
+	uint32_t rist_recovery_max_ms =
+		ctx->rist_recovery_recommended_max_ms;
+	double rist_risk_score = ctx->rist_risk_score;
+	int rist_live_edge_mode = ctx->rist_live_edge_mode;
+	uint64_t rist_live_edge_hard_reclaims = ctx->rist_live_edge_hard_reclaims;
+	uint64_t rist_live_edge_audio_trimmed_chunks =
+		ctx->rist_live_edge_audio_trimmed_chunks;
+#endif
 	irl_mutex_unlock(&ctx->audio_state_lock);
+#ifdef IRL_DIRECT_RIST
+	irl_mutex_lock(&ctx->video_queue_lock);
+	uint64_t rist_live_edge_video_drops = ctx->rist_live_edge_video_drops;
+	irl_mutex_unlock(&ctx->video_queue_lock);
+#endif
 
 	calldata_set_int(cd, "buffer_fill_ms", buffer_fill_ms);
 	calldata_set_float(cd, "current_speed", (double)current_speed);
@@ -412,6 +446,31 @@ static void irl_source_get_stats(void *data, calldata_t *cd)
 	calldata_set_bool(cd, "low_latency_audio",
 			  ctx->config.low_latency_audio);
 	calldata_set_int(cd, "reconnect_count", (long long)reconnect_count);
+#ifdef IRL_DIRECT_RIST
+	calldata_set_bool(cd, "rist_stats_valid", rist_stats_valid);
+	calldata_set_int(cd, "rist_net_state", rist_net_state);
+	calldata_set_int(cd, "rist_rtt_ms", rist_rtt_ms);
+	calldata_set_int(cd, "rist_missing", rist_missing);
+	calldata_set_int(cd, "rist_recovered", rist_recovered);
+	calldata_set_int(cd, "rist_lost", rist_lost);
+	calldata_set_int(cd, "rist_reordered", rist_reordered);
+	calldata_set_float(cd, "rist_quality_pct", rist_quality_pct);
+	calldata_set_float(cd, "rist_retry_pct", rist_retry_pct);
+	calldata_set_int(cd, "rist_transport_buffer_ms",
+			 (long long)rist_transport_buffer_ms);
+	calldata_set_int(cd, "rist_effective_playout_ms",
+			 rist_effective_playout_ms);
+	calldata_set_int(cd, "rist_recovery_min_ms", rist_recovery_min_ms);
+	calldata_set_int(cd, "rist_recovery_max_ms", rist_recovery_max_ms);
+	calldata_set_float(cd, "rist_risk_score", rist_risk_score);
+	calldata_set_int(cd, "rist_live_edge_mode", rist_live_edge_mode);
+	calldata_set_int(cd, "rist_live_edge_hard_reclaims",
+			 (long long)rist_live_edge_hard_reclaims);
+	calldata_set_int(cd, "rist_live_edge_audio_trimmed_chunks",
+			 (long long)rist_live_edge_audio_trimmed_chunks);
+	calldata_set_int(cd, "rist_live_edge_video_drops",
+			 (long long)rist_live_edge_video_drops);
+#endif
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */
@@ -455,6 +514,10 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 	}
 
 	config_load(&ctx->config, settings);
+#ifdef IRL_DIRECT_RIST
+	irl_adaptive_runtime_set_user_target(ctx, ctx->config.buffer_target_ms);
+	irl_live_edge_runtime_init(ctx);
+#endif
 	apply_async_audio_mode(ctx);
 
 	/* A source the user just added has no URL yet; one restored from a
@@ -484,7 +547,20 @@ void *irl_source_create(obs_data_t *settings, obs_source_t *source)
 		"out int video_decoder_flushes, "
 		"out int video_lead_ms, out int video_lead_excess, "
 		"out int stream_delay_ms, out bool low_latency_audio, "
-		"out int reconnect_count)",
+		"out int reconnect_count"
+#ifdef IRL_DIRECT_RIST
+		", out bool rist_stats_valid, out int rist_net_state, "
+		"out int rist_rtt_ms, out int rist_missing, "
+		"out int rist_recovered, out int rist_lost, "
+		"out int rist_reordered, out float rist_quality_pct, "
+		"out float rist_retry_pct, out int rist_transport_buffer_ms, "
+		"out int rist_effective_playout_ms, out int rist_recovery_min_ms, "
+		"out int rist_recovery_max_ms, out float rist_risk_score, "
+		"out int rist_live_edge_mode, out int rist_live_edge_hard_reclaims, "
+		"out int rist_live_edge_audio_trimmed_chunks, "
+		"out int rist_live_edge_video_drops"
+#endif
+		")",
 		irl_source_get_stats, ctx);
 
 	if (ctx->config.url) {
@@ -569,6 +645,9 @@ void irl_source_update(void *data, obs_data_t *settings)
 	stop_receiver(ctx, false);
 	config_free(&ctx->config);
 	ctx->config = next; /* takes ownership of the loaded strings */
+#ifdef IRL_DIRECT_RIST
+	irl_adaptive_runtime_set_user_target(ctx, ctx->config.buffer_target_ms);
+#endif
 	apply_async_audio_mode(ctx);
 
 	/* Either the source is not going to run at all, or a restart-forcing

@@ -9,6 +9,9 @@
 #include <libavutil/imgutils.h>
 
 #include "receiver-internal.h"
+#ifdef IRL_DIRECT_RIST
+#include "live-edge-controller.h"
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 /* ── Video output queue ───────────────────────────────────── */
 
@@ -191,6 +194,54 @@ static void pacing_reschedule(struct irl_source *ctx)
 /* Emit every frame whose moment has arrived. Over the ceilings the head goes
  * out early rather than being dropped: too-early video is what the un-paced
  * path did all the time, and it beats a hole in the picture. */
+#ifdef IRL_DIRECT_RIST
+/* Drop only decoded system-memory pacing frames. This cannot corrupt future
+ * decoder references because the decoder has already consumed them. Hard
+ * reclaim may drain every stale frame and leave OBS holding the last rendered
+ * picture until a fresh frame arrives; soft reclaim always keeps one queued
+ * frame to avoid making ordinary jitter look like a disconnect. */
+static void pacing_reclaim_live_edge(struct irl_source *ctx, uint64_t now)
+{
+	bool allow_soft;
+	uint32_t soft_ms;
+	bool hard_pending;
+	int64_t min_pts_ns;
+
+	irl_mutex_lock(&ctx->video_queue_lock);
+	allow_soft = ctx->rist_live_edge_allow_video_drop;
+	soft_ms = ctx->rist_live_edge_video_late_drop_ms;
+	hard_pending = ctx->rist_live_edge_video_reclaim_pending;
+	min_pts_ns = ctx->rist_live_edge_min_video_pts_ns;
+	irl_mutex_unlock(&ctx->video_queue_lock);
+
+	uint64_t dropped = 0;
+	while (ctx->pacing_count > 0) {
+		struct irl_pacing_frame *head =
+			&ctx->pacing_queue[ctx->pacing_head];
+		bool stale = irl_live_edge_video_frame_should_drop(
+			hard_pending, min_pts_ns, head->pts_ns, allow_soft,
+			soft_ms, ctx->pacing_count, head->due_ns, now);
+		if (!stale)
+			break;
+
+		struct irl_pacing_frame e = pacing_pop(ctx);
+		av_frame_free(&e.frame);
+		dropped++;
+	}
+
+	bool hard_done = hard_pending &&
+		(ctx->pacing_count == 0 ||
+		 ctx->pacing_queue[ctx->pacing_head].pts_ns >= min_pts_ns);
+	if (dropped > 0 || hard_done) {
+		irl_mutex_lock(&ctx->video_queue_lock);
+		ctx->rist_live_edge_video_drops += dropped;
+		if (hard_done)
+			ctx->rist_live_edge_video_reclaim_pending = false;
+		irl_mutex_unlock(&ctx->video_queue_lock);
+	}
+}
+#endif
+
 static void pacing_emit_due(struct irl_source *ctx, uint64_t now)
 {
 	while (ctx->pacing_count > 0) {
@@ -241,6 +292,10 @@ void *irl_video_thread(void *data)
 		 * schedules against the offset as it is now rather than as it
 		 * was when the frames were decoded. */
 		pacing_reschedule(ctx);
+#ifdef IRL_DIRECT_RIST
+		/* IRL_ADAPTIVE_RIST_LIVE_EDGE_CALL */
+		pacing_reclaim_live_edge(ctx, os_gettime_ns());
+#endif
 		pacing_emit_due(ctx, os_gettime_ns());
 
 		irl_mutex_lock(&ctx->video_queue_lock);

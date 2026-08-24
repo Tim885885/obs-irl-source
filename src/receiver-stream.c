@@ -14,6 +14,11 @@
 #endif
 
 #include "receiver-internal.h"
+#ifdef IRL_DIRECT_RIST
+#include "adaptive-runtime.h"
+#include "ffmpeg-rist-avio.h"
+#include "live-edge-runtime.h"
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 /* Protocol test on the scheme itself, not a substring of the whole URL: a
  * query parameter or a path segment must not decide which options apply. */
@@ -388,10 +393,20 @@ void irl_close_ffmpeg(struct irl_source *ctx)
 		avcodec_free_context(&ctx->video_dec_ctx);
 		ctx->video_dec_ctx = NULL;
 	}
+#ifdef IRL_DIRECT_RIST
+	if (ctx->direct_rist_io) {
+		irl_adaptive_runtime_restore_user_target(ctx);
+		irl_live_edge_runtime_reset_session(ctx);
+	}
+#endif
 	if (ctx->fmt_ctx) {
 		avformat_close_input(&ctx->fmt_ctx);
 		ctx->fmt_ctx = NULL;
 	}
+#ifdef IRL_DIRECT_RIST
+	if (ctx->direct_rist_io)
+		irl_close_direct_rist_io(&ctx->direct_rist_io);
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 	/* Release the HW device with the connection it was created for.
 	 * Keeping it across reconnects made the device-creation loop
 	 * silently skip (no logging) and attach a stale device, so
@@ -427,19 +442,30 @@ static bool open_stream_attempt(struct irl_source *ctx, bool fast_probe)
 			      ctx->config.network_buffer_mb, fast_probe);
 
 	blog(LOG_INFO, "[irl-source] Connecting to: %s", ctx->config.url);
-
-	ctx->fmt_ctx = avformat_alloc_context();
-	if (!ctx->fmt_ctx) {
-		blog(LOG_ERROR, "[irl-source] Failed to allocate format context");
-		av_dict_free(&opts);
-		return false;
+	int ret;
+#ifdef IRL_DIRECT_RIST
+	if (url_has_scheme(ctx->config.url, "rist")) {
+		blog(LOG_INFO,
+		     "[irl-source] Adaptive RIST: using direct libRIST + custom AVIO");
+		ctx->io_start_us = (uint64_t)av_gettime();
+		ret = irl_open_direct_rist_input(ctx, &ctx->direct_rist_io,
+					  500, &opts);
+	} else
+#endif
+	{
+		ctx->fmt_ctx = avformat_alloc_context();
+		if (!ctx->fmt_ctx) {
+			blog(LOG_ERROR,
+			     "[irl-source] Failed to allocate format context");
+			av_dict_free(&opts);
+			return false;
+		}
+		ctx->fmt_ctx->interrupt_callback.callback = interrupt_cb;
+		ctx->fmt_ctx->interrupt_callback.opaque = ctx;
+		ctx->io_start_us = (uint64_t)av_gettime();
+		ret = avformat_open_input(&ctx->fmt_ctx, ctx->config.url, NULL,
+					  &opts);
 	}
-	ctx->fmt_ctx->interrupt_callback.callback = interrupt_cb;
-	ctx->fmt_ctx->interrupt_callback.opaque = ctx;
-
-	ctx->io_start_us = (uint64_t)av_gettime();
-	int ret = avformat_open_input(&ctx->fmt_ctx, ctx->config.url, NULL,
-				      &opts);
 	av_dict_free(&opts);
 	if (ret < 0) {
 		char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -454,7 +480,12 @@ static bool open_stream_attempt(struct irl_source *ctx, bool fast_probe)
 	ctx->io_start_us = (uint64_t)av_gettime();
 	if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) {
 		blog(LOG_WARNING, "[irl-source] Failed to find stream info");
-		avformat_close_input(&ctx->fmt_ctx);
+#ifdef IRL_DIRECT_RIST
+		if (ctx->direct_rist_io)
+			irl_close_ffmpeg(ctx);
+		else
+#endif
+			avformat_close_input(&ctx->fmt_ctx);
 		return false;
 	}
 

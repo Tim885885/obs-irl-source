@@ -13,6 +13,11 @@
 
 #include "../include/irl-source.h"
 #include "receiver-internal.h"
+#ifdef IRL_DIRECT_RIST
+#include "adaptive-runtime.h"
+#include "ffmpeg-rist-avio.h"
+#include "live-edge-runtime.h"
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 
 /* ── Main read loop ───────────────────────────────────────── */
 
@@ -131,6 +136,18 @@ void *irl_receiver_thread(void *data)
 		}
 
 		av_packet_unref(pkt);
+#ifdef IRL_DIRECT_RIST
+		if (ctx->direct_rist_io) {
+			irl_adaptive_output_t policy;
+			irl_rist_sample_t sample;
+			if (irl_direct_rist_poll(ctx->direct_rist_io, &policy,
+						 &sample, NULL)) {
+				(void)irl_adaptive_runtime_apply(ctx, &policy,
+							 &sample);
+				(void)irl_live_edge_runtime_update(ctx, &policy);
+			}
+		}
+#endif /* IRL_ADAPTIVE_RIST_MVP_0_3 */
 		irl_log_receiver_stats(ctx);
 	}
 
