@@ -4,12 +4,13 @@
  */
 #include "rist-transport.h"
 
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <stdatomic.h>
 #endif
 
 #include <librist/librist.h>
@@ -20,10 +21,67 @@ struct irl_rist_transport {
     struct rist_data_block *current_block;
     size_t current_offset;
 
+#ifdef _WIN32
+    volatile LONG stats_seq;
+    volatile LONG stats_valid;
+#else
     atomic_uint stats_seq;
     atomic_int stats_valid;
+#endif
     irl_rist_transport_stats_t latest_stats;
 };
+
+/* MSVC still does not provide C11 <stdatomic.h> in ordinary /std:c11 mode.
+ * Keep the lock-free seqlock on Windows with Interlocked operations, whose
+ * operations are full memory barriers. POSIX builds keep using C11 atomics. */
+static void stats_atomic_init(struct irl_rist_transport *t)
+{
+#ifdef _WIN32
+    InterlockedExchange(&t->stats_seq, 0);
+    InterlockedExchange(&t->stats_valid, 0);
+#else
+    atomic_init(&t->stats_seq, 0);
+    atomic_init(&t->stats_valid, 0);
+#endif
+}
+
+static void stats_seq_bump(struct irl_rist_transport *t)
+{
+#ifdef _WIN32
+    (void)InterlockedIncrement(&t->stats_seq);
+#else
+    (void)atomic_fetch_add_explicit(&t->stats_seq, 1, memory_order_acq_rel);
+#endif
+}
+
+static unsigned stats_seq_load(const struct irl_rist_transport *t)
+{
+#ifdef _WIN32
+    return (unsigned)InterlockedCompareExchange(
+        (volatile LONG *)&t->stats_seq, 0, 0);
+#else
+    return atomic_load_explicit(&t->stats_seq, memory_order_acquire);
+#endif
+}
+
+static void stats_valid_set(struct irl_rist_transport *t)
+{
+#ifdef _WIN32
+    InterlockedExchange(&t->stats_valid, 1);
+#else
+    atomic_store_explicit(&t->stats_valid, 1, memory_order_release);
+#endif
+}
+
+static int stats_valid_load(const struct irl_rist_transport *t)
+{
+#ifdef _WIN32
+    return InterlockedCompareExchange(
+        (volatile LONG *)&t->stats_valid, 0, 0) != 0;
+#else
+    return atomic_load_explicit(&t->stats_valid, memory_order_acquire) != 0;
+#endif
+}
 
 static uint64_t monotonic_ms(void)
 {
@@ -71,7 +129,7 @@ static int stats_cb(void *arg, const struct rist_stats *container)
 
         /* libRIST reports stats_instant values and zeroes them after callback.
          * Preserve this interval as-is; do not derive deltas later. */
-        atomic_fetch_add_explicit(&t->stats_seq, 1, memory_order_acq_rel);
+        stats_seq_bump(t);
         t->latest_stats.timestamp_ms = monotonic_ms();
         t->latest_stats.rtt_ms = flow->rtt;
         t->latest_stats.received = flow->received;
@@ -88,8 +146,8 @@ static int stats_cb(void *arg, const struct rist_stats *container)
         t->latest_stats.quality_pct = flow->quality;
         t->latest_stats.flow_id = flow->flow_id;
         t->latest_stats.status = flow->status;
-        atomic_fetch_add_explicit(&t->stats_seq, 1, memory_order_release);
-        atomic_store_explicit(&t->stats_valid, 1, memory_order_release);
+        stats_seq_bump(t);
+        stats_valid_set(t);
     }
 
     /* The application owns the callback container after delivery. */
@@ -108,8 +166,7 @@ int irl_rist_transport_open(struct irl_rist_transport **out,
     if (!t)
         return -1;
 
-    atomic_init(&t->stats_seq, 0);
-    atomic_init(&t->stats_valid, 0);
+    stats_atomic_init(t);
 
     /* Parse first so ?profile= can choose the receiver context profile too. */
     struct rist_peer_config *peer_config = NULL;
@@ -243,18 +300,15 @@ int irl_rist_transport_read(struct irl_rist_transport *t,
 int irl_rist_transport_get_stats(const struct irl_rist_transport *t,
                                  irl_rist_transport_stats_t *out)
 {
-    if (!t || !out ||
-        !atomic_load_explicit(&t->stats_valid, memory_order_acquire))
+    if (!t || !out || !stats_valid_load(t))
         return 0;
 
     for (;;) {
-        unsigned before = atomic_load_explicit(&t->stats_seq,
-                                                memory_order_acquire);
+        unsigned before = stats_seq_load(t);
         if (before & 1U)
             continue;
         *out = t->latest_stats;
-        unsigned after = atomic_load_explicit(&t->stats_seq,
-                                               memory_order_acquire);
+        unsigned after = stats_seq_load(t);
         if (before == after && !(after & 1U))
             return 1;
     }
