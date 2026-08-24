@@ -141,21 +141,22 @@ bool irl_live_edge_runtime_update(struct irl_source *ctx,
     const int target_ms = (int)os_atomic_load_long(&ctx->config.buffer_target_ms);
     const int chunk_ms = audio_chunk_ms(ctx);
 
-    irl_live_edge_input_t in = {
-        .timestamp_ms = now_ms,
-        .mode = mode,
-        .net_state = policy->state,
-        .allow_video_drop = policy->allow_video_drop,
-        .allow_hard_live_edge_jump = policy->allow_hard_live_edge_jump,
-        .hard_live_edge_threshold_ms = policy->hard_live_edge_threshold_ms,
-        .audio_primed = ctx->audio_out_primed,
-        .low_latency_audio = ctx->config.low_latency_audio,
-        .audio_fill_ms = fill_ms,
-        .audio_target_ms = target_ms,
-        .audio_chunk_ms = chunk_ms,
-        .transport_buffer_ms = policy->transport_buffer_ms,
-        .last_hard_reclaim_ms = ctx->rist_live_edge_last_hard_ms,
-    };
+    /* Avoid designated initializers in code compiled by MSVC as C. */
+    irl_live_edge_input_t in;
+    memset(&in, 0, sizeof(in));
+    in.timestamp_ms = now_ms;
+    in.mode = mode;
+    in.net_state = policy->state;
+    in.allow_video_drop = policy->allow_video_drop;
+    in.allow_hard_live_edge_jump = policy->allow_hard_live_edge_jump;
+    in.hard_live_edge_threshold_ms = policy->hard_live_edge_threshold_ms;
+    in.audio_primed = ctx->audio_out_primed;
+    in.low_latency_audio = ctx->config.low_latency_audio;
+    in.audio_fill_ms = fill_ms;
+    in.audio_target_ms = target_ms;
+    in.audio_chunk_ms = chunk_ms;
+    in.transport_buffer_ms = policy->transport_buffer_ms;
+    in.last_hard_reclaim_ms = ctx->rist_live_edge_last_hard_ms;
     irl_live_edge_decision_t decision;
     (void)irl_live_edge_decide(&in, &decision);
     soft_late_ms = decision.video_late_drop_ms;

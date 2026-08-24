@@ -179,8 +179,25 @@ jobs:
           -DOBS_SOURCE_DIR=%CD%\obs-src
 
       - name: Build
-        shell: cmd
-        run: cmake --build build --config RelWithDebInfo --parallel
+        shell: pwsh
+        run: |
+          # IRL_ADAPTIVE_RIST_WINDOWS_DIAGNOSTICS
+          $ErrorActionPreference = 'Continue'
+          cmake --build build --config RelWithDebInfo --parallel 2>&1 |
+            Tee-Object -FilePath build-msvc.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "===== FIRST REAL MSVC/MSBUILD ERRORS ====="
+            $hits = Select-String -Path build-msvc.log -Pattern `
+              'error C[0-9]{4}', 'fatal error', 'LNK[0-9]{4}', 'error MSB[0-9]{4}'
+            if ($hits) {
+              $hits | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
+            } else {
+              Write-Host "No Cxxxx/LNKxxxx line found; showing last 120 log lines"
+              Get-Content build-msvc.log -Tail 120
+            }
+            exit $code
+          }
 
       - name: Verify isolation
         shell: pwsh

@@ -13,6 +13,8 @@
 #include <libavutil/mem.h>
 #include <libavutil/time.h>
 
+#include <string.h>
+
 #define IRL_RIST_AVIO_BUFFER_SIZE (64 * 1024)
 #define IRL_RIST_READ_POLL_MS 100
 #define IRL_RIST_DEFAULT_PROFILE 1 /* RIST_PROFILE_MAIN */
@@ -64,19 +66,21 @@ int irl_open_direct_rist_input(struct irl_source *src,
         return AVERROR(ENOMEM);
     io->src = src;
 
-    irl_rist_transport_config_t cfg = {
-        .url = src->config.url,
-        .profile = IRL_RIST_DEFAULT_PROFILE,
-        .stats_interval_ms = stats_interval_ms,
-        .fifo_packets = 4096,
-        .adaptive_recovery = 1,
-        .recovery_min_ms = 250,
-        .recovery_max_ms = 1800,
-        .rtt_min_ms = 20,
-        .rtt_max_ms = 1200,
-        .reorder_buffer_ms = 30,
-        .cbr_output = -1,
-    };
+    /* MSVC's C frontend is less portable around C99 designated
+     * initializers than GCC/Clang. Use plain assignments on every platform. */
+    irl_rist_transport_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.url = src->config.url;
+    cfg.profile = IRL_RIST_DEFAULT_PROFILE;
+    cfg.stats_interval_ms = stats_interval_ms;
+    cfg.fifo_packets = 4096;
+    cfg.adaptive_recovery = 1;
+    cfg.recovery_min_ms = 250;
+    cfg.recovery_max_ms = 1800;
+    cfg.rtt_min_ms = 20;
+    cfg.rtt_max_ms = 1200;
+    cfg.reorder_buffer_ms = 30;
+    cfg.cbr_output = -1;
     if (irl_rist_transport_open(&io->transport, &cfg) != 0) {
         av_free(io);
         return AVERROR(EIO);
