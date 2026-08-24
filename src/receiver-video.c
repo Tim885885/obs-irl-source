@@ -229,13 +229,24 @@ static void pacing_reclaim_live_edge(struct irl_source *ctx, uint64_t now)
 		dropped++;
 	}
 
-	bool hard_done = hard_pending &&
-		(ctx->pacing_count == 0 ||
-		 ctx->pacing_queue[ctx->pacing_head].pts_ns >= min_pts_ns);
+	bool hard_done = irl_live_edge_video_reclaim_is_complete(
+		hard_pending, min_pts_ns, ctx->pacing_count,
+		ctx->pacing_count > 0
+			? ctx->pacing_queue[ctx->pacing_head].pts_ns
+			: 0);
 	if (dropped > 0 || hard_done) {
 		irl_mutex_lock(&ctx->video_queue_lock);
 		ctx->rist_live_edge_video_drops += dropped;
-		if (hard_done)
+		/* The receiver may publish a newer boundary while frames are
+		 * dropped without the lock. Acknowledge only if the current
+		 * protected request is also satisfied by the current queue. */
+		if (hard_done && irl_live_edge_video_reclaim_is_complete(
+				 ctx->rist_live_edge_video_reclaim_pending,
+				 ctx->rist_live_edge_min_video_pts_ns,
+				 ctx->pacing_count,
+				 ctx->pacing_count > 0
+					 ? ctx->pacing_queue[ctx->pacing_head].pts_ns
+					 : 0))
 			ctx->rist_live_edge_video_reclaim_pending = false;
 		irl_mutex_unlock(&ctx->video_queue_lock);
 	}

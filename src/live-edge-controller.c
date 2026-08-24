@@ -127,3 +127,12 @@ bool irl_live_edge_video_frame_should_drop(bool hard_pending,
     return now_ns - frame_due_ns >=
         (uint64_t)soft_late_ms * 1000000ULL;
 }
+
+bool irl_live_edge_video_reclaim_is_complete(bool hard_pending,
+                                             int64_t min_pts_ns,
+                                             int pacing_count,
+                                             int64_t head_pts_ns)
+{
+    return hard_pending &&
+        (pacing_count == 0 || head_pts_ns >= min_pts_ns);
+}

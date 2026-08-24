@@ -100,6 +100,14 @@ bool irl_live_edge_video_frame_should_drop(bool hard_pending,
                                            uint64_t frame_due_ns,
                                            uint64_t now_ns);
 
+/* Evaluate a hard-reclaim acknowledgement from the current protected request,
+ * not from an earlier snapshot. This prevents the video thread from clearing
+ * a newer boundary published while it was dropping frames. */
+bool irl_live_edge_video_reclaim_is_complete(bool hard_pending,
+                                             int64_t min_pts_ns,
+                                             int pacing_count,
+                                             int64_t head_pts_ns);
+
 #ifdef __cplusplus
 }
 #endif
